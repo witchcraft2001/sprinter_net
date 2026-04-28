@@ -12,6 +12,7 @@ DIST_DIR_NAME="SPNET"
 # Planned apps include: netprobe, netcfg, netup, wget, ntp, tftp, ftp, chat,
 # wterm.
 BUILD_APPS=(
+  netprobe
 )
 
 # Text/documentation files copied to the distribution root.

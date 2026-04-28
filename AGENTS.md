@@ -6,6 +6,11 @@ This repository is for developing a package of network communication programs fo
 
 ## Project Structure & Module Organization
 
+This repository uses `src/include/` for shared include files, `src/lib/` for
+reusable DSS assembly modules, and `src/apps/` for utility entry points. Build
+outputs go to `build/`; distributable zip and floppy images go to `distr/`.
+Package membership is controlled by `tools/artifacts.sh`.
+
 This workspace currently sits beside two Sprinter Wi-Fi projects. `../ESPKit/` contains software for the ISA-8 ESP8266 card: `sources/DSS/` holds sjasmplus assembly programs and shared libraries (`esplib.asm`, `isa.asm`, `util.asm`), while `sources/DOS/` holds FreeDOS/Borland C++ utilities. `../SprinterESP/` contains the hardware design: editable EasyEDA JSON files in `Sources/`, reference docs in `Docs/`, exported PDFs/images/BOM files in `Export/`, and manufacturing packages in `Gerber/`. Keep generated outputs separate from editable sources.
 
 ## Build, Test, and Development Commands

@@ -3,7 +3,8 @@
 Network utility package for Sprinter DSS and the SprinterESP Wi-Fi card
 (ESP12-F/ESP8266 with ESP-AT firmware).
 
-Current status: project foundation and distribution scripts are being prepared.
+Current status: project foundation is in place. `NETPROBE.EXE` is the first
+diagnostic utility and checks basic SprinterESP UART/ESP-AT communication.
 Implementation plan is tracked in `specs.md`.
 
 ## Build
@@ -15,6 +16,10 @@ make image
 ```
 
 Generated files are written to `build/` and `distr/`.
+
+Current build output:
+
+- `NETPROBE.EXE`
 
 ## Configuration
 

@@ -198,7 +198,7 @@ Payload parser:
   local `NET.CFG`.
 - [x] Add build, package and floppy image scripts.
 - [x] Add a shared artifact manifest for future distributable files.
-- [ ] Decide initial source layout and copy/import only the needed DSS support
+- [x] Decide initial source layout and copy/import only the needed DSS support
   files from `ESPKit`.
 - [x] Add a short `README.md` with scope, build commands and current status.
 
@@ -210,12 +210,12 @@ Done when:
 
 ### Stage 1 - Hardware, UART And AT Healthcheck
 
-- [ ] Port or copy minimal `isa.asm`, UART definitions and utility code.
-- [ ] Implement a small `netprobe.exe`.
-- [ ] Detect SprinterESP in ISA slot.
-- [ ] Initialize UART at 115200 8N1 RTS/CTS.
-- [ ] Send `AT`, `ATE0`, `AT+GMR`.
-- [ ] Report firmware version and UART status.
+- [x] Port or copy minimal `isa.asm`, UART definitions and utility code.
+- [x] Implement a small `netprobe.exe`.
+- [x] Detect SprinterESP in ISA slot.
+- [x] Initialize UART at 115200 8N1 RTS/CTS.
+- [x] Send `AT`, `ATE0`, `AT+GMR`.
+- [x] Report firmware version and UART status.
 - [ ] Keep `wterm.exe` or equivalent terminal for manual diagnostics.
 
 Done when:

@@ -30,7 +30,10 @@ for app in "${BUILD_APPS[@]}"; do
     continue
   fi
 
-  sjasmplus --nologo --fullpath --lst="$lst" --raw="$exe" "$src"
+  sjasmplus --nologo --fullpath \
+    -I "$repo_root/src/include" \
+    -I "$repo_root/src/lib" \
+    --lst="$lst" --raw="$exe" "$src"
   echo "Built $exe"
   built=$((built + 1))
 done
