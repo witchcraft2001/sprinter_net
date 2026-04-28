@@ -1,0 +1,100 @@
+; ======================================================
+; NETRESET for Sprinter-WiFi / SprinterESP
+; Reset and reinitialize ESP module.
+; ======================================================
+
+; Version of EXE file, 1 for DSS 1.70+
+EXE_VERSION		EQU 1
+
+; Timeout to wait ESP response
+DEFAULT_TIMEOUT		EQU 2000
+
+	DEVICE NOSLOT64K
+
+	INCLUDE "macro.inc"
+	INCLUDE "dss.inc"
+
+	MODULE MAIN
+
+	ORG 0x8080
+
+EXE_HEADER
+	DB "EXE"
+	DB EXE_VERSION
+	DW 0x0080
+	DW 0
+	DW 0
+	DW 0
+	DW 0
+	DW 0
+	DW START
+	DW START
+	DW STACK_TOP
+	DS 106, 0
+
+	ORG 0x8100
+@STACK_TOP
+
+START
+	CALL	ISA.ISA_RESET
+	CALL	WCOMMON.INIT_VMODE
+
+	PRINTLN MSG_START
+
+	CALL	WIFI.UART_FIND
+	JP	C, NO_WIFI
+
+	LD	A,(ISA.ISA_SLOT)
+	ADD	A,'1'
+	LD	(MSG_SLOT_NO),A
+	PRINTLN MSG_WIFI_FOUND
+
+	CALL	WIFI.UART_INIT
+	PRINTLN MSG_UART_READY
+
+	PRINTLN MSG_RESET_ESP
+	CALL	WIFI.ESP_RESET
+
+	PRINTLN MSG_INIT_ESP
+	CALL	WCOMMON.INIT_ESP
+
+	PRINTLN MSG_DONE
+	LD	B,0
+	JP	WCOMMON.EXIT
+
+NO_WIFI
+	PRINTLN MSG_WIFI_NOT_FOUND
+	LD	B,2
+	JP	WCOMMON.EXIT
+
+MSG_START
+	DB "NETRESET for SprinterESP / Sprinter-WiFi",0
+
+MSG_WIFI_FOUND
+	DB "Sprinter-WiFi found in ISA#"
+MSG_SLOT_NO
+	DB "n slot.",0
+
+MSG_WIFI_NOT_FOUND
+	DB "Sprinter-WiFi not found!",0
+
+MSG_UART_READY
+	DB "UART initialized.",0
+
+MSG_RESET_ESP
+	DB "Resetting ESP module.",0
+
+MSG_INIT_ESP
+	DB "Initializing ESP defaults.",0
+
+MSG_DONE
+	DB "NETRESET done.",0
+
+	ENDMODULE
+
+	INCLUDE "wcommon.asm"
+	INCLUDE "dss_error.asm"
+	INCLUDE "isa.asm"
+	INCLUDE "esplib.asm"
+
+	END MAIN.START

@@ -13,12 +13,14 @@ DIST_DIR_NAME="SPNET"
 # wterm.
 BUILD_APPS=(
   netprobe
+  netreset
+  wterm
 )
 
 # Text/documentation files copied to the distribution root.
 DIST_DOC_FILES=(
-  specs.md
   README.md
+  LICENSE
 )
 
 # Configuration examples copied to the distribution root.

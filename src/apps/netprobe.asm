@@ -53,7 +53,7 @@ START
 	PRINTLN MSG_UART_READY
 
 	LD	HL,CMD_AT
-	CALL	SEND_PROBE_CMD
+	CALL	SEND_PROBE_CMD_RECOVER
 
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_PROBE_CMD
@@ -61,7 +61,8 @@ START
 	LD	HL,CMD_GMR
 	CALL	SEND_PROBE_CMD
 	PRINTLN MSG_GMR_RESPONSE
-	PRINTLN WIFI.RS_BUFF
+	LD	HL,WIFI.RS_BUFF
+	CALL	PRINT_ESP_RESPONSE
 
 	PRINTLN MSG_DONE
 	LD	B,0
@@ -88,8 +89,61 @@ SEND_PROBE_CMD
 	LD	B,3
 	JP	WCOMMON.EXIT
 
+; ------------------------------------------------------
+; Send command in HL. If ESP does not answer, reset ESP once and retry.
+; This handles the common case where a previous terminal/debug session left the
+; module or UART stream in a bad state.
+; ------------------------------------------------------
+SEND_PROBE_CMD_RECOVER
+	PUSH	HL
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	JR	Z,.OK
+
+	PRINTLN MSG_RESETTING_ESP
+	CALL	WIFI.ESP_RESET
+	CALL	WIFI.UART_INIT
+	POP	HL
+	JP	SEND_PROBE_CMD
+
+.OK
+	POP	HL
+	RET
+
+; ------------------------------------------------------
+; Print ESP response buffer. WIFI.UART_TX_CMD strips CR and keeps LF as a line
+; separator, but DSS text output needs CR+LF for a new console line.
+; In: HL - zero-ended response buffer.
+; ------------------------------------------------------
+PRINT_ESP_RESPONSE
+	LD	A,(HL)
+	AND	A
+	JR	Z,.DONE
+	CP	10
+	JR	NZ,.PUT_CHAR
+	LD	A,13
+	CALL	PUT_CHAR
+	LD	A,10
+.PUT_CHAR
+	CALL	PUT_CHAR
+	INC	HL
+	JR	PRINT_ESP_RESPONSE
+.DONE
+	LD	A,13
+	CALL	PUT_CHAR
+	LD	A,10
+
+PUT_CHAR
+	PUSH	HL
+	LD	C,DSS_PUTCHAR
+	RST	DSS
+	POP	HL
+	RET
+
 MSG_START
-	DB "NETPROBE for SprinterESP / Sprinter-WiFi",13,10,0
+	DB "NETPROBE for SprinterESP / Sprinter-WiFi",0
 
 MSG_WIFI_FOUND
 	DB "Sprinter-WiFi found in ISA#"
@@ -101,6 +155,9 @@ MSG_WIFI_NOT_FOUND
 
 MSG_UART_READY
 	DB "UART initialized.",0
+
+MSG_RESETTING_ESP
+	DB "ESP did not answer, resetting module.",0
 
 MSG_GMR_RESPONSE
 	DB "ESP firmware response:",0

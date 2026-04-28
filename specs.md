@@ -216,7 +216,8 @@ Done when:
 - [x] Initialize UART at 115200 8N1 RTS/CTS.
 - [x] Send `AT`, `ATE0`, `AT+GMR`.
 - [x] Report firmware version and UART status.
-- [ ] Keep `wterm.exe` or equivalent terminal for manual diagnostics.
+- [x] Provide `netreset.exe` for manual ESP reset/reinitialization.
+- [x] Keep `wterm.exe` or equivalent terminal for manual diagnostics.
 
 Done when:
 
