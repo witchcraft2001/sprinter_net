@@ -1,0 +1,12 @@
+.DS_Store
+/build/
+/distr/*.zip
+/distr/*.img
+/NET.CFG
+/config/NET.CFG
+*.lst
+*.sld
+*.tap
+*.trd
+*.sna
+
