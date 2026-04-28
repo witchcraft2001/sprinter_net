@@ -235,12 +235,12 @@ Then run on MAME+jesperl and real hardware where available.
 
 ### Stage 2 - Shared Config Reader/Writer
 
-- [ ] Implement `NET.CFG` parser.
-- [ ] Implement config defaults.
+- [x] Implement `NET.CFG` parser.
+- [x] Implement config defaults.
 - [ ] Implement config writer.
-- [ ] Implement `netcfg.exe` skeleton.
+- [x] Implement `netcfg.exe` skeleton.
 - [ ] Allow manual SSID/password/DHCP/DNS/TZ entry.
-- [ ] Allow displaying current saved configuration.
+- [x] Allow displaying current saved configuration.
 - [ ] Warn before writing password to disk.
 
 Done when:

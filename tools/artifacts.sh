@@ -14,6 +14,7 @@ DIST_DIR_NAME="SPNET"
 BUILD_APPS=(
   netprobe
   netreset
+  netcfg
   wterm
 )
 

@@ -39,6 +39,7 @@ Current build output:
 
 - `NETPROBE.EXE`
 - `NETRESET.EXE`
+- `NETCFG.EXE`
 - `WTERM.EXE`
 
 ## Configuration
