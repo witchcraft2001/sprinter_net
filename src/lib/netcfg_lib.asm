@@ -8,6 +8,7 @@
 	MODULE NETCFG
 
 CFG_BUFF_SIZE	EQU 2048
+DSS_CREATE_OVERWRITE	EQU 0x0A
 
 ; ------------------------------------------------------
 ; Load NET.CFG from current directory and parse it.
@@ -46,6 +47,47 @@ LOAD
 	RET
 
 .READ_ERROR
+	PUSH	AF
+	LD	A,(CFG_FH)
+	LD	C,DSS_CLOSE_FILE
+	RST	DSS
+	POP	AF
+	SCF
+	RET
+
+; ------------------------------------------------------
+; Save current config values to NET.CFG.
+; Out: CF=0 - saved
+;      CF=1 - DSS error in A
+; ------------------------------------------------------
+SAVE
+	CALL	BUILD_SAVE_BUFFER
+	PUSH	HL
+	LD	HL,CFG_FILE
+	LD	C,DSS_CREATE_OVERWRITE
+	RST	DSS
+	POP	HL
+	RET	C
+
+	LD	(CFG_FH),A
+
+	LD	DE,CFG_BUFF
+	AND	A
+	SBC	HL,DE
+	EX	DE,HL						; DE = length
+
+	LD	A,(CFG_FH)
+	LD	HL,CFG_BUFF
+	LD	C,DSS_WRITE
+	RST	DSS
+	JR	C,.WRITE_ERROR
+
+	LD	A,(CFG_FH)
+	LD	C,DSS_CLOSE_FILE
+	RST	DSS
+	RET
+
+.WRITE_ERROR
 	PUSH	AF
 	LD	A,(CFG_FH)
 	LD	C,DSS_CLOSE_FILE
@@ -318,6 +360,103 @@ COPY_VALUE
 	LD	(DE),A
 	RET
 
+; ------------------------------------------------------
+; Build NET.CFG text in CFG_BUFF.
+; Out: HL - end of data
+; ------------------------------------------------------
+BUILD_SAVE_BUFFER
+	LD	HL,CFG_BUFF
+
+	LD	DE,SAVE_HEADER
+	CALL	APPEND_STR
+
+	LD	DE,KEY_SSID
+	LD	IX,CFG_SSID
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_PASS
+	LD	IX,CFG_PASS
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_DHCP
+	LD	IX,CFG_DHCP
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_IP
+	LD	IX,CFG_IP
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_GATEWAY
+	LD	IX,CFG_GATEWAY
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_NETMASK
+	LD	IX,CFG_NETMASK
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_DNS1
+	LD	IX,CFG_DNS1
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_DNS2
+	LD	IX,CFG_DNS2
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_TZ
+	LD	IX,CFG_TZ
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_NTP
+	LD	IX,CFG_NTP
+	CALL	APPEND_FIELD
+
+	LD	DE,KEY_AUTOJOIN
+	LD	IX,CFG_AUTOJOIN
+	CALL	APPEND_FIELD
+	RET
+
+; ------------------------------------------------------
+; Append key in DE, value in IX and CRLF to buffer at HL.
+; Out: HL - new end
+; ------------------------------------------------------
+APPEND_FIELD
+	CALL	APPEND_STR
+	CALL	APPEND_IX_STR
+	JP	APPEND_CRLF
+
+; ------------------------------------------------------
+; Append ASCIIZ from DE to buffer at HL.
+; Out: HL - new end
+; ------------------------------------------------------
+APPEND_STR
+	LD	A,(DE)
+	AND	A
+	RET	Z
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	JR	APPEND_STR
+
+; ------------------------------------------------------
+; Append ASCIIZ from IX to buffer at HL.
+; Out: HL - new end
+; ------------------------------------------------------
+APPEND_IX_STR
+	LD	A,(IX+0)
+	AND	A
+	RET	Z
+	LD	(HL),A
+	INC	HL
+	INC	IX
+	JR	APPEND_IX_STR
+
+APPEND_CRLF
+	LD	(HL),13
+	INC	HL
+	LD	(HL),10
+	INC	HL
+	RET
+
 CFG_FILE	DB "NET.CFG",0
 EMPTY		DB 0
 
@@ -339,6 +478,10 @@ KEY_DNS2	DB "DNS2=",0
 KEY_TZ		DB "TZ=",0
 KEY_NTP		DB "NTP=",0
 KEY_AUTOJOIN	DB "AUTOJOIN=",0
+
+SAVE_HEADER
+	DB "# Sprinter DSS Network Kit configuration",13,10
+	DB "# Password is stored in clear text.",13,10,0
 
 CFG_SSID_SIZE		EQU 33
 CFG_PASS_SIZE		EQU 65

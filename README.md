@@ -47,6 +47,15 @@ Current build output:
 Use `config/NET.CFG.sample` as the template for runtime network configuration.
 Do not commit real Wi-Fi credentials.
 
+On Sprinter DSS:
+
+```text
+NETCFG.EXE       show current NET.CFG values
+NETCFG.EXE /W    edit and save NET.CFG interactively
+```
+
+`NETCFG.EXE /W` stores the Wi-Fi password as clear text.
+
 ## License
 
 BSD 3-Clause. See `LICENSE`.

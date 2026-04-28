@@ -237,11 +237,11 @@ Then run on MAME+jesperl and real hardware where available.
 
 - [x] Implement `NET.CFG` parser.
 - [x] Implement config defaults.
-- [ ] Implement config writer.
+- [x] Implement config writer.
 - [x] Implement `netcfg.exe` skeleton.
-- [ ] Allow manual SSID/password/DHCP/DNS/TZ entry.
+- [x] Allow manual SSID/password/DHCP/DNS/TZ entry.
 - [x] Allow displaying current saved configuration.
-- [ ] Warn before writing password to disk.
+- [x] Warn before writing password to disk.
 
 Done when:
 
