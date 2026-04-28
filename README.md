@@ -40,6 +40,7 @@ Current build output:
 - `NETPROBE.EXE`
 - `NETRESET.EXE`
 - `NETCFG.EXE`
+- `NETUP.EXE`
 - `WTERM.EXE`
 
 ## Configuration
@@ -52,6 +53,7 @@ On Sprinter DSS:
 ```text
 NETCFG.EXE       show current NET.CFG values
 NETCFG.EXE /W    edit and save NET.CFG interactively
+NETUP.EXE        initialize ESP and connect using NET.CFG
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.

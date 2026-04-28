@@ -251,14 +251,14 @@ Done when:
 
 ### Stage 3 - Wi-Fi Bring-Up
 
-- [ ] Implement `net_ensure_wifi`.
-- [ ] Use `AT+CWMODE_CUR=1`.
-- [ ] Use `AT+CWJAP?` to detect existing connection.
-- [ ] Use `AT+CWJAP_CUR="ssid","password"` when reconnection is needed.
-- [ ] Apply DHCP/static IP settings.
-- [ ] Apply DNS settings where supported.
-- [ ] Implement `netup.exe`.
-- [ ] Display current SSID, IP, gateway, netmask and DNS.
+- [x] Implement initial `net_ensure_wifi` flow inside `netup.exe`.
+- [x] Use `AT+CWMODE_CUR=1`.
+- [x] Use `AT+CWJAP?` to display existing connection state.
+- [x] Use `AT+CWJAP_CUR="ssid","password"` to connect.
+- [x] Apply DHCP/static IP settings.
+- [x] Apply DNS settings where supported.
+- [x] Implement `netup.exe`.
+- [x] Display current AP state and IP information.
 
 Done when:
 

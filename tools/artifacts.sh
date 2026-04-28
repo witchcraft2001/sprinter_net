@@ -15,6 +15,7 @@ BUILD_APPS=(
   netprobe
   netreset
   netcfg
+  netup
   wterm
 )
 
