@@ -42,6 +42,7 @@ Current build output:
 - `NETCFG.EXE`
 - `NETUP.EXE`
 - `TCPTEST.EXE`
+- `PING.EXE`
 - `WTERM.EXE`
 
 ## Configuration
@@ -60,6 +61,7 @@ NETCFG.EXE       show current NET.CFG values
 NETCFG.EXE /W    edit and save NET.CFG interactively
 NETUP.EXE        initialize ESP and connect using NET.CFG
 TCPTEST.EXE      connect to example.com:80 and print a short HTTP response
+PING.EXE host    test host reachability using ESP-AT AT+PING
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.

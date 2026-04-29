@@ -10,13 +10,14 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETUP.EXE` initializes the ESP module and connects to Wi-Fi using `NET.CFG`.
 - `TCPTEST.EXE` opens a TCP connection to `example.com:80` and prints a short
   HTTP response. Use it after `NETUP`.
+- `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a
   diagnostic tool, not a network bring-up command.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
 
-Planned utilities include `PING.EXE`, `WGET.EXE`, `NTP.EXE`, `TFTP.EXE`,
-`FTP.EXE`, `CHAT.EXE` and `IRC.EXE`.
+Planned utilities include `WGET.EXE`, `NTP.EXE`, `TFTP.EXE`, `FTP.EXE`,
+`CHAT.EXE` and `IRC.EXE`.
 
 ## Installation
 
@@ -59,6 +60,7 @@ Typical sequence:
 NETCFG.EXE /W
 NETUP.EXE
 TCPTEST.EXE
+PING.EXE example.com
 ```
 
 ## Configuration File
@@ -88,7 +90,8 @@ Use this order during normal testing:
 1. `NETCFG.EXE` - verify saved settings.
 2. `NETUP.EXE` - connect to Wi-Fi.
 3. `TCPTEST.EXE` - verify TCP access.
-4. Run protocol tools such as future `PING.EXE`, `WGET.EXE` or `NTP.EXE`.
+4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
+5. Run protocol tools such as future `WGET.EXE` or `NTP.EXE`.
 
 Use this order when something is stuck:
 
@@ -106,6 +109,30 @@ and repeat `NETPROBE.EXE` for a clean firmware diagnostic.
 
 `WTERM.EXE` is useful for manual ESP-AT checks. After using the terminal, run
 `NETRESET.EXE` before automated tools if the ESP stream looks confused.
+
+## Exit Codes
+
+Utilities return a DSS process status in the exit code register used by
+`DSS_EXIT`.
+
+Common status codes for automation-friendly utilities:
+
+- `0` - success.
+- `1` - invalid command line or usage error.
+- `2` - Sprinter-WiFi hardware was not found.
+- `3` - ESP communication error, timeout, unsupported command, unreachable
+  host, or unexpected ESP response.
+- `4` - configuration error, for example missing or invalid `NET.CFG`.
+
+Current utility-specific notes:
+
+- `PING.EXE` returns `0` only when `+PING:<time_ms>` was received.
+- `NETUP.EXE` returns `4` when `NET.CFG` is missing, unreadable or lacks SSID.
+- `NETRESET.EXE` returns `0` on successful reset/reinitialization, `2` when
+  hardware is not found and `3` on ESP communication failure.
+
+This allows DSS batch scenarios to run `PING.EXE router-or-host` before starting
+another network command and stop when the status is non-zero.
 
 ## Build From Source
 

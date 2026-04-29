@@ -47,7 +47,9 @@ START
 	JP	WCOMMON.EXIT
 
 .DSS_ERROR
-	CALL	DSS_ERROR.EPRINT
+	CALL	PRINT_CONFIG_DSS_ERROR
+	LD	B,4
+	JP	WCOMMON.EXIT
 
 .CFG_LOADED
 	LD	A,(NETCFG.CFG_SSID)
@@ -116,6 +118,19 @@ NO_WIFI
 	PRINTLN MSG_WIFI_NOT_FOUND
 	LD	B,2
 	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; Print NET.CFG DSS load error without letting DSS_ERROR.EPRINT choose the exit
+; status. NETUP uses status 4 for all configuration problems.
+; In: A - DSS error code.
+; ------------------------------------------------------
+PRINT_CONFIG_DSS_ERROR
+	PUSH	AF
+	PRINT	MSG_CFG_DSS_ERROR
+	POP	AF
+	CALL	DSS_ERROR.GET_ERR_MSG
+	PRINTLN_HL
+	RET
 
 ; ------------------------------------------------------
 ; Apply DHCP or static station IP mode.
@@ -408,6 +423,8 @@ MSG_NO_CFG
 	DB "NET.CFG not found. Run NETCFG /W first.",0
 MSG_NO_SSID
 	DB "SSID is empty. Run NETCFG /W first.",0
+MSG_CFG_DSS_ERROR
+	DB "NET.CFG error: ",0
 MSG_WIFI_FOUND
 	DB "Sprinter-WiFi found in ISA#"
 MSG_SLOT_NO

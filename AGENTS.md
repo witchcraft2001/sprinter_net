@@ -67,6 +67,21 @@ Preserve existing style. Assembly uses tabs for instruction alignment, uppercase
 
 No automated test suite is present. For DSS assembly, assemble every touched entry program and smoke-test on Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed program and verify behavior against an ESP8266 running ESP-AT firmware. For hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify regenerated PDFs, BOMs, and Gerbers before publishing.
 
+## Exit Status Guidelines
+
+DSS utilities that can reasonably be used from batch scripts must return a
+meaningful status through `DSS_EXIT`. Use `B=0` for success. Prefer these common
+non-zero codes unless a program documents a stronger reason to differ:
+
+- `1` - invalid command line or usage error.
+- `2` - Sprinter-WiFi hardware was not found.
+- `3` - ESP communication error, timeout, unsupported command, unreachable
+  host, or unexpected ESP response.
+- `4` - configuration error, for example missing or invalid `NET.CFG`.
+
+Document utility-specific exit status behavior in `docs/USAGE.md` whenever a
+new automation-friendly program is added or changed.
+
 ## Debugging Environment
 
 Primary debugging uses the MAME Sprinter emulator with the local `jesperl` software ESP emulator at `/Users/dmitry/dev/zx/sprinter/mame_esp/jesperl` (<https://sourceforge.net/projects/jesperl/files/>). Real-hardware debugging may use an ESP12-F/ESP8266 module connected to a COM port and flashed with ESP-AT firmware. `jesperl` does not fully emulate the needed behavior, so tasks may require improving or extending its functionality before application bugs can be isolated reliably.
@@ -99,9 +114,9 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
-- Support diagnostic commands planned for `ping.exe`, especially
-  `AT+PING="host"` with realistic `+PING:<time_ms>` and `OK` responses, plus
-  `ERROR` for invalid or unreachable hosts.
+- Support diagnostic commands used by `ping.exe`, especially `AT+PING="host"`
+  with realistic `+PING:<time_ms>` and `OK` responses, plus `ERROR` for
+  invalid or unreachable hosts.
 - Preserve enough emulator state to make the sequence realistic: selected SSID,
   connected/disconnected state, DHCP enabled flag, station IP/gateway/netmask,
   DNS servers.

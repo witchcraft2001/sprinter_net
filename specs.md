@@ -48,6 +48,8 @@ Later expansion targets:
 - Do not reset ESP on every program start unless recovery requires it.
 - Keep protocol implementations separate from UART/AT transport.
 - Treat received TCP/UDP data as binary, not ASCIIZ strings.
+- Return meaningful DSS exit status from utilities that can be used by
+  automation/batch scenarios.
 - Make the first implementation narrow and reliable before adding protocol
   features.
 
@@ -311,9 +313,10 @@ Done when:
 - [ ] Check whether target ESP-AT firmware supports `AT+PING="host"`.
 - [ ] Add `jesperl` support for `AT+PING="host"` before relying on emulator
   results.
-- [ ] Implement `ping.exe host`.
-- [ ] Parse successful `+PING:<time_ms>` responses.
-- [ ] Print clear timeout/error output when ICMP is unavailable or host fails.
+- [x] Implement `ping.exe host`.
+- [x] Parse successful `+PING:<time_ms>` responses.
+- [x] Print clear timeout/error output when ICMP is unavailable or host fails.
+- [x] Return DSS exit status suitable for batch/script checks.
 - [ ] Consider optional TCP connect fallback for hosts/firmware without
   `AT+PING`, but label it as TCP reachability, not ICMP ping.
 
