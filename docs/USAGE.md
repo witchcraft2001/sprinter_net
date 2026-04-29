@@ -102,6 +102,10 @@ Use this order when something is stuck:
 
 ## Diagnostic Notes
 
+Network kit utilities do not clear the screen on startup. They continue
+printing at the current DSS console cursor position, so they can be used in
+batch logs and command sequences without erasing previous output.
+
 `NETPROBE.EXE` sends `AT`, `ATE0` and `AT+GMR`. It now retries each command once
 after an ESP reset. If `NETPROBE.EXE` fails after `NETUP.EXE` and `TCPTEST.EXE`
 have already succeeded, the network path may still be fine; run `NETRESET.EXE`

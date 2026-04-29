@@ -105,7 +105,7 @@ DR_NEXT
 	;;ENDIF
 
 ; ------------------------------------------------------
-; Store old video mode, set 80x32 and clear
+; Store old video mode and set 80x32 without clearing the console.
 ; ------------------------------------------------------
 	;;IFUSED INIT_VMODE
 INIT_VMODE
@@ -121,13 +121,6 @@ INIT_VMODE
 	LD		A,DSS_VMOD_T80
 	RST		DSS
 IVM_ALRDY_80
-	; Clear screen
-	LD		A,' '
-	LD		BC,0x0700 + DSS_CLEAR
-	LD		HL,0x2050
-	LD		DE,0x0000
-	RST		DSS
-
 	POP		HL,DE,BC
 	RET
 	;;ENDIF

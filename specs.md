@@ -50,6 +50,8 @@ Later expansion targets:
 - Treat received TCP/UDP data as binary, not ASCIIZ strings.
 - Return meaningful DSS exit status from utilities that can be used by
   automation/batch scenarios.
+- Do not clear the DSS console on startup; tools should append output at the
+  current cursor position for scripts and logs.
 - Make the first implementation narrow and reliable before adding protocol
   features.
 

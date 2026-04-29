@@ -207,8 +207,8 @@ BUILD_PING_CMD
 	JP	APPEND_STR
 
 ; ------------------------------------------------------
-; Print parsed +PING response or raw ESP response if format is unexpected.
-; Out: CF=0 - valid +PING response found, CF=1 - unexpected response format.
+; Print parsed +PING response or raw ESP response if +PING is missing.
+; Out: CF=0 - valid +PING response found, CF=1 - no +PING result.
 ; ------------------------------------------------------
 PRINT_PING_RESULT
 	LD	HL,WIFI.RS_BUFF
@@ -230,7 +230,7 @@ PRINT_PING_RESULT
 	AND	A
 	RET
 .RAW
-	PRINTLN MSG_RAW_RESPONSE
+	PRINTLN MSG_NO_PING_RESULT
 	LD	HL,WIFI.RS_BUFF
 	CALL	PRINT_ESP_RESPONSE
 	SCF
@@ -333,8 +333,8 @@ MSG_REPLY
 	DB "Reply time: ",0
 MSG_MS
 	DB " ms",0
-MSG_RAW_RESPONSE
-	DB "Unexpected ESP response:",0
+MSG_NO_PING_RESULT
+	DB "No +PING result in ESP response:",0
 MSG_PING_UNSUPPORTED
 	DB "ESP-AT PING failed or is not supported by firmware/emulator.",0
 MSG_DONE
