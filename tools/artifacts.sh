@@ -22,6 +22,7 @@ BUILD_APPS=(
 # Text/documentation files copied to the distribution root.
 DIST_DOC_FILES=(
   README.md
+  docs/USAGE.md
   LICENSE
 )
 

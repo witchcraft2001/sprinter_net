@@ -91,7 +91,21 @@ boundaries should stay close to this shape.
 
 ## Shared Configuration
 
-Default config path:
+Recommended package install directory:
+
+```text
+C:\NET
+```
+
+The directory should contain the network utilities, user-facing documentation
+and runtime `NET.CFG`. OS distributions may preinstall the package elsewhere,
+but all tools should share one package/config location instead of each utility
+inventing its own.
+
+Users should add the package directory to the DSS `PATH` environment variable,
+or change to that directory before running the tools.
+
+Default config path for the first implementation:
 
 ```text
 NET.CFG
@@ -221,6 +235,8 @@ Done when:
 - [x] Detect SprinterESP in ISA slot.
 - [x] Initialize UART at 115200 8N1 RTS/CTS.
 - [x] Send `AT`, `ATE0`, `AT+GMR`.
+- [x] Retry each probe command once after ESP reset to recover from a confused
+  UART/AT stream.
 - [x] Report firmware version and UART status.
 - [x] Provide `netreset.exe` for manual ESP reset/reinitialization.
 - [x] Keep `wterm.exe` or equivalent terminal for manual diagnostics.
