@@ -57,6 +57,7 @@ TCPTEST.EXE host port path
                  test an HTTP path on a custom host and port
 PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url file download an HTTP/1.0 URL to a local file
+                  URL may omit http://; WGET will assume plain HTTP
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 ```
 

@@ -68,9 +68,9 @@ START
 	AND	A
 	JR	Z,.CFG_OK
 	CP	RES_ERROR
-	JR	Z,.UNSUPPORTED
+	JP	Z,.UNSUPPORTED
 	CP	RES_FAIL
-	JR	Z,.UNSUPPORTED
+	JP	Z,.UNSUPPORTED
 	JP	COMM_ERROR_A
 
 .CFG_OK
@@ -92,6 +92,9 @@ START
 	DEC	(HL)
 	JR	NZ,.RETRY
 	PRINTLN MSG_PARSE_ERROR
+	PRINTLN MSG_RAW_RESPONSE
+	LD	HL,WIFI.RS_BUFF
+	CALL	PRINT_ESP_RESPONSE
 	LD	B,3
 	JP	WCOMMON.EXIT
 
@@ -454,6 +457,28 @@ PRINT_HL_DEC
 	PRINT	NUM_BUFF
 	RET
 
+; ------------------------------------------------------
+; Print ESP response buffer with LF -> CRLF conversion.
+; ------------------------------------------------------
+PRINT_ESP_RESPONSE
+	LD	A,(HL)
+	AND	A
+	JR	Z,.DONE
+	CP	10
+	JR	NZ,.PUT_CHAR
+	LD	A,13
+	CALL	PUT_CHAR
+	LD	A,10
+.PUT_CHAR
+	CALL	PUT_CHAR
+	INC	HL
+	JR	PRINT_ESP_RESPONSE
+.DONE
+	LD	A,13
+	CALL	PUT_CHAR
+	LD	A,10
+	JP	PUT_CHAR
+
 PUT_CHAR
 	PUSH	HL
 	LD	C,DSS_PUTCHAR
@@ -501,6 +526,8 @@ MSG_UNSUPPORTED
 	DB "ESP SNTP command is unsupported or failed.",0
 MSG_PARSE_ERROR
 	DB "No valid SNTP time received.",0
+MSG_RAW_RESPONSE
+	DB "Raw ESP response:",0
 MSG_SET_ERROR
 	DB "DSS SETTIME failed.",0
 MSG_COMM_ERROR

@@ -11,7 +11,7 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `TCPTEST.EXE [host [port [path]]]` opens a TCP connection and prints a short
   HTTP response. Use it after `NETUP`.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
-- `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
+- `WGET.EXE [http://]host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
 - `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
   `NET.CFG`.
@@ -68,7 +68,7 @@ NETCFG.EXE /W
 NETUP.EXE
 TCPTEST.EXE
 PING.EXE example.com
-WGET.EXE http://example.com/ INDEX.HTM
+WGET.EXE example.com INDEX.HTM
 NTP.EXE
 ```
 
@@ -103,7 +103,7 @@ Use this order during normal testing:
 2. `NETUP.EXE` - connect to Wi-Fi.
 3. `TCPTEST.EXE` - verify TCP access.
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
-5. `WGET.EXE http://example.com/ INDEX.HTM` - verify HTTP download.
+5. `WGET.EXE example.com INDEX.HTM` - verify HTTP download.
 6. `NTP.EXE` - set DSS time from ESP SNTP.
 7. Run protocol tools such as future `TFTP.EXE`.
 
@@ -168,6 +168,7 @@ Current utility-specific notes:
 Current `WGET.EXE` limitations:
 
 - Supports plain `http://` only, not HTTPS.
+- Adds `http://` automatically when the URL has no scheme and prints a warning.
 - Accepts HTTP 2xx status only.
 - Does not yet detect redirects, chunked transfer encoding or gzip content
   encoding.

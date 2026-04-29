@@ -4,12 +4,24 @@ Purpose
   Downloads a plain HTTP resource through ESP-AT TCP to a local DSS file.
 
 Usage
-  WGET.EXE http://host[:port]/path FILE
+  WGET.EXE [http://]host[:port]/path FILE
 
 Examples
   WGET.EXE http://example.com/ INDEX.HTM
   WGET.EXE http://example.com EXAMPLE.HTM
+  WGET.EXE example.com EXAMPLE.HTM
   WGET.EXE http://192.168.1.10:8080/file.txt FILE.TXT
+
+Output
+  WGET prints the URL received on the command line, the normalized HTTP source
+  address used for the connection, and the output file name.
+
+  If the URL does not start with http://, WGET treats it as a plain HTTP URL
+  and prints a warning that http:// was assumed.
+
+  When the server sends a Content-Length header, WGET prints the expected body
+  size before writing the body and prints the downloaded byte count when done.
+  If no Content-Length header is present, the size is shown as unknown.
 
 Current limitations
   Plain http:// only. HTTPS is not supported.

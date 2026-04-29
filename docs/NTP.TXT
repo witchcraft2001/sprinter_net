@@ -30,6 +30,10 @@ Notes
   reports that SNTP is unsupported in the emulator, test on real ESP-AT
   firmware or update jesperl according to the project emulator requirements.
 
+  If the ESP command succeeds but the time line cannot be parsed, NTP prints the
+  raw ESP response after the error. Use that output to distinguish missing
+  emulator support, an unexpected ESP-AT response format or a time sync failure.
+
 Exit status
   0  Time was received and DSS SETTIME succeeded.
   2  Sprinter-WiFi hardware was not found.
