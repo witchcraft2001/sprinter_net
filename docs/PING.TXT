@@ -1,0 +1,28 @@
+PING.EXE - Host reachability diagnostic
+
+Purpose
+  Uses ESP-AT AT+PING to check whether a host is reachable and to print the
+  response time reported by the ESP firmware.
+
+Usage
+  PING.EXE host
+
+Examples
+  PING.EXE 8.8.8.8
+  PING.EXE example.com
+
+Behavior
+  PING succeeds only when the ESP response contains a numeric +PING:<time_ms>
+  result. If the firmware or emulator returns another response, PING prints the
+  raw ESP response and exits with an error.
+
+Exit status
+  0  +PING:<time_ms> was received.
+  1  Invalid command line.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP communication error, unsupported command or unreachable host.
+
+Notes
+  Some ESP-AT firmware builds may not support AT+PING. In that case this tool
+  reports the ESP error instead of emulating ICMP in software.
+

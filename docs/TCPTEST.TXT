@@ -1,0 +1,28 @@
+TCPTEST.EXE - TCP smoke test
+
+Purpose
+  Opens a TCP connection through ESP-AT and prints a short HTTP response. This
+  verifies that basic TCP open/send/receive works after NETUP.
+
+Notes
+  TCPTEST is a smoke test, not a downloader. Console output is intentionally
+  limited to a few receive blocks, so long HTML pages may be truncated.
+
+Usage
+  TCPTEST.EXE
+
+Current target
+  example.com:80
+
+Typical sequence
+  NETUP.EXE
+  TCPTEST.EXE
+
+Role
+  TCPTEST is a diagnostic utility. It is useful before testing higher-level
+  clients such as WGET, FTP, TFTP or IRC.
+
+Exit status
+  0  Test completed.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP/TCP communication error.

@@ -1,0 +1,35 @@
+NETUP.EXE - Bring the network up
+
+Purpose
+  Initializes the SprinterESP / Sprinter-WiFi UART path, configures the ESP-AT
+  module for station mode, applies NET.CFG settings and connects to Wi-Fi.
+
+Usage
+  NETUP.EXE
+
+Before running
+  Run NETCFG.EXE /W first and save a valid NET.CFG with SSID and PASS.
+
+Typical sequence
+  NETCFG.EXE /W
+  NETUP.EXE
+  TCPTEST.EXE
+  PING.EXE example.com
+
+Behavior
+  NETUP prefers ESP-AT _CUR commands so normal operation changes only the
+  current ESP session and does not write settings to ESP flash. Legacy commands
+  are used only as fallback.
+
+  DHCP is enabled when DHCP=1. Static IP, gateway and netmask are applied when
+  DHCP=0. DNS settings are optional because ESP-AT firmware variants differ.
+
+  BAUD controls the UART speed used by automated tools after NETUP configures
+  the ESP module with AT+UART_CUR. Supported values are 115200, 57600, 38400,
+  19200 and 9600. Use 57600 or 38400 if 115200 loses bytes on your setup.
+
+Exit status
+  0  Network bring-up completed.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP communication error.
+  4  NET.CFG is missing, unreadable or incomplete.

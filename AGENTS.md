@@ -114,6 +114,11 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
+- `AT+CIPSTART` must not block the whole emulator process on OS-level TCP
+  connect. Use non-blocking connect or a short explicit timeout, keep accepting
+  Z-side input while a connection is pending, and let ESP reset/close commands
+  abort the pending connect. Otherwise MAME appears to have a wedged ESP after
+  a client tries an unreachable host.
 - Support diagnostic commands used by `ping.exe`, especially `AT+PING="host"`
   with realistic `+PING:<time_ms>` and `OK` responses, plus `ERROR` for
   invalid or unreachable hosts.

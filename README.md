@@ -25,17 +25,7 @@ Current status: project foundation, shared config, Wi-Fi bring-up and initial
 TCP client core are in place. Implementation plan is tracked in `specs.md`.
 User-facing setup notes are in `docs/USAGE.md`.
 
-## Build
-
-```sh
-make build
-make package
-make image
-```
-
-Generated files are written to `build/` and `distr/`.
-
-Current build output:
+## Package Contents
 
 - `NETPROBE.EXE`
 - `NETRESET.EXE`
@@ -69,6 +59,9 @@ WGET.EXE url file download an HTTP/1.0 URL to a local file
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.
 `NETUP.EXE` uses ESP-AT `_CUR` commands first, so normal setup does not write
 settings to ESP flash; legacy commands are used only as fallback.
+`BAUD` in `NET.CFG` may be set to `115200`, `57600`, `38400`, `19200` or
+`9600`; automated tools use it after `NETUP.EXE` configures the ESP with
+`AT+UART_CUR`.
 
 ## License
 

@@ -60,10 +60,10 @@ LSR_THRE        EQU	0x20								; Transmitter Holding Register Empty
 LSR_TEMT        EQU	0x40								; Transmitter empty
 LSR_RCVE        EQU	0x80								; Error in receiver FIFO
 
-; Speed divider for UART 
-BAUD_RATE 		EQU 115200                    			; Скорость соединения с ESP8266
-XIN_FREQ 		EQU 14745600                  			; Частота генератора для TL16C550
-DIVISOR 		EQU XIN_FREQ / (BAUD_RATE * 16)  		; Делитель частоты для передачи/приема данных
+; Speed divider for UART
+BAUD_RATE 		EQU 115200                    			; Default ESP8266 UART speed
+XIN_FREQ 		EQU 14745600                  			; TL16C550 oscillator frequency
+DEFAULT_DIVISOR	EQU XIN_FREQ / (BAUD_RATE * 16)  		; 8 for 115200
 
 RS_BUFF_SIZE 	EQU	2048								; Receive buffer size
 MAX_BUFF_SIZE 	EQU	16384
@@ -162,15 +162,29 @@ UART_INIT
 
 	; Set 8bit word and Divisor for speed
 	LD 		(IX+_LCR), LCR_DLAB | LCR_WL8				; Enable Baud rate latch
-	LD 		(IX+_DLL), DIVISOR							; 8 - 115200
+	LD		A,(UART_DIVISOR)
+	LD 		(IX+_DLL), A
 	XOR 	A
 	LD		(IX+_DLM), A
 	LD 		(IX+_LCR), LCR_WL8							; 8bit word, disable latch
+	LD		(IX+_MCR), MCR_AFE | MCR_RTS				; Enable RTS/CTS auto flow, keep ESP out of reset
 	CALL 	ISA.ISA_CLOSE
 
 	POP 	IX,AF
 	RET
 	;ENDIF
+
+; ------------------------------------------------------
+; Set UART baud divisor.
+; Inp: A - low byte divisor for TL16C550.
+; ------------------------------------------------------
+UART_SET_DIVISOR
+	LD		(UART_DIVISOR),A
+	RET
+
+UART_SET_DEFAULT_DIVISOR
+	LD		A,DEFAULT_DIVISOR
+	JR		UART_SET_DIVISOR
 
 ; ------------------------------------------------------
 ; Read TL16C550 register
@@ -521,6 +535,8 @@ MSG_RCV_EMPTY
 
 ; Receive block size
 BSIZE		DW 0
+
+UART_DIVISOR	DB DEFAULT_DIVISOR
 
 ; Received message for OK result
 MSG_OK		DB "OK", 0

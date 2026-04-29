@@ -21,6 +21,10 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 Planned utilities include `NTP.EXE`, `TFTP.EXE`, `FTP.EXE`, `CHAT.EXE` and
 `IRC.EXE`.
 
+Each current utility also has a short standalone TXT reference file:
+`NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TCPTEST.TXT`,
+`PING.TXT`, `WGET.TXT` and `WTERM.TXT`.
+
 ## Installation
 
 The package is distributed as a ZIP archive or may be preinstalled with the OS.
@@ -83,6 +87,9 @@ Important keys:
 - `IP`, `GATEWAY`, `NETMASK` - used when `DHCP=0`.
 - `DNS1`, `DNS2` - DNS servers.
 - `TZ`, `NTP` - reserved for the planned time utility.
+- `BAUD` - UART speed used after `NETUP.EXE` configures ESP with
+  `AT+UART_CUR`. Supported values: `115200`, `57600`, `38400`, `19200`,
+  `9600`. Use `57600` or `38400` if `115200` loses bytes on your setup.
 
 Do not distribute a real `NET.CFG` with private Wi-Fi credentials.
 
@@ -118,6 +125,10 @@ and repeat `NETPROBE.EXE` for a clean firmware diagnostic.
 `WTERM.EXE` is useful for manual ESP-AT checks. After using the terminal, run
 `NETRESET.EXE` before automated tools if the ESP stream looks confused.
 
+`NETRESET.EXE` and `WTERM.EXE` are recovery/manual tools and use the default
+115200 startup speed after ESP reset. Automated clients use `BAUD` from
+`NET.CFG` when the file is available.
+
 ## Exit Codes
 
 Utilities return a DSS process status in the exit code register used by
@@ -151,15 +162,3 @@ Current `WGET.EXE` limitations:
 
 This allows DSS batch scenarios to run `PING.EXE router-or-host` before starting
 another network command and stop when the status is non-zero.
-
-## Build From Source
-
-Host-side build commands:
-
-```sh
-make build
-make package
-make image
-```
-
-Generated files are written to `build/` and `distr/`.

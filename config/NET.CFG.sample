@@ -30,3 +30,8 @@ NTP=pool.ntp.org
 #
 # AUTOJOIN: 1 = tools may connect automatically using this config.
 AUTOJOIN=1
+#
+# BAUD: UART speed used after NETUP configures ESP with AT+UART_CUR.
+# Supported values: 115200, 57600, 38400, 19200, 9600.
+# Use 57600 or 38400 if 115200 loses bytes on your setup.
+BAUD=115200

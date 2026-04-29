@@ -33,7 +33,8 @@ Later expansion targets:
 
 - SprinterESP is exposed as a TL16C550 UART on ISA COM3, base port `0x03E8`,
   memory mapped at `0xC3E8` through Sprinter ISA access.
-- Default UART mode is `115200,8,1,0,3`.
+- Default UART mode is `115200,8,1,0,3`, with runtime `NET.CFG` override via
+  `BAUD=115200|57600|38400|19200|9600`.
 - Hardware RTS/CTS flow control is required for reliable operation at 115200.
 - ESP firmware baseline is ESP8266 ESP-AT 2.2.1 or compatible.
 - DSS programs use standard DSS EXE format and DSS file APIs.
@@ -237,7 +238,8 @@ Done when:
 - [x] Port or copy minimal `isa.asm`, UART definitions and utility code.
 - [x] Implement a small `netprobe.exe`.
 - [x] Detect SprinterESP in ISA slot.
-- [x] Initialize UART at 115200 8N1 RTS/CTS.
+- [x] Initialize UART at 115200 8N1 RTS/CTS by default.
+- [x] Support runtime UART speed selection through `BAUD` in `NET.CFG`.
 - [x] Send `AT`, `ATE0`, `AT+GMR`.
 - [x] Retry each probe command once after ESP reset to recover from a confused
   UART/AT stream.
@@ -283,6 +285,7 @@ Done when:
 - [x] Use `AT+CWJAP_CUR="ssid","password"` to connect.
 - [x] Apply current-session ESP UART flow-control settings before network
   commands so `netup.exe` does not depend on a previous `netreset.exe`.
+- [x] Apply configured current-session ESP UART speed with `AT+UART_CUR`.
 - [x] Apply DHCP/static IP settings.
 - [x] Apply DNS settings where supported.
 - [x] Prefer `_CUR` ESP-AT commands and use legacy commands only as fallback.

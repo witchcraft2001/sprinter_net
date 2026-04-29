@@ -25,6 +25,14 @@ BUILD_APPS=(
 DIST_DOC_FILES=(
   README.md
   docs/USAGE.md
+  docs/NETCFG.TXT
+  docs/NETUP.TXT
+  docs/NETRESET.TXT
+  docs/NETPROBE.TXT
+  docs/TCPTEST.TXT
+  docs/PING.TXT
+  docs/WGET.TXT
+  docs/WTERM.TXT
   LICENSE
 )
 

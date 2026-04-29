@@ -1,0 +1,36 @@
+WGET.EXE - HTTP downloader
+
+Purpose
+  Downloads a plain HTTP resource through ESP-AT TCP to a local DSS file.
+
+Usage
+  WGET.EXE http://host[:port]/path FILE
+
+Examples
+  WGET.EXE http://example.com/ INDEX.HTM
+  WGET.EXE http://example.com EXAMPLE.HTM
+  WGET.EXE http://192.168.1.10:8080/file.txt FILE.TXT
+
+Current limitations
+  Plain http:// only. HTTPS is not supported.
+  HTTP 2xx responses only.
+  Redirects are not followed.
+  Chunked transfer and gzip content are not decoded yet.
+  Unsupported responses print the received HTTP status line when it is present.
+
+Testing notes
+  WGET depends on TCP receive behavior and is currently the most sensitive tool
+  when running under MAME with jesperl. Prefer a local HTTP server known to
+  return a simple HTTP/1.0-compatible response while debugging.
+  When a Content-Length header is present, WGET verifies that the downloaded
+  body size matches it. A mismatch usually means bytes were lost before WGET
+  could drain the UART. In MAME/jesperl this can point to missing RTS/CTS
+  emulation or oversized +IPD bursts. Try a lower BAUD value in NET.CFG or use
+  a jesperl version that paces +IPD output.
+
+Exit status
+  0  File body downloaded.
+  1  Invalid command line or URL.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP/TCP/HTTP error.
+  5  Local output file error.
