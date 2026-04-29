@@ -8,22 +8,23 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETCFG.EXE` shows current `NET.CFG` values.
 - `NETCFG.EXE /W` edits and saves `NET.CFG`.
 - `NETUP.EXE` initializes the ESP module and connects to Wi-Fi using `NET.CFG`.
-- `TCPTEST.EXE` opens a TCP connection to `example.com:80` and prints a short
+- `TCPTEST.EXE [host [port [path]]]` opens a TCP connection and prints a short
   HTTP response. Use it after `NETUP`.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
+- `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
+  `NET.CFG`.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a
   diagnostic tool, not a network bring-up command.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
 
-Planned utilities include `NTP.EXE`, `TFTP.EXE`, `FTP.EXE`, `CHAT.EXE` and
-`IRC.EXE`.
+Planned utilities include `TFTP.EXE`, `FTP.EXE`, `CHAT.EXE` and `IRC.EXE`.
 
 Each current utility also has a short standalone TXT reference file:
 `NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TCPTEST.TXT`,
-`PING.TXT`, `WGET.TXT` and `WTERM.TXT`.
+`PING.TXT`, `WGET.TXT`, `NTP.TXT` and `WTERM.TXT`.
 
 ## Installation
 
@@ -68,6 +69,7 @@ NETUP.EXE
 TCPTEST.EXE
 PING.EXE example.com
 WGET.EXE http://example.com/ INDEX.HTM
+NTP.EXE
 ```
 
 ## Configuration File
@@ -86,7 +88,7 @@ Important keys:
 - `DHCP` - `1` for DHCP, `0` for static IP.
 - `IP`, `GATEWAY`, `NETMASK` - used when `DHCP=0`.
 - `DNS1`, `DNS2` - DNS servers.
-- `TZ`, `NTP` - reserved for the planned time utility.
+- `TZ`, `NTP` - used by `NTP.EXE`.
 - `BAUD` - UART speed used after `NETUP.EXE` configures ESP with
   `AT+UART_CUR`. Supported values: `115200`, `57600`, `38400`, `19200`,
   `9600`. Use `57600` or `38400` if `115200` loses bytes on your setup.
@@ -102,7 +104,15 @@ Use this order during normal testing:
 3. `TCPTEST.EXE` - verify TCP access.
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
 5. `WGET.EXE http://example.com/ INDEX.HTM` - verify HTTP download.
-6. Run protocol tools such as future `NTP.EXE`.
+6. `NTP.EXE` - set DSS time from ESP SNTP.
+7. Run protocol tools such as future `TFTP.EXE`.
+
+For local receive tests, point `TCPTEST.EXE` at a small file on a local HTTP
+server:
+
+```text
+TCPTEST.EXE 192.168.1.36 80 /check-2k.txt
+```
 
 Use this order when something is stuck:
 
@@ -152,6 +162,8 @@ Current utility-specific notes:
 - `WGET.EXE` returns `0` after a successful body download, `1` for invalid
   command line or URL, `2` when hardware is not found, `3` for ESP/TCP/HTTP
   errors and `5` for local output file errors.
+- `NTP.EXE` returns `0` after DSS time is set, `2` when hardware is not found
+  and `3` on ESP SNTP, response parse or DSS SETTIME failure.
 
 Current `WGET.EXE` limitations:
 

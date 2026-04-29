@@ -9,10 +9,17 @@ Notes
   limited to a few receive blocks, so long HTML pages may be truncated.
 
 Usage
-  TCPTEST.EXE
+  TCPTEST.EXE [host [port [path]]]
 
-Current target
-  example.com:80
+Defaults
+  host: example.com
+  port: 80
+  path: /
+
+Examples
+  TCPTEST.EXE
+  TCPTEST.EXE example.com 80 /
+  TCPTEST.EXE 192.168.1.36 80 /check-2k.txt
 
 Typical sequence
   NETUP.EXE
@@ -21,6 +28,10 @@ Typical sequence
 Role
   TCPTEST is a diagnostic utility. It is useful before testing higher-level
   clients such as WGET, FTP, TFTP or IRC.
+
+  It builds a simple HTTP/1.0 GET request and prints a limited number of
+  receive blocks to the console. Use a small local HTTP file when checking
+  emulator pacing or UART receive reliability.
 
 Exit status
   0  Test completed.

@@ -18,6 +18,7 @@ BUILD_APPS=(
   tcptest
   ping
   wget
+  ntp
   wterm
 )
 
@@ -32,6 +33,7 @@ DIST_DOC_FILES=(
   docs/TCPTEST.TXT
   docs/PING.TXT
   docs/WGET.TXT
+  docs/NTP.TXT
   docs/WTERM.TXT
   LICENSE
 )

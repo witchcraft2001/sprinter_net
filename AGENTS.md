@@ -114,6 +114,14 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
+- Pace `+IPD` output toward MAME/Z80 instead of writing large TCP bursts
+  instantaneously. Provide configurable knobs such as `JESPERL_IPD_CHUNK`
+  (suggested default 256 or 512 bytes for debugging, 1500 for stress tests) and
+  `JESPERL_Z_PACE_US` (delay between small output slices).
+- Treat pacing as an emulator fidelity feature, not as a protocol change: real
+  ESP modules deliver bytes through UART timing and hardware flow control, while
+  current MAME/`jesperl` may not emulate RTS/CTS deeply enough to absorb large
+  immediate bursts.
 - `AT+CIPSTART` must not block the whole emulator process on OS-level TCP
   connect. Use non-blocking connect or a short explicit timeout, keep accepting
   Z-side input while a connection is pending, and let ESP reset/close commands
@@ -122,6 +130,10 @@ Current `jesperl` improvement mini-spec for this project:
 - Support diagnostic commands used by `ping.exe`, especially `AT+PING="host"`
   with realistic `+PING:<time_ms>` and `OK` responses, plus `ERROR` for
   invalid or unreachable hosts.
+- Support ESP SNTP commands used by `ntp.exe`: `AT+CIPSNTPCFG=1,<tz>,"server"`
+  should store runtime SNTP settings and `AT+CIPSNTPTIME?` should return a
+  realistic `+CIPSNTPTIME:<weekday> <month> <day> <hh:mm:ss> <year>` response
+  followed by `OK`.
 - Preserve enough emulator state to make the sequence realistic: selected SSID,
   connected/disconnected state, DHCP enabled flag, station IP/gateway/netmask,
   DNS servers.

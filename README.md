@@ -34,6 +34,7 @@ User-facing setup notes are in `docs/USAGE.md`.
 - `TCPTEST.EXE`
 - `PING.EXE`
 - `WGET.EXE`
+- `NTP.EXE`
 - `WTERM.EXE`
 
 ## Configuration
@@ -52,8 +53,11 @@ NETCFG.EXE       show current NET.CFG values
 NETCFG.EXE /W    edit and save NET.CFG interactively
 NETUP.EXE        initialize ESP and connect using NET.CFG
 TCPTEST.EXE      connect to example.com:80 and print a short HTTP response
+TCPTEST.EXE host port path
+                 test an HTTP path on a custom host and port
 PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url file download an HTTP/1.0 URL to a local file
+NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.

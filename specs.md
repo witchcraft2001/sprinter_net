@@ -40,6 +40,45 @@ Later expansion targets:
 - DSS programs use standard DSS EXE format and DSS file APIs.
 - DSS filesystem uses FAT-style 8.3 names; paths use backslash.
 
+## Emulator Requirements
+
+Primary emulation target is MAME Sprinter with `jesperl` acting as an ESP-AT
+network peer.
+
+Required behavior:
+
+- Emulate TL16C550 receive timing closely enough that DSS code cannot receive
+  large ESP bursts faster than the configured UART speed would allow.
+- Respect or model hardware flow control state used by the SprinterESP stack:
+  TL16C550 `MCR_AFE | MCR_RTS` on the Sprinter side and ESP-AT
+  `AT+UART_CUR=<baud>,8,1,0,3` on the ESP side.
+- Support configurable `+IPD` chunk size. The default for MAME debugging should
+  be conservative, for example 256 or 512 payload bytes, while a stress mode may
+  keep 1500 byte bursts.
+- Support configurable pacing when sending data toward MAME/Z80, for example a
+  short delay after each small output slice. This models physical UART delivery
+  and avoids unrealistic instantaneous socket-to-UART bursts.
+- Keep `AT+CIPSTART` non-blocking or bounded by a short explicit timeout. ESP
+  reset and close commands must be able to abort a pending connection attempt.
+- Preserve ESP-AT framing exactly: `+IPD,<len>:<payload>` or
+  `+IPD,<link>,<len>:<payload>`, `SEND OK`, `CLOSED`, final `OK`/`ERROR`, and
+  CRLF line endings.
+- Support ESP SNTP commands used by the time utility:
+  `AT+CIPSNTPCFG=1,<tz>,"server"` and `AT+CIPSNTPTIME?`, returning a realistic
+  `+CIPSNTPTIME:<weekday> <month> <day> <hh:mm:ss> <year>` line.
+- Provide deterministic test knobs, for example `JESPERL_IPD_CHUNK` and
+  `JESPERL_Z_PACE_US`, so regressions can be reproduced.
+
+Rationale:
+
+- Real ESP modules send bytes through a physical UART and can be throttled by
+  RTS/CTS. A host-side emulator that writes a full TCP packet to MAME
+  immediately can overflow the emulated UART/FIFO or expose missing MAME flow
+  control emulation, causing lost bytes and corrupted downloads.
+- Smaller `+IPD` chunks do not violate ESP-AT semantics: clients must already
+  handle multiple `+IPD` frames. Large chunks are still useful as stress tests
+  after the transport layer is stable.
+
 ## Design Principles
 
 - One shared config file is the source of truth for all tools.
@@ -354,11 +393,12 @@ Done when:
 
 ### Stage 7 - Network Time
 
-- [ ] Implement `ntp.exe` using ESP SNTP first.
-- [ ] Configure SNTP with `AT+CIPSNTPCFG=1,<tz>`.
-- [ ] Read time with `AT+CIPSNTPTIME?`.
-- [ ] Parse ESP time string.
-- [ ] Set DSS time through `DSS SETTIME`.
+- [x] Implement `ntp.exe` using ESP SNTP first.
+- [x] Configure SNTP with `AT+CIPSNTPCFG=1,<tz>`.
+- [x] Read time with `AT+CIPSNTPTIME?`.
+- [x] Parse ESP time string.
+- [x] Set DSS time through `DSS SETTIME`.
+- [ ] Add `jesperl` support for ESP SNTP commands before emulator validation.
 - [ ] Optionally add raw UDP NTP later.
 
 Done when:
