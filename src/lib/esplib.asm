@@ -362,6 +362,27 @@ UVR_OK
 	POP		HL,BC
 	RET
 
+UART_WAIT_RS1_INT
+	PUSH	BC,HL
+	LD		BC,(WAIT_MS)
+	JR		UVR_NEXT_INT
+UART_WAIT_RS_INT
+	PUSH	BC,HL
+UVR_NEXT_INT
+	LD		HL, REG_LSR
+	LD		A,(HL)
+	AND		LSR_DR
+	JR		NZ,UVR_OK_INT
+	CALL	UTIL.DELAY_1MS
+	DEC		BC
+	LD		A,B
+	OR		C
+	JR		NZ,UVR_NEXT_INT
+	SCF
+UVR_OK_INT
+	POP		HL,BC
+	RET
+
 ; ------------------------------------------------------
 ; Reset ESP module
 ; ------------------------------------------------------
@@ -416,17 +437,18 @@ UART_TX_CMD
 	JR		NC, UTC_STRT_RX
 	; error, transmit timeout
 	LD		A, RES_TX_TIMEOUT
-	JR		UTC_RET
+	JR		UTC_RET_NO_CLOSE
 UTC_STRT_RX		
 	; no transmit timeout, receive response
 	; IX - pointer to begin of current line
 	LD		IXH, D
 	LD		IXL, E
 	LD		BC,(BSIZE)
+	CALL	ISA.ISA_OPEN
 UTC_RCV_NXT
 	; wait receiver ready
 	;LD		BC,(WAIT_MS)
-	CALL	UART_WAIT_RS1
+	CALL	UART_WAIT_RS1_INT
 	JR		NC, UTC_NO_RT
 	; error, read timeout
 	LD		A, RES_RS_TIMEOUT
@@ -435,7 +457,7 @@ UTC_RCV_NXT
 UTC_NO_RT
 	; read symbol from tty
 	LD		HL, REG_RBR
-	CALL	UART_READ
+	LD		A,(HL)
 	CP		CR
 	JP		Z, UTC_RCV_NXT							; Skip CR 
 	CP		LF
@@ -482,6 +504,8 @@ UTC_NOMSG
 	LD		IXL,E
 	JR		UTC_RCV_NXT
 UTC_RET
+	CALL	ISA.ISA_CLOSE
+UTC_RET_NO_CLOSE
 	POP		HL, DE, BC
 	RET
 	;ENDIF

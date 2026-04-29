@@ -281,6 +281,8 @@ Done when:
 - [x] Use `AT+CWMODE_CUR=1`.
 - [x] Use `AT+CWJAP?` to display existing connection state.
 - [x] Use `AT+CWJAP_CUR="ssid","password"` to connect.
+- [x] Apply current-session ESP UART flow-control settings before network
+  commands so `netup.exe` does not depend on a previous `netreset.exe`.
 - [x] Apply DHCP/static IP settings.
 - [x] Apply DNS settings where supported.
 - [x] Prefer `_CUR` ESP-AT commands and use legacy commands only as fallback.
@@ -304,7 +306,7 @@ Done when:
 - [x] Support `AT+CIPSTART="TCP","host",port`.
 - [x] Support `AT+CIPSEND=<len>` and `SEND OK`.
 - [x] Implement initial `+IPD,<len>:` binary parser.
-- [ ] Handle `CLOSED`, timeout and receiver errors.
+- [x] Handle `CLOSED`, timeout and receiver errors.
 - [x] Add `tcptest.exe` as a small TCP test utility.
 
 Done when:
@@ -314,8 +316,8 @@ Done when:
 
 ### Stage 5 - `ping.exe` Network Diagnostic
 
-- [ ] Check whether target ESP-AT firmware supports `AT+PING="host"`.
-- [ ] Add `jesperl` support for `AT+PING="host"` before relying on emulator
+- [x] Check whether target ESP-AT firmware supports `AT+PING="host"`.
+- [x] Add `jesperl` support for `AT+PING="host"` before relying on emulator
   results.
 - [x] Implement `ping.exe host`.
 - [x] Parse successful `+PING:<time_ms>` responses.
