@@ -9,13 +9,13 @@ DIST_DIR_NAME="SPNET"
 
 # DSS application entry points. Each item maps to src/apps/<name>.asm and
 # build/<UPPERCASE_NAME>.EXE. Add apps here only when their source is present.
-# Planned apps include: netprobe, netcfg, netup, wget, ntp, tftp, ftp, chat,
-# wterm.
+# Planned apps include: wget, ntp, tftp, ftp and chat.
 BUILD_APPS=(
   netprobe
   netreset
   netcfg
   netup
+  tcptest
   wterm
 )
 

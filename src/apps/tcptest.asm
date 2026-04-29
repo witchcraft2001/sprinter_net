@@ -1,0 +1,248 @@
+; ======================================================
+; TCPTEST for Sprinter DSS Network Kit
+; Minimal TCP smoke test over ESP-AT.
+; ======================================================
+
+EXE_VERSION		EQU 1
+DEFAULT_TIMEOUT		EQU 2000
+RECV_TIMEOUT		EQU 5000
+RECV_BUFFER_SIZE	EQU 512
+RECV_BLOCK_LIMIT	EQU 4
+
+	DEVICE NOSLOT64K
+
+	INCLUDE "macro.inc"
+	INCLUDE "dss.inc"
+
+	MODULE MAIN
+
+	ORG 0x8080
+
+EXE_HEADER
+	DB "EXE"
+	DB EXE_VERSION
+	DW 0x0080
+	DW 0
+	DW 0
+	DW 0
+	DW 0
+	DW 0
+	DW START
+	DW START
+	DW STACK_TOP
+	DS 106, 0
+
+	ORG 0x8100
+@STACK_TOP
+
+START
+	CALL	ISA.ISA_RESET
+	CALL	WCOMMON.INIT_VMODE
+	PRINTLN MSG_START
+
+	PRINTLN MSG_HINT
+
+	CALL	WIFI.UART_FIND
+	JP	C,NO_WIFI
+
+	LD	A,(ISA.ISA_SLOT)
+	ADD	A,'1'
+	LD	(MSG_SLOT_NO),A
+	PRINTLN MSG_WIFI_FOUND
+
+	CALL	WIFI.UART_INIT
+	PRINTLN MSG_UART_READY
+
+	LD	HL,CMD_AT
+	CALL	SEND_CMD_RECOVER
+
+	LD	HL,CMD_ECHO_OFF
+	CALL	SEND_CMD
+
+	LD	HL,CMD_CIPMUX_0
+	CALL	SEND_CMD
+
+	PRINT MSG_CONNECTING
+	PRINT HOST_NAME
+	PRINT WCOMMON.LINE_END
+	LD	HL,HOST_NAME
+	LD	DE,HOST_PORT
+	CALL	TCP.OPEN
+	CALL	CHECK_TCP_ERROR
+
+	PRINTLN MSG_SENDING
+	LD	HL,HTTP_REQUEST
+	LD	BC,HTTP_REQUEST_END-HTTP_REQUEST
+	CALL	TCP.SEND_BUFFER
+	CALL	CHECK_TCP_ERROR
+
+	PRINTLN MSG_RESPONSE
+	LD	A,RECV_BLOCK_LIMIT
+	LD	(RECV_BLOCKS),A
+.RECV_LOOP
+	LD	HL,RECV_BUFFER
+	LD	BC,RECV_BUFFER_SIZE
+	LD	DE,RECV_TIMEOUT
+	CALL	TCP.RECEIVE
+	JR	C,.CLOSE
+	LD	A,B
+	OR	C
+	JR	Z,.CLOSE
+	LD	HL,RECV_BUFFER
+	CALL	PRINT_BUFFER
+	LD	HL,RECV_BLOCKS
+	DEC	(HL)
+	JR	NZ,.RECV_LOOP
+
+.CLOSE
+	CALL	TCP.CLOSE
+	PRINTLN MSG_DONE
+	LD	B,0
+	JP	WCOMMON.EXIT
+
+NO_WIFI
+	PRINTLN MSG_WIFI_NOT_FOUND
+	LD	B,2
+	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; Send command in HL with default timeout.
+; ------------------------------------------------------
+SEND_CMD
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	RET	Z
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; Send command in HL. Reset ESP once if it does not answer.
+; ------------------------------------------------------
+SEND_CMD_RECOVER
+	PUSH	HL
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	JR	Z,.OK
+
+	PRINTLN MSG_RESETTING_ESP
+	CALL	WIFI.ESP_RESET
+	CALL	WIFI.UART_INIT
+	POP	HL
+	JP	SEND_CMD
+
+.OK
+	POP	HL
+	RET
+
+; ------------------------------------------------------
+; Exit on TCP helper failure.
+; ------------------------------------------------------
+CHECK_TCP_ERROR
+	RET	NC
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; Print raw TCP data as console text.
+; In: HL - data, BC - length.
+; ------------------------------------------------------
+PRINT_BUFFER
+	LD	A,B
+	OR	C
+	RET	Z
+	LD	A,(HL)
+	INC	HL
+	DEC	BC
+	CP	13
+	JR	Z,PRINT_BUFFER
+	CP	10
+	JR	NZ,.CHAR
+	LD	A,13
+	CALL	PUT_CHAR
+	LD	A,10
+	JR	.PUT
+.CHAR
+	CP	32
+	JR	NC,.PUT
+	LD	A,'.'
+.PUT
+	CALL	PUT_CHAR
+	JR	PRINT_BUFFER
+
+PUT_CHAR
+	PUSH	BC,HL
+	LD	C,DSS_PUTCHAR
+	RST	DSS
+	POP	HL,BC
+	RET
+
+MSG_START
+	DB "TCPTEST - ESP-AT TCP smoke test",0
+MSG_HINT
+	DB "Run NETUP first. Test target is example.com:80.",0
+MSG_WIFI_FOUND
+	DB "Sprinter-WiFi found in ISA#"
+MSG_SLOT_NO
+	DB "n slot.",0
+MSG_WIFI_NOT_FOUND
+	DB "Sprinter-WiFi not found!",0
+MSG_UART_READY
+	DB "UART initialized.",0
+MSG_RESETTING_ESP
+	DB "ESP did not answer, resetting module.",0
+MSG_CONNECTING
+	DB "Connecting to ",0
+MSG_SENDING
+	DB "Sending HTTP request.",0
+MSG_RESPONSE
+	DB "Response:",0
+MSG_DONE
+	DB "TCPTEST done.",0
+MSG_COMM_ERROR
+	DB "ESP communication error #"
+MSG_ERROR_NO
+	DB "n!",0
+
+CMD_AT
+	DB "AT",13,10,0
+CMD_ECHO_OFF
+	DB "ATE0",13,10,0
+CMD_CIPMUX_0
+	DB "AT+CIPMUX=0",13,10,0
+
+HOST_NAME
+	DB "example.com",0
+HOST_PORT
+	DB "80",0
+
+HTTP_REQUEST
+	DB "GET / HTTP/1.0",13,10
+	DB "Host: example.com",13,10
+	DB "Connection: close",13,10
+	DB 13,10
+HTTP_REQUEST_END
+
+RECV_BLOCKS
+	DB 0
+RECV_BUFFER
+	DS RECV_BUFFER_SIZE,0
+
+	ENDMODULE
+
+	INCLUDE "wcommon.asm"
+	INCLUDE "dss_error.asm"
+	INCLUDE "isa.asm"
+	INCLUDE "esp_tcp.asm"
+	INCLUDE "esplib.asm"
+
+	END MAIN.START

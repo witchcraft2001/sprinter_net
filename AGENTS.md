@@ -95,6 +95,10 @@ Current `jesperl` improvement mini-spec for this project:
   `AT+CIPSTA_CUR="ip","gw","mask"`, `AT+CIFSR`, `AT+CIPDNS?`,
   `AT+CIPDNS_CUR?`, `AT+CIPDNS=1,"dns1","dns2"`,
   `AT+CIPDNS_CUR=1,"dns1","dns2"`.
+- Support TCP smoke-test commands used by `tcptest.exe` and later protocol
+  clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
+  `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
+  `CLOSED`, and `+IPD,<len>:<binary payload>`.
 - Preserve enough emulator state to make the sequence realistic: selected SSID,
   connected/disconnected state, DHCP enabled flag, station IP/gateway/netmask,
   DNS servers.

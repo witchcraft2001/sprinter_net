@@ -13,6 +13,7 @@ Initial target utilities:
 
 - `netcfg.exe` / `wcfg.exe` - shared Wi-Fi and TCP/IP configuration.
 - `netup.exe` - initialize SprinterESP and bring the configured network up.
+- `tcptest.exe` - temporary TCP smoke test for the shared TCP client core.
 - `wget.exe` - simple HTTP downloader.
 - `ntp.exe` - set DSS time from network time.
 - `tftp.exe` - simple TFTP client.
@@ -62,6 +63,7 @@ src/
     uart16550.asm
     esp_at.asm
     esp_net.asm
+    esp_tcp.asm
     netcfg.asm
     fileio.asm
     url.asm
@@ -69,6 +71,7 @@ src/
   apps/
     netcfg.asm
     netup.asm
+    tcptest.asm
     wget.asm
     ntp.asm
     tftp.asm
@@ -269,13 +272,13 @@ Done when:
 
 ### Stage 4 - TCP Client Core
 
-- [ ] Implement single-connection TCP open/send/receive/close.
-- [ ] Support `AT+CIPMUX=0`.
-- [ ] Support `AT+CIPSTART="TCP","host",port`.
-- [ ] Support `AT+CIPSEND=<len>` and `SEND OK`.
-- [ ] Implement robust `+IPD,<len>:` binary parser.
+- [x] Implement initial single-connection TCP open/send/receive/close.
+- [x] Support `AT+CIPMUX=0`.
+- [x] Support `AT+CIPSTART="TCP","host",port`.
+- [x] Support `AT+CIPSEND=<len>` and `SEND OK`.
+- [x] Implement initial `+IPD,<len>:` binary parser.
 - [ ] Handle `CLOSED`, timeout and receiver errors.
-- [ ] Add a small TCP test utility if useful.
+- [x] Add `tcptest.exe` as a small TCP test utility.
 
 Done when:
 

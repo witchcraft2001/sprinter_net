@@ -21,9 +21,8 @@ Additional project mirror/reference:
 
 https://zxgit.org/romych/SprinterESP
 
-Current status: project foundation is in place. `NETPROBE.EXE` is the first
-diagnostic utility and checks basic SprinterESP UART/ESP-AT communication.
-Implementation plan is tracked in `specs.md`.
+Current status: project foundation, shared config, Wi-Fi bring-up and initial
+TCP client core are in place. Implementation plan is tracked in `specs.md`.
 
 ## Build
 
@@ -41,6 +40,7 @@ Current build output:
 - `NETRESET.EXE`
 - `NETCFG.EXE`
 - `NETUP.EXE`
+- `TCPTEST.EXE`
 - `WTERM.EXE`
 
 ## Configuration
@@ -54,6 +54,7 @@ On Sprinter DSS:
 NETCFG.EXE       show current NET.CFG values
 NETCFG.EXE /W    edit and save NET.CFG interactively
 NETUP.EXE        initialize ESP and connect using NET.CFG
+TCPTEST.EXE      connect to example.com:80 and print a short HTTP response
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.
