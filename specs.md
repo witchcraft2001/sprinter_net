@@ -40,6 +40,53 @@ Later expansion targets:
 - DSS programs use standard DSS EXE format and DSS file APIs.
 - DSS filesystem uses FAT-style 8.3 names; paths use backslash.
 
+### ESP8266 ESP-AT V2.2.1 Command Support
+
+The local baseline package `/Users/dmitry/Downloads/V2.2.1` contains only short
+flashing READMEs, so command availability was checked against ASCII command
+tokens in the AT firmware binaries under `bin/at/`. The 512+512 and 1024+1024
+AT binaries expose the same relevant command set.
+
+Project-critical commands present in the V2.2.1 AT binaries:
+
+- Basic and system:
+  `AT`, `ATE0`, `AT+GMR`, `AT+RST`, `AT+RESTORE`, `AT+SLEEP`, `AT+GSLP`,
+  `AT+SYSMSG`, `AT+SYSRAM`, `AT+SYSADC`, `AT+RFPOWER`, `AT+RFVDD`.
+- UART:
+  `AT+UART`, `AT+UART_CUR`, `AT+UART_DEF`, `AT+IPR`.
+- Wi-Fi station/AP:
+  `AT+CWMODE`, `AT+CWMODE_CUR`, `AT+CWMODE_DEF`, `AT+CWJAP`,
+  `AT+CWJAP_CUR`, `AT+CWJAP_DEF`, `AT+CWQAP`, `AT+CWLAP`,
+  `AT+CWLAPOPT`, `AT+CWAUTOCONN`, `AT+CWHOSTNAME`, `AT+CIFSR`,
+  `AT+CWSAP`, `AT+CWSAP_CUR`, `AT+CWSAP_DEF`, `AT+CWLIF`,
+  `AT+CWCOUNTRY_CUR`, `AT+CWCOUNTRY_DEF`.
+- IP, DHCP and DNS:
+  `AT+CIPSTA`, `AT+CIPSTA_CUR`, `AT+CIPSTA_DEF`, `AT+CIPAP`,
+  `AT+CIPAP_CUR`, `AT+CIPAP_DEF`, `AT+CIPSTAMAC`,
+  `AT+CIPSTAMAC_CUR`, `AT+CIPSTAMAC_DEF`, `AT+CIPAPMAC`,
+  `AT+CIPAPMAC_CUR`, `AT+CIPAPMAC_DEF`, `AT+CWDHCP`,
+  `AT+CWDHCP_CUR`, `AT+CWDHCP_DEF`, `AT+CWDHCPS_CUR`,
+  `AT+CWDHCPS_DEF`, `AT+CIPDNS_CUR`, `AT+CIPDNS_DEF`.
+- TCP/UDP/SSL:
+  `AT+CIPSTART`, `AT+CIPCLOSE`, `AT+CIPSEND`, `AT+CIPSENDEX`,
+  `AT+CIPSENDBUF`, `AT+CIPMUX`, `AT+CIPMODE`, `AT+CIPSTATUS`,
+  `AT+CIPSERVER`, `AT+CIPSERVERMAXCONN`, `AT+CIPSTO`, `AT+CIPDINFO`,
+  `AT+CIPDOMAIN`, `AT+CIPSSLSIZE`, `AT+CIPALIVE`, `AT+CIPBUFRESET`,
+  `AT+CIPBUFSTATUS`, `AT+CIPCHECKQUEUE`, `AT+CIPCHECKSEQ`.
+- Diagnostics, time and update:
+  `AT+PING`, `AT+CIPSNTPCFG`, `AT+CIPSNTPTIME`, `AT+CIUPDATE`,
+  `AT+MDNS`, `AT+WPS`.
+
+Commands not present in the checked V2.2.1 binaries:
+
+- `AT+CIPRECVMODE`
+- `AT+CIPRECVDATA`
+
+Implication: ESP-AT passive TCP receive is not available on the current V2.2.1
+baseline. `wget.exe` may probe passive mode and fall back, but the reliable path
+for this firmware must remain active `+IPD,<len>:<payload>` receive with correct
+UART flow control and/or conservative receive pacing.
+
 ## Emulator Requirements
 
 Primary emulation target is MAME Sprinter with `jesperl` acting as an ESP-AT
@@ -348,6 +395,8 @@ Done when:
 - [x] Support `AT+CIPSTART="TCP","host",port`.
 - [x] Support `AT+CIPSEND=<len>` and `SEND OK`.
 - [x] Implement initial `+IPD,<len>:` binary parser.
+- [x] Preserve oversized `+IPD` payloads across multiple `TCP.RECEIVE` calls
+  instead of dropping bytes beyond the caller buffer.
 - [x] Handle `CLOSED`, timeout and receiver errors.
 - [x] Add `tcptest.exe` as a small TCP test utility.
 
@@ -381,6 +430,8 @@ Done when:
 - [x] Generate HTTP/1.0 GET request.
 - [x] Send `Host`, `Connection: close`, `Accept-Encoding: identity`.
 - [x] Receive response through TCP core.
+- [x] Use ESP-AT passive receive mode for WGET when supported.
+- [ ] Add `jesperl` support for `AT+CIPRECVMODE` and `AT+CIPRECVDATA`.
 - [x] Parse status line.
 - [x] Skip headers and write body to DSS file.
 - [x] Print basic progress while body chunks are written.

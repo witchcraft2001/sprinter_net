@@ -63,6 +63,14 @@ Rules for future additions:
 
 Preserve existing style. Assembly uses tabs for instruction alignment, uppercase labels/constants, `EQU` constants, and semicolon comments. Keep reusable routines in library files and utility entry points in app-specific `.asm` files. DOS C code should remain compatible with older Borland compilers: avoid modern extensions, use uppercase macros, and follow the existing `snake_case` function and variable naming.
 
+For DSS assembly, avoid storing large zero-filled work buffers in `.EXE`
+outputs. `sjasmplus --raw` emits `DS ...,0` bytes into the file, wasting disk
+space. Prefer runtime-only BSS-style labels placed after the loaded image, for
+example after `WIFI.RS_BUFF + RS_BUFF_SIZE` or after another library/app BSS
+end label. Clear that runtime area at program start only when the code depends
+on zeroed memory. Small state variables and required initialized data may remain
+in the file.
+
 ## Testing Guidelines
 
 No automated test suite is present. For DSS assembly, assemble every touched entry program and smoke-test on Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed program and verify behavior against an ESP8266 running ESP-AT firmware. For hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify regenerated PDFs, BOMs, and Gerbers before publishing.
@@ -114,6 +122,11 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
+- Support passive TCP receive used by `wget.exe`: `AT+CIPRECVMODE=1` should
+  switch TCP sockets to passive receive notifications, `+IPD,<len>` should
+  announce available bytes without pushing payload bytes, `AT+CIPRECVDATA=<n>`
+  should return `+CIPRECVDATA:<actual_len>,<binary payload>` followed by `OK`,
+  and `AT+CIPRECVMODE=0` should restore active `+IPD,<len>:<payload>` mode.
 - Pace `+IPD` output toward MAME/Z80 instead of writing large TCP bursts
   instantaneously. Provide configurable knobs such as `JESPERL_IPD_CHUNK`
   (suggested default 256 or 512 bytes for debugging, 1500 for stress tests) and

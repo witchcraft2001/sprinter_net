@@ -13,8 +13,8 @@ Examples
   WGET.EXE http://192.168.1.10:8080/file.txt FILE.TXT
 
 Output
-  WGET prints the URL received on the command line, the normalized HTTP source
-  address used for the connection, and the output file name.
+  WGET prints the source URL received on the command line and the output file
+  name.
 
   If the URL does not start with http://, WGET treats it as a plain HTTP URL
   and prints a warning that http:// was assumed.
@@ -31,14 +31,25 @@ Current limitations
   Unsupported responses print the received HTTP status line when it is present.
 
 Testing notes
+  WGET asks ESP-AT to use passive TCP receive mode. In that mode ESP announces
+  available data with +IPD,<len>, and WGET pulls small chunks with
+  AT+CIPRECVDATA. This avoids UART overrun while writing data to DSS files.
+
+  If passive receive is not supported by the ESP firmware or emulator, WGET
+  falls back to active +IPD mode and prints a warning. Active mode is more
+  likely to lose bytes on large downloads.
+
   WGET depends on TCP receive behavior and is currently the most sensitive tool
   when running under MAME with jesperl. Prefer a local HTTP server known to
   return a simple HTTP/1.0-compatible response while debugging.
   When a Content-Length header is present, WGET verifies that the downloaded
   body size matches it. A mismatch usually means bytes were lost before WGET
-  could drain the UART. In MAME/jesperl this can point to missing RTS/CTS
-  emulation or oversized +IPD bursts. Try a lower BAUD value in NET.CFG or use
-  a jesperl version that paces +IPD output.
+  could drain the UART. In MAME/jesperl this can point to missing passive
+  receive support, missing RTS/CTS emulation or oversized +IPD bursts. Try a
+  lower BAUD value in NET.CFG or use a jesperl version that supports
+  AT+CIPRECVMODE and AT+CIPRECVDATA.
+  The TCP core is expected to preserve +IPD payloads that are larger than the
+  WGET receive buffer and return them across multiple receive calls.
 
 Exit status
   0  File body downloaded.

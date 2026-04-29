@@ -68,6 +68,31 @@ settings to ESP flash; legacy commands are used only as fallback.
 `9600`; automated tools use it after `NETUP.EXE` configures the ESP with
 `AT+UART_CUR`.
 
+## ESP-AT Firmware Baseline
+
+The current baseline firmware checked for this project is the local ESP8266
+ESP-AT package at `/Users/dmitry/Downloads/V2.2.1`. The AT binaries contain
+command tokens for the project-critical command families below:
+
+- Basic: `AT`, `ATE0`, `AT+GMR`, `AT+RST`, `AT+RESTORE`, `AT+SLEEP`,
+  `AT+GSLP`, `AT+SYSMSG`.
+- UART: `AT+UART`, `AT+UART_CUR`, `AT+UART_DEF`, legacy `AT+IPR`.
+- Wi-Fi station/AP: `AT+CWMODE`, `AT+CWMODE_CUR`, `AT+CWMODE_DEF`,
+  `AT+CWJAP`, `AT+CWJAP_CUR`, `AT+CWJAP_DEF`, `AT+CWQAP`, `AT+CWLAP`,
+  `AT+CWLAPOPT`, `AT+CWAUTOCONN`, `AT+CWHOSTNAME`, `AT+CIFSR`.
+- IP/DNS/DHCP: `AT+CIPSTA`, `AT+CIPSTA_CUR`, `AT+CIPSTA_DEF`,
+  `AT+CIPAP`, `AT+CIPAP_CUR`, `AT+CIPAP_DEF`, `AT+CIPDNS_CUR`,
+  `AT+CIPDNS_DEF`, `AT+CWDHCP`, `AT+CWDHCP_CUR`, `AT+CWDHCP_DEF`.
+- TCP/UDP client/server: `AT+CIPSTART`, `AT+CIPCLOSE`, `AT+CIPSEND`,
+  `AT+CIPSENDEX`, `AT+CIPSENDBUF`, `AT+CIPMUX`, `AT+CIPMODE`,
+  `AT+CIPSTATUS`, `AT+CIPSERVER`, `AT+CIPSERVERMAXCONN`, `AT+CIPSTO`,
+  `AT+CIPDINFO`, `AT+CIPDOMAIN`, `AT+CIPSSLSIZE`.
+- Diagnostics and time: `AT+PING`, `AT+CIPSNTPCFG`, `AT+CIPSNTPTIME`.
+
+The V2.2.1 binaries do not contain `AT+CIPRECVMODE` or `AT+CIPRECVDATA`, so
+ESP-AT passive TCP receive should be treated as unsupported for this firmware.
+WGET must keep a reliable active `+IPD` receive path for V2.2.1.
+
 ## License
 
 BSD 3-Clause. See `LICENSE`.

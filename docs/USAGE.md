@@ -169,6 +169,9 @@ Current `WGET.EXE` limitations:
 
 - Supports plain `http://` only, not HTTPS.
 - Adds `http://` automatically when the URL has no scheme and prints a warning.
+- Uses ESP-AT passive TCP receive when available, and falls back to active
+  `+IPD` receive with a warning when the firmware or emulator does not support
+  `AT+CIPRECVMODE` / `AT+CIPRECVDATA`.
 - Accepts HTTP 2xx status only.
 - Does not yet detect redirects, chunked transfer encoding or gzip content
   encoding.

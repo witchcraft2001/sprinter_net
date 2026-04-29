@@ -51,6 +51,7 @@ FCR_TR1         EQU	0x00								; Trigger on 1 byte in fifo
 FCR_TR4         EQU	0x40								; Trigger on 4 bytes in fifo
 FCR_TR8         EQU	0x80								; Trigger on 8 bytes in fifo
 FCR_TR14        EQU	0xC0								; Trigger on 14 bytes in fifo
+FCR_RX_TRIGGER	EQU	FCR_TR1								; Deassert RTS as early as possible in auto-flow mode
 LSR_DR          EQU	0x01								; Data Ready
 LSR_OE          EQU	0x02								; Overrun Error
 LSR_PE          EQU	0x04								; Parity Error
@@ -156,7 +157,7 @@ UART_INIT
 
 	CALL 	ISA.ISA_OPEN
 	LD		IX, PORT_UART_A
-	LD		(IX+_FCR),FCR_TR8 | FCR_FIFO				; Enable FIFO buffer, trigger to 14 byte
+	LD		(IX+_FCR),FCR_RX_TRIGGER | FCR_FIFO			; Enable FIFO, low RX trigger for RTS/CTS flow control
 	XOR 	A
 	LD 		(IX+_IER), A								; Disable interrupts
 
@@ -185,6 +186,27 @@ UART_SET_DIVISOR
 UART_SET_DEFAULT_DIVISOR
 	LD		A,DEFAULT_DIVISOR
 	JR		UART_SET_DIVISOR
+
+; ------------------------------------------------------
+; Manual RX flow-control helpers.
+; Deassert RTS while the program is busy outside UART receive loops, then
+; reassert RTS before reading again. Hardware auto-flow remains enabled.
+; ------------------------------------------------------
+UART_RX_PAUSE
+	PUSH	DE,HL
+	LD	E,MCR_AFE
+	LD	HL,REG_MCR
+	CALL	UART_WRITE
+	POP	HL,DE
+	RET
+
+UART_RX_RESUME
+	PUSH	DE,HL
+	LD	E,MCR_AFE | MCR_RTS
+	LD	HL,REG_MCR
+	CALL	UART_WRITE
+	POP	HL,DE
+	RET
 
 ; ------------------------------------------------------
 ; Read TL16C550 register
@@ -336,7 +358,7 @@ UTXS_TXNR
 	;IFUSED	UART_EMPTY_RS
 UART_EMPTY_RS
 	PUSH 	DE, HL
-	LD 		E, FCR_TR8 | FCR_RESET_RX | FCR_FIFO
+	LD 		E, FCR_RX_TRIGGER | FCR_RESET_RX | FCR_FIFO
 	LD		HL, REG_FCR
 	CALL	UART_WRITE
 	POP 	HL, DE
