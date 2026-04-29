@@ -107,8 +107,7 @@ START
 	CALL	APPLY_DNS_OPTIONAL
 
 	PRINTLN MSG_IP_INFO
-	LD	HL,CMD_CIFSR
-	CALL	SEND_CMD_PRINT_OPTIONAL
+	CALL	PRINT_IP_INFO_OPTIONAL
 
 	PRINTLN MSG_DONE
 	LD	B,0
@@ -244,22 +243,42 @@ SEND_CMD_PRINT
 	JP	PRINT_ESP_RESPONSE
 
 ; ------------------------------------------------------
-; Send command in HL and print response buffer. A missing response is not fatal:
-; CIFSR is diagnostic, while Wi-Fi setup has already completed by this point.
+; Print station IP information. This is diagnostic only, so try several ESP-AT
+; variants and warn only if every query fails.
 ; ------------------------------------------------------
-SEND_CMD_PRINT_OPTIONAL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
+PRINT_IP_INFO_OPTIONAL
+	LD	HL,CMD_CIFSR
+	CALL	SEND_CMD_PRINT_STATUS
 	AND	A
-	JR	Z,.PRINT
+	RET	Z
+	LD	HL,CMD_CIPSTA_CUR_QUERY
+	CALL	SEND_CMD_PRINT_STATUS
+	AND	A
+	RET	Z
+	LD	HL,CMD_CIPSTA_QUERY
+	CALL	SEND_CMD_PRINT_STATUS
+	AND	A
+	RET	Z
 	ADD	A,'0'
 	LD	(MSG_WARN_NO),A
 	PRINTLN MSG_OPTIONAL_WARN
 	RET
+
+; ------------------------------------------------------
+; Send command in HL and print response on success.
+; Out: A = ESP result code, 0 means response was printed.
+; ------------------------------------------------------
+SEND_CMD_PRINT_STATUS
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	RET	NZ
 .PRINT
 	LD	HL,WIFI.RS_BUFF
-	JP	PRINT_ESP_RESPONSE
+	CALL	PRINT_ESP_RESPONSE
+	XOR	A
+	RET
 
 ; ------------------------------------------------------
 ; Send command in HL. If ESP does not answer, reset once and retry.
@@ -478,6 +497,10 @@ CMD_DHCP_ON_LEGACY
 	DB "AT+CWDHCP=1,1",13,10,0
 CMD_CIFSR
 	DB "AT+CIFSR",13,10,0
+CMD_CIPSTA_CUR_QUERY
+	DB "AT+CIPSTA_CUR?",13,10,0
+CMD_CIPSTA_QUERY
+	DB "AT+CIPSTA?",13,10,0
 
 CMD_CWJAP_CUR_PREFIX
 	DB "AT+CWJAP_CUR=",34,0

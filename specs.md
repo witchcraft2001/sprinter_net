@@ -288,6 +288,8 @@ Done when:
 - [x] Display current AP state and IP information.
 - [x] Treat final `AT+CIFSR` IP display as optional diagnostics, not as a
   connection failure.
+- [x] Fall back to `AT+CIPSTA_CUR?` and `AT+CIPSTA?` when `AT+CIFSR` does not
+  answer in firmware or emulator.
 
 Done when:
 
@@ -331,13 +333,13 @@ Done when:
 
 ### Stage 6 - `wget.exe` HTTP Downloader
 
-- [ ] Parse `http://host[:port]/path`.
-- [ ] Generate HTTP/1.0 GET request.
-- [ ] Send `Host`, `Connection: close`, `Accept-Encoding: identity`.
-- [ ] Receive response through TCP core.
-- [ ] Parse status line.
-- [ ] Skip headers and write body to DSS file.
-- [ ] Print progress by bytes received.
+- [x] Parse `http://host[:port]/path`.
+- [x] Generate HTTP/1.0 GET request.
+- [x] Send `Host`, `Connection: close`, `Accept-Encoding: identity`.
+- [x] Receive response through TCP core.
+- [x] Parse status line.
+- [x] Skip headers and write body to DSS file.
+- [x] Print basic progress while body chunks are written.
 - [ ] Reject or clearly report unsupported redirects, chunked transfer and gzip.
 
 Done when:

@@ -11,13 +11,15 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `TCPTEST.EXE` opens a TCP connection to `example.com:80` and prints a short
   HTTP response. Use it after `NETUP`.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
+- `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
+  local DSS file.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a
   diagnostic tool, not a network bring-up command.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
 
-Planned utilities include `WGET.EXE`, `NTP.EXE`, `TFTP.EXE`, `FTP.EXE`,
-`CHAT.EXE` and `IRC.EXE`.
+Planned utilities include `NTP.EXE`, `TFTP.EXE`, `FTP.EXE`, `CHAT.EXE` and
+`IRC.EXE`.
 
 ## Installation
 
@@ -61,6 +63,7 @@ NETCFG.EXE /W
 NETUP.EXE
 TCPTEST.EXE
 PING.EXE example.com
+WGET.EXE http://example.com/ INDEX.HTM
 ```
 
 ## Configuration File
@@ -91,7 +94,8 @@ Use this order during normal testing:
 2. `NETUP.EXE` - connect to Wi-Fi.
 3. `TCPTEST.EXE` - verify TCP access.
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
-5. Run protocol tools such as future `WGET.EXE` or `NTP.EXE`.
+5. `WGET.EXE http://example.com/ INDEX.HTM` - verify HTTP download.
+6. Run protocol tools such as future `NTP.EXE`.
 
 Use this order when something is stuck:
 
@@ -134,6 +138,16 @@ Current utility-specific notes:
 - `NETUP.EXE` returns `4` when `NET.CFG` is missing, unreadable or lacks SSID.
 - `NETRESET.EXE` returns `0` on successful reset/reinitialization, `2` when
   hardware is not found and `3` on ESP communication failure.
+- `WGET.EXE` returns `0` after a successful body download, `1` for invalid
+  command line or URL, `2` when hardware is not found, `3` for ESP/TCP/HTTP
+  errors and `5` for local output file errors.
+
+Current `WGET.EXE` limitations:
+
+- Supports plain `http://` only, not HTTPS.
+- Accepts HTTP 2xx status only.
+- Does not yet detect redirects, chunked transfer encoding or gzip content
+  encoding.
 
 This allows DSS batch scenarios to run `PING.EXE router-or-host` before starting
 another network command and stop when the status is non-zero.

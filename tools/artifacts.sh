@@ -17,6 +17,7 @@ BUILD_APPS=(
   netup
   tcptest
   ping
+  wget
   wterm
 )
 
