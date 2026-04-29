@@ -57,6 +57,8 @@ NETUP.EXE        initialize ESP and connect using NET.CFG
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.
+`NETUP.EXE` uses ESP-AT `_CUR` commands first, so normal setup does not write
+settings to ESP flash; legacy commands are used only as fallback.
 
 ## License
 

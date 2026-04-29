@@ -5,7 +5,7 @@
 
 EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 2000
-JOIN_TIMEOUT		EQU 15000
+JOIN_TIMEOUT		EQU 30000
 
 	DEVICE NOSLOT64K
 
@@ -77,26 +77,32 @@ START
 
 	PRINTLN MSG_STATION
 	LD	HL,CMD_CWMODE_CUR
-	CALL	SEND_CMD
+	LD	DE,CMD_CWMODE_LEGACY
+	CALL	SEND_CMD_WITH_FALLBACK
 
 	PRINTLN MSG_NO_SLEEP
 	LD	HL,CMD_SLEEP_OFF
 	CALL	SEND_CMD
 
 	CALL	APPLY_IP_MODE
-	CALL	APPLY_DNS
-
-	PRINTLN MSG_CURRENT_AP
-	LD	HL,CMD_CWJAP_QUERY
-	CALL	SEND_CMD_PRINT
 
 	PRINT MSG_JOINING
 	PRINT NETCFG.CFG_SSID
 	PRINT WCOMMON.LINE_END
-	CALL	BUILD_CWJAP_CMD
+	CALL	BUILD_CWJAP_CMD_CUR
+	LD	HL,CMD_BUFF
+	LD	BC,JOIN_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	JR	Z,.JOINED
+	PRINTLN MSG_FALLBACK
+	CALL	BUILD_CWJAP_CMD_LEGACY
 	LD	HL,CMD_BUFF
 	LD	BC,JOIN_TIMEOUT
 	CALL	SEND_CMD_TIMEOUT
+.JOINED
+
+	CALL	APPLY_DNS_OPTIONAL
 
 	PRINTLN MSG_IP_INFO
 	LD	HL,CMD_CIFSR
@@ -121,25 +127,42 @@ APPLY_IP_MODE
 
 	PRINTLN MSG_DHCP
 	LD	HL,CMD_DHCP_ON
-	JP	SEND_CMD
+	LD	DE,CMD_DHCP_ON_LEGACY
+	JP	SEND_CMD_WITH_FALLBACK
 
 .STATIC
 	PRINTLN MSG_STATIC
-	CALL	BUILD_CIPSTA_CMD
+	CALL	BUILD_CIPSTA_CMD_CUR
+	LD	HL,CMD_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	RET	Z
+	PRINTLN MSG_FALLBACK
+	CALL	BUILD_CIPSTA_CMD_LEGACY
 	LD	HL,CMD_BUFF
 	JP	SEND_CMD
 
 ; ------------------------------------------------------
-; Apply DNS if DNS1 is configured.
+; Apply DNS if DNS1 is configured. DNS setup is not mandatory because ESP-AT
+; command variants differ between firmware builds.
 ; ------------------------------------------------------
-APPLY_DNS
+APPLY_DNS_OPTIONAL
 	LD	A,(NETCFG.CFG_DNS1)
 	AND	A
 	RET	Z
 	PRINTLN MSG_DNS
-	CALL	BUILD_CIPDNS_CMD
+	CALL	BUILD_CIPDNS_CMD_CUR
 	LD	HL,CMD_BUFF
-	JP	SEND_CMD
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	RET	Z
+	PRINTLN MSG_FALLBACK
+	CALL	BUILD_CIPDNS_CMD_LEGACY
+	LD	HL,CMD_BUFF
+	CALL	SEND_CMD_OPTIONAL
+	RET
 
 ; ------------------------------------------------------
 ; Send command in HL with default timeout.
@@ -149,8 +172,7 @@ SEND_CMD
 	JP	SEND_CMD_TIMEOUT
 
 SEND_CMD_TIMEOUT
-	LD	DE,WIFI.RS_BUFF
-	CALL	WIFI.UART_TX_CMD
+	CALL	SEND_CMD_STATUS_TIMEOUT
 	AND	A
 	RET	Z
 	ADD	A,'0'
@@ -158,6 +180,45 @@ SEND_CMD_TIMEOUT
 	PRINTLN MSG_COMM_ERROR
 	LD	B,3
 	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; Send command in HL with timeout in BC.
+; Out: A = ESP result code, 0 means OK.
+; ------------------------------------------------------
+SEND_CMD_STATUS_TIMEOUT
+	LD	DE,WIFI.RS_BUFF
+	CALL	WIFI.UART_TX_CMD
+	RET
+
+; ------------------------------------------------------
+; Send primary command in HL. If it fails, send fallback command in DE.
+; ------------------------------------------------------
+SEND_CMD_WITH_FALLBACK
+	PUSH	DE
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	JR	Z,.OK
+	POP	HL
+	PRINTLN MSG_FALLBACK
+	JP	SEND_CMD
+.OK
+	POP	DE
+	RET
+
+; ------------------------------------------------------
+; Send non-critical command. Print a warning and continue on failure.
+; ------------------------------------------------------
+SEND_CMD_OPTIONAL
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	RET	Z
+	ADD	A,'0'
+	LD	(MSG_WARN_NO),A
+	PRINTLN MSG_OPTIONAL_WARN
+	RET
 
 ; ------------------------------------------------------
 ; Send command in HL and print response buffer.
@@ -191,9 +252,18 @@ SEND_CMD_RECOVER
 ; ------------------------------------------------------
 ; Build AT+CWJAP_CUR command from config.
 ; ------------------------------------------------------
+BUILD_CWJAP_CMD_CUR
+	LD	DE,CMD_CWJAP_CUR_PREFIX
+	JR	BUILD_CWJAP_CMD
+
+; ------------------------------------------------------
+; Build legacy AT+CWJAP command from config.
+; ------------------------------------------------------
+BUILD_CWJAP_CMD_LEGACY
+	LD	DE,CMD_CWJAP_LEGACY_PREFIX
+
 BUILD_CWJAP_CMD
 	LD	HL,CMD_BUFF
-	LD	DE,CMD_CWJAP_PREFIX
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_SSID
 	CALL	APPEND_IX_STR
@@ -207,9 +277,18 @@ BUILD_CWJAP_CMD
 ; ------------------------------------------------------
 ; Build AT+CIPSTA_CUR command from config.
 ; ------------------------------------------------------
+BUILD_CIPSTA_CMD_CUR
+	LD	DE,CMD_CIPSTA_CUR_PREFIX
+	JR	BUILD_CIPSTA_CMD
+
+; ------------------------------------------------------
+; Build legacy AT+CIPSTA command from config.
+; ------------------------------------------------------
+BUILD_CIPSTA_CMD_LEGACY
+	LD	DE,CMD_CIPSTA_LEGACY_PREFIX
+
 BUILD_CIPSTA_CMD
 	LD	HL,CMD_BUFF
-	LD	DE,CMD_CIPSTA_PREFIX
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_IP
 	CALL	APPEND_IX_STR
@@ -227,9 +306,18 @@ BUILD_CIPSTA_CMD
 ; ------------------------------------------------------
 ; Build AT+CIPDNS_CUR command from config.
 ; ------------------------------------------------------
+BUILD_CIPDNS_CMD_CUR
+	LD	DE,CMD_CIPDNS_CUR_PREFIX
+	JR	BUILD_CIPDNS_CMD
+
+; ------------------------------------------------------
+; Build legacy AT+CIPDNS command from config.
+; ------------------------------------------------------
+BUILD_CIPDNS_CMD_LEGACY
+	LD	DE,CMD_CIPDNS_LEGACY_PREFIX
+
 BUILD_CIPDNS_CMD
 	LD	HL,CMD_BUFF
-	LD	DE,CMD_CIPDNS_PREFIX
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_DNS1
 	CALL	APPEND_IX_STR
@@ -321,9 +409,9 @@ MSG_DHCP
 MSG_STATIC
 	DB "Applying static IP settings.",0
 MSG_DNS
-	DB "Applying DNS settings.",0
-MSG_CURRENT_AP
-	DB "Current AP state:",0
+	DB "Applying DNS settings (optional).",0
+MSG_FALLBACK
+	DB "Primary ESP command failed, trying fallback.",0
 MSG_JOINING
 	DB "Connecting to SSID: ",0
 MSG_IP_INFO
@@ -334,6 +422,10 @@ MSG_COMM_ERROR
 	DB "ESP communication error #"
 MSG_ERROR_NO
 	DB "n!",0
+MSG_OPTIONAL_WARN
+	DB "Optional ESP command failed #"
+MSG_WARN_NO
+	DB "n, continuing.",0
 
 CMD_AT
 	DB "AT",13,10,0
@@ -341,23 +433,31 @@ CMD_ECHO_OFF
 	DB "ATE0",13,10,0
 CMD_CWMODE_CUR
 	DB "AT+CWMODE_CUR=1",13,10,0
+CMD_CWMODE_LEGACY
+	DB "AT+CWMODE=1",13,10,0
 CMD_SLEEP_OFF
 	DB "AT+SLEEP=0",13,10,0
 CMD_DHCP_ON
 	DB "AT+CWDHCP_CUR=1,1",13,10,0
-CMD_CWJAP_QUERY
-	DB "AT+CWJAP?",13,10,0
+CMD_DHCP_ON_LEGACY
+	DB "AT+CWDHCP=1,1",13,10,0
 CMD_CIFSR
 	DB "AT+CIFSR",13,10,0
 
-CMD_CWJAP_PREFIX
+CMD_CWJAP_CUR_PREFIX
 	DB "AT+CWJAP_CUR=",34,0
+CMD_CWJAP_LEGACY_PREFIX
+	DB "AT+CWJAP=",34,0
 CMD_CWJAP_MIDDLE
 	DB 34,",",34,0
-CMD_CIPSTA_PREFIX
+CMD_CIPSTA_CUR_PREFIX
 	DB "AT+CIPSTA_CUR=",34,0
-CMD_CIPDNS_PREFIX
+CMD_CIPSTA_LEGACY_PREFIX
+	DB "AT+CIPSTA=",34,0
+CMD_CIPDNS_CUR_PREFIX
 	DB "AT+CIPDNS_CUR=1,",34,0
+CMD_CIPDNS_LEGACY_PREFIX
+	DB "AT+CIPDNS=1,",34,0
 CMD_QUOTE_COMMA_QUOTE
 	DB 34,",",34,0
 CMD_QUOTE_CRLF

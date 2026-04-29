@@ -71,6 +71,39 @@ No automated test suite is present. For DSS assembly, assemble every touched ent
 
 Primary debugging uses the MAME Sprinter emulator with the local `jesperl` software ESP emulator at `/Users/dmitry/dev/zx/sprinter/mame_esp/jesperl` (<https://sourceforge.net/projects/jesperl/files/>). Real-hardware debugging may use an ESP12-F/ESP8266 module connected to a COM port and flashed with ESP-AT firmware. `jesperl` does not fully emulate the needed behavior, so tasks may require improving or extending its functionality before application bugs can be isolated reliably.
 
+When an ESP-AT command fails in MAME/`jesperl`, do not immediately assume the
+command is wrong for real ESP-AT firmware. First check whether `jesperl`
+implements that exact command syntax in
+`/Users/dmitry/dev/zx/sprinter/mame_esp/jesperl/jesperl_xtr.pl` and compare it
+with the target ESP-AT firmware behavior. If the command is missing from
+`jesperl` but valid for real ESP-AT, record it as an emulator gap and prefer
+either adding a fallback path or extending `jesperl` before reverting the real
+firmware-oriented implementation.
+
+Current `jesperl` improvement mini-spec for this project:
+
+- Support basic no-op success commands used during initialization:
+  `ATE0`, `AT`, `AT+CWMODE=1`, `AT+CWMODE_CUR=1`, `AT+SLEEP=0`,
+  `AT+UART_CUR=115200,8,1,0,3`, `AT+CWLAPOPT=1,23`.
+- Support Wi-Fi status and connection commands:
+  `AT+CWJAP?`, `AT+CWJAP="ssid","password"`,
+  `AT+CWJAP_CUR="ssid","password"`, returning realistic `OK` and `+CWJAP`
+  responses.
+- Support IP/DHCP/DNS variants used by ESPKit and newer ESP-AT:
+  `AT+CWDHCP=1,1`, `AT+CWDHCP_CUR=1,1`, `AT+CIPSTA?`,
+  `AT+CIPSTA_CUR?`, `AT+CIPSTA="ip","gw","mask"`,
+  `AT+CIPSTA_CUR="ip","gw","mask"`, `AT+CIFSR`, `AT+CIPDNS?`,
+  `AT+CIPDNS_CUR?`, `AT+CIPDNS=1,"dns1","dns2"`,
+  `AT+CIPDNS_CUR=1,"dns1","dns2"`.
+- Preserve enough emulator state to make the sequence realistic: selected SSID,
+  connected/disconnected state, DHCP enabled flag, station IP/gateway/netmask,
+  DNS servers.
+- Keep responses close to ESP-AT style: CRLF line endings, final `OK`/`ERROR`,
+  and optional informational lines such as `+CWJAP:...`, `+CIFSR:STAIP,...`,
+  `+CIPSTA:ip:...`.
+- Add quick host-side checks, for example `printf 'AT+CWJAP?\\r\\n' | nc ...`,
+  for each newly supported command family.
+
 ## Commit & Pull Request Guidelines
 
 Existing commits are short and descriptive, such as `optimization`, `Update README.md`, and `Refactoring code for best reuse in other utilities`. Prefer clearer imperative subjects, for example `Fix RTS/CTS handling in ESP library`. Pull requests should describe software or hardware scope, list manual tests and build commands, link related issues or docs, and include updated screenshots, PDFs, BOMs, or Gerbers when board outputs change.

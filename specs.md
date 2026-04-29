@@ -257,6 +257,7 @@ Done when:
 - [x] Use `AT+CWJAP_CUR="ssid","password"` to connect.
 - [x] Apply DHCP/static IP settings.
 - [x] Apply DNS settings where supported.
+- [x] Prefer `_CUR` ESP-AT commands and use legacy commands only as fallback.
 - [x] Implement `netup.exe`.
 - [x] Display current AP state and IP information.
 
