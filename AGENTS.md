@@ -99,6 +99,9 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
+- Support diagnostic commands planned for `ping.exe`, especially
+  `AT+PING="host"` with realistic `+PING:<time_ms>` and `OK` responses, plus
+  `ERROR` for invalid or unreachable hosts.
 - Preserve enough emulator state to make the sequence realistic: selected SSID,
   connected/disconnected state, DHCP enabled flag, station IP/gateway/netmask,
   DNS servers.

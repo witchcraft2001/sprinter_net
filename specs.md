@@ -14,6 +14,7 @@ Initial target utilities:
 - `netcfg.exe` / `wcfg.exe` - shared Wi-Fi and TCP/IP configuration.
 - `netup.exe` - initialize SprinterESP and bring the configured network up.
 - `tcptest.exe` - temporary TCP smoke test for the shared TCP client core.
+- `ping.exe` - host reachability and latency diagnostic.
 - `wget.exe` - simple HTTP downloader.
 - `ntp.exe` - set DSS time from network time.
 - `tftp.exe` - simple TFTP client.
@@ -72,6 +73,7 @@ src/
     netcfg.asm
     netup.asm
     tcptest.asm
+    ping.asm
     wget.asm
     ntp.asm
     tftp.asm
@@ -182,6 +184,7 @@ Responsibilities:
 - `udp_recv`
 - `udp_close`
 - `dns_resolve` where useful
+- `ping_host` using ESP-AT `AT+PING` when firmware supports it
 - `sntp_enable`
 - `sntp_get_time`
 
@@ -263,6 +266,8 @@ Done when:
 - [x] Prefer `_CUR` ESP-AT commands and use legacy commands only as fallback.
 - [x] Implement `netup.exe`.
 - [x] Display current AP state and IP information.
+- [x] Treat final `AT+CIFSR` IP display as optional diagnostics, not as a
+  connection failure.
 
 Done when:
 
@@ -285,7 +290,25 @@ Done when:
 - A utility can connect to a simple HTTP server, send bytes and save raw response.
 - Binary payload reading is length-based and not string-based.
 
-### Stage 5 - `wget.exe` HTTP Downloader
+### Stage 5 - `ping.exe` Network Diagnostic
+
+- [ ] Check whether target ESP-AT firmware supports `AT+PING="host"`.
+- [ ] Add `jesperl` support for `AT+PING="host"` before relying on emulator
+  results.
+- [ ] Implement `ping.exe host`.
+- [ ] Parse successful `+PING:<time_ms>` responses.
+- [ ] Print clear timeout/error output when ICMP is unavailable or host fails.
+- [ ] Consider optional TCP connect fallback for hosts/firmware without
+  `AT+PING`, but label it as TCP reachability, not ICMP ping.
+
+Done when:
+
+- `ping.exe example.com` reports latency or a clear ESP-AT unsupported/error
+  status.
+- The utility does not require Wi-Fi credentials and expects `NETUP` to have
+  already configured the network.
+
+### Stage 6 - `wget.exe` HTTP Downloader
 
 - [ ] Parse `http://host[:port]/path`.
 - [ ] Generate HTTP/1.0 GET request.
@@ -301,7 +324,7 @@ Done when:
 - `wget.exe http://host/file.bin FILE.BIN` downloads a file.
 - Output file is byte-identical for non-chunked, non-gzip HTTP/1.0 responses.
 
-### Stage 6 - Network Time
+### Stage 7 - Network Time
 
 - [ ] Implement `ntp.exe` using ESP SNTP first.
 - [ ] Configure SNTP with `AT+CIPSNTPCFG=1,<tz>`.
@@ -315,7 +338,7 @@ Done when:
 - `ntp.exe` reads `TZ` and `NTP` from `NET.CFG`.
 - DSS time is updated and displayed.
 
-### Stage 7 - UDP Core And TFTP
+### Stage 8 - UDP Core And TFTP
 
 - [ ] Implement UDP open/send/receive/close.
 - [ ] Determine reliable ESP-AT behavior for UDP reply port changes.
@@ -331,7 +354,7 @@ Done when:
 - `tftp.exe tftp://server/file FILE` downloads from a standard TFTP server.
 - `tftp.exe FILE tftp://server/file` uploads where server permits writes.
 
-### Stage 8 - Passive FTP
+### Stage 9 - Passive FTP
 
 - [ ] Enable multi-connection mode with `AT+CIPMUX=1`.
 - [ ] Implement link-aware TCP open/send/receive/close.
@@ -347,7 +370,7 @@ Done when:
 - `ftp.exe` can login to a simple FTP server in passive mode.
 - Binary download and upload work for small and medium files.
 
-### Stage 9 - Text Chat / IRC Baseline
+### Stage 10 - Text Chat / IRC Baseline
 
 - [ ] Implement a simple TCP line client first.
 - [ ] Add reconnect and keepalive.
@@ -360,7 +383,7 @@ Done when:
 - `chat.exe` can connect to a known plaintext TCP chat endpoint.
 - Optional `irc.exe` can join a plaintext IRC server/channel.
 
-### Stage 10 - Browser And Download Manager
+### Stage 11 - Browser And Download Manager
 
 - [ ] Reuse HTTP downloader core.
 - [ ] Add simple HTML/text rendering.
@@ -372,7 +395,7 @@ Done when:
 
 - A small text page can be fetched, displayed and navigated.
 
-### Stage 11 - Optional Local Web Server
+### Stage 12 - Optional Local Web Server
 
 - [ ] Evaluate ESP-AT `CIPSERVER` on real hardware.
 - [ ] Implement multi-connection server event parser.

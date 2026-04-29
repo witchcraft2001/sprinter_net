@@ -106,7 +106,7 @@ START
 
 	PRINTLN MSG_IP_INFO
 	LD	HL,CMD_CIFSR
-	CALL	SEND_CMD_PRINT
+	CALL	SEND_CMD_PRINT_OPTIONAL
 
 	PRINTLN MSG_DONE
 	LD	B,0
@@ -225,6 +225,24 @@ SEND_CMD_OPTIONAL
 ; ------------------------------------------------------
 SEND_CMD_PRINT
 	CALL	SEND_CMD
+	LD	HL,WIFI.RS_BUFF
+	JP	PRINT_ESP_RESPONSE
+
+; ------------------------------------------------------
+; Send command in HL and print response buffer. A missing response is not fatal:
+; CIFSR is diagnostic, while Wi-Fi setup has already completed by this point.
+; ------------------------------------------------------
+SEND_CMD_PRINT_OPTIONAL
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	AND	A
+	JR	Z,.PRINT
+	ADD	A,'0'
+	LD	(MSG_WARN_NO),A
+	PRINTLN MSG_OPTIONAL_WARN
+	RET
+.PRINT
 	LD	HL,WIFI.RS_BUFF
 	JP	PRINT_ESP_RESPONSE
 
