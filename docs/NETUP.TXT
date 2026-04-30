@@ -27,6 +27,10 @@ Behavior
   BAUD controls the UART speed used by automated tools after NETUP configures
   the ESP module with AT+UART_CUR. Supported values are 115200, 57600, 38400,
   19200 and 9600. Use 57600 or 38400 if 115200 loses bytes on your setup.
+  When BAUD is not 115200, NETUP verifies the new speed by switching the local
+  16550 UART to the configured divisor and sending AT again. If verification
+  fails, NETUP exits with an ESP communication error instead of leaving later
+  tools configured for a speed that ESP did not accept.
 
   After applying UART settings, NETUP queries AT+UART_CUR? and prints the
   current ESP UART configuration. The last value must be 3 for hardware
