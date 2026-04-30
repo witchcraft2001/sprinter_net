@@ -51,7 +51,7 @@ FCR_TR1         EQU	0x00								; Trigger on 1 byte in fifo
 FCR_TR4         EQU	0x40								; Trigger on 4 bytes in fifo
 FCR_TR8         EQU	0x80								; Trigger on 8 bytes in fifo
 FCR_TR14        EQU	0xC0								; Trigger on 14 bytes in fifo
-FCR_RX_TRIGGER	EQU	FCR_TR1								; Deassert RTS as early as possible in auto-flow mode
+FCR_RX_TRIGGER	EQU	FCR_TR8								; Deassert RTS at 8 bytes; gives ESP 8 byte-times to react before FIFO overflows
 LSR_DR          EQU	0x01								; Data Ready
 LSR_OE          EQU	0x02								; Overrun Error
 LSR_PE          EQU	0x04								; Parity Error
@@ -253,16 +253,16 @@ UART_WAIT_TR
 UART_WAIT_TR_INT
 	PUSH	BC, HL, DE
 	LD		D,A
-	LD 		BC,	500
+	LD 		BC,	10000								; 10000 * 100us = 1s; ESP backpressure can hold CTS for hundreds of ms
 	LD 		HL,	REG_LSR
-WAIT_TR_BZY           
+WAIT_TR_BZY
 	LD 		A,(HL)
 	AND 	A, LSR_THRE
 	JR 		NZ,WAIT_TR_RDY
 	CALL	@UTIL.DELAY_100uS							; ~11 bit tx delay
 	DEC 	BC
 	LD 		A, C
-	OR		B	
+	OR		B
 	JR 		NZ,WAIT_TR_BZY
 	SCF
 WAIT_TR_RDY
@@ -298,22 +298,32 @@ UART_TX_BUFFER
 	PUSH	BC,DE,HL
 	LD		DE, REG_THR
 	CALL	ISA.ISA_OPEN
-UTX_NEXT	
+UTX_NEXT
 	; buff not empty?
 	LD		A, B
 	OR		C
 	JR		Z,UTX_EMP
-	; check transmitter ready
+	; wait until FIFO drains so we can refill it
 	CALL	UART_WAIT_TR_INT
 	JR		C, UTX_TXNR
-	; transmitt byte
+	; THRE=1 means TX FIFO is empty; refill up to 16 bytes (FIFO depth)
+	; before polling THRE again. Cuts per-byte poll overhead by ~16x.
+	LD		A, 16
+UTX_BURST
+	LD		(TX_BURST_LEFT), A
+	LD		A, B
+	OR		C
+	JR		Z, UTX_EMP
 	LD		A,(HL)
-	INC		HL
 	LD		(DE),A
+	INC		HL
 	DEC		BC
+	LD		A,(TX_BURST_LEFT)
+	DEC		A
+	JR		NZ, UTX_BURST
 	JR		UTX_NEXT
 	; CF=0
-UTX_EMP	
+UTX_EMP
 	AND		A
 UTX_TXNR
 	CALL	ISA.ISA_CLOSE
@@ -557,6 +567,9 @@ MSG_RCV_EMPTY
 
 ; Receive block size
 BSIZE		DW 0
+
+; UART_TX_BUFFER FIFO refill counter
+TX_BURST_LEFT	DB 0
 
 UART_DIVISOR	DB DEFAULT_DIVISOR
 

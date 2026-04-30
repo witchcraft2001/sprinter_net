@@ -548,7 +548,10 @@ RECEIVE_HTTP
 	LD	BC,RECV_BUFFER_SIZE
 	LD	DE,RECV_TIMEOUT
 	CALL	TCP.RECEIVE
+	; Pause RX immediately so ESP stops sending while we run the (slow)
+	; HTTP parser, debug print, file write etc. Resumed at .LOOP top.
 	PUSH	AF,BC
+	CALL	WIFI.UART_RX_PAUSE
 	CALL	STORE_RECV_DEBUG
 	POP	BC,AF
 	JR	C,.RX_ERROR
@@ -928,11 +931,26 @@ FOLLOW_REDIRECT
 ; Remove ESP-AT connection-close notification from the end of a receive block.
 ; Some ESP/jesperl streams append CLOSED after TCP payload bytes. It is not
 ; HTTP body and must never be written to the output file.
+;
+; Guard: only attempt the trim when we are past HTTP headers AND a
+; Content-Length is known AND BODY_BYTES + BC strictly exceeds
+; Content-Length. Without that, an HTTP body that legitimately ends with
+; "CLOSED" plus CR/LF (text payload, log file, etc.) would be silently
+; truncated. With the guard we only ever trim bytes that already overflow
+; the announced body size.
 ; In/Out: BC - received byte count.
 ; ------------------------------------------------------
 TRIM_CLOSED_SUFFIX
 	LD	(TRIM_ORIG_LEN),BC
 	LD	(TRIM_CAND_LEN),BC
+	LD	A,(HEADER_DONE)
+	AND	A
+	JR	Z,.NO_MATCH
+	LD	A,(CONTENT_LENGTH_SEEN)
+	AND	A
+	JR	Z,.NO_MATCH
+	CALL	BODY_PLUS_BC_OVER_CL
+	JR	NC,.NO_MATCH
 	LD	HL,RECV_BUFFER
 	ADD	HL,BC
 .SKIP_TAIL_CRLF
@@ -988,6 +1006,44 @@ TRIM_CLOSED_SUFFIX
 	POP	HL
 .NO_MATCH
 	LD	BC,(TRIM_ORIG_LEN)
+	RET
+
+; ------------------------------------------------------
+; CF=1 iff (BODY_BYTES + BC) > CONTENT_LENGTH (32-bit unsigned, strict).
+; Preserves BC. Trashes A, DE, HL.
+; ------------------------------------------------------
+BODY_PLUS_BC_OVER_CL
+	PUSH	BC
+	LD	HL,(BODY_BYTES)
+	ADD	HL,BC
+	LD	(TRIM_TMP),HL
+	LD	HL,(BODY_BYTES+2)
+	JR	NC,.NO_CARRY
+	INC	HL
+.NO_CARRY
+	LD	(TRIM_TMP+2),HL
+
+	; Compare 32-bit TRIM_TMP > CONTENT_LENGTH; high words first.
+	LD	HL,(CONTENT_LENGTH+2)
+	LD	DE,(TRIM_TMP+2)
+	OR	A
+	SBC	HL,DE
+	JR	C,.OVER				; CL_hi < TMP_hi -> over
+	JR	NZ,.NOT_OVER			; CL_hi > TMP_hi -> not over
+	; equal high words; compare low
+	LD	HL,(CONTENT_LENGTH)
+	LD	DE,(TRIM_TMP)
+	OR	A
+	SBC	HL,DE
+	JR	C,.OVER				; CL_lo < TMP_lo -> over
+	; CL_lo >= TMP_lo (including equal) -> not strictly over
+.NOT_OVER
+	POP	BC
+	AND	A
+	RET
+.OVER
+	POP	BC
+	SCF
 	RET
 
 UPDATE_HEADER_STATE
@@ -1047,10 +1103,10 @@ UPDATE_HEADER_STATE
 	RET
 
 WRITE_BODY
+	; RX is already paused by RECEIVE_HTTP main loop; resume happens at .LOOP top.
 	LD	A,B
 	OR	C
 	RET	Z
-	CALL	WIFI.UART_RX_PAUSE
 	LD	A,(BODY_LOG_PRINTED)
 	AND	A
 	JR	NZ,.LOG_DONE
@@ -1063,19 +1119,12 @@ WRITE_BODY
 	PUSH	BC
 	CALL	WRITE_OUTPUT
 	POP	BC
-	JR	C,.WRITE_ERR
-	CALL	WIFI.UART_RX_RESUME
+	RET	C
 	CALL	ADD_BODY_BYTES
 	LD	A,'.'
 	CALL	PUT_CHAR
 	LD	A,1
 	LD	(HAVE_BODY),A
-	RET
-.WRITE_ERR
-	PUSH	AF
-	CALL	WIFI.UART_RX_RESUME
-	POP	AF
-	SCF
 	RET
 
 PRINT_BODY_LOG_HEADER
@@ -1621,6 +1670,7 @@ DEBUG_LSR_HEX	DB "xx",0
 DEBUG_LSR_ACC_HEX DB "xx",0
 TRIM_ORIG_LEN	DW 0
 TRIM_CAND_LEN	DW 0
+TRIM_TMP	DD 0
 U32_POW10_TABLE
 	DD 1000000000
 	DD 100000000
