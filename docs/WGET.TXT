@@ -48,6 +48,9 @@ Testing notes
   receive support, missing RTS/CTS emulation or oversized +IPD bursts. Try a
   lower BAUD value in NET.CFG or use a jesperl version that supports
   AT+CIPRECVMODE and AT+CIPRECVDATA.
+  If WGET prints "UART overrun detected", the 16550 UART reported lost input
+  bytes. The downloaded file must be treated as corrupted; lower BAUD, run
+  NETUP again, and check that NETUP reports UART flow control value 3.
   The TCP core is expected to preserve +IPD payloads that are larger than the
   WGET receive buffer and return them across multiple receive calls.
 
