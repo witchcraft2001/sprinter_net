@@ -456,7 +456,7 @@ Done when:
 - [x] Keep WGET receive/write buffers below the `0xC000` banking window.
 - [x] Move WGET and shared NET.CFG work buffers out of the EXE image into
   runtime BSS address ranges.
-- [ ] Clearly report unsupported HTTPS redirects, chunked transfer and gzip.
+- [x] Clearly report unsupported HTTPS redirects, chunked transfer and gzip.
 
 Done when:
 

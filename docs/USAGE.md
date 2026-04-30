@@ -203,7 +203,8 @@ Current `WGET.EXE` limitations:
 - Downloads HTTP 2xx responses.
 - Follows absolute `http://` redirects up to five hops. HTTPS redirects are
   reported but cannot be downloaded.
-- Does not yet decode chunked transfer encoding or gzip content encoding.
+- Detects chunked transfer encoding and gzip content encoding, then reports them
+  as unsupported instead of writing undecodable data.
 
 This allows DSS batch scenarios to run `PING.EXE router-or-host` before starting
 another network command and stop when the status is non-zero.

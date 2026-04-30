@@ -28,7 +28,7 @@ Current limitations
   HTTP 2xx responses are downloaded.
   HTTP redirects with an absolute http:// Location header are followed up to
   five hops. HTTPS redirects are reported but cannot be downloaded.
-  Chunked transfer and gzip content are not decoded yet.
+  Chunked transfer and gzip content are detected and reported as unsupported.
   Unsupported responses print the received HTTP status line when it is present.
 
 Testing notes
