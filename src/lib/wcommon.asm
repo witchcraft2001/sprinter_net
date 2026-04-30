@@ -107,7 +107,9 @@ DR_NEXT
 ; ------------------------------------------------------
 ; Non-blocking check for user cancel: Esc (E=0x1B / 0x07) or Ctrl+Z (E=0x1A
 ; with any Ctrl modifier held). Calls DSS_SCANKEY and consumes the matching
-; key from the buffer.
+; key from the buffer. On cancel sets WCOMMON.CANCELLED so callers nested
+; inside UART/ISA loops can propagate up via existing error paths and the
+; top-level error handler can redirect to CANCEL_EXIT.
 ; Out: CF=1 - cancel pressed, CF=0 - no cancel.
 ; Preserves A, BC, DE, HL.
 ; Caller must NOT have ISA window open; SCANKEY may switch memory pages.
@@ -128,6 +130,8 @@ CHECK_CANCEL
 	AND	KB_CTRL | KB_L_CTRL | KB_R_CTRL
 	JR	Z,.NO_KEY
 .CANCEL
+	LD	A,1
+	LD	(CANCELLED),A
 	POP	HL,DE,BC,AF
 	SCF
 	RET
@@ -136,6 +140,44 @@ CHECK_CANCEL
 	AND	A
 	RET
 	;;ENDIF
+
+; ------------------------------------------------------
+; Same as CHECK_CANCEL but allowed to be called while ISA window is open.
+; Closes ISA, polls keyboard, reopens ISA.
+; Out: CF=1 if cancel pressed.
+; Preserves all registers including A.
+; ------------------------------------------------------
+CHECK_CANCEL_IN_ISA
+	PUSH	AF,BC,DE,HL
+	CALL	@ISA.ISA_CLOSE
+	DSS_EXEC	DSS_SCANKEY
+	JR	Z,.NO_KEY
+	LD	A,E
+	CP	0x1B
+	JR	Z,.CANCEL
+	CP	0x07
+	JR	Z,.CANCEL
+	CP	0x1A
+	JR	NZ,.NO_KEY
+	LD	A,B
+	AND	KB_CTRL | KB_L_CTRL | KB_R_CTRL
+	JR	Z,.NO_KEY
+.CANCEL
+	LD	A,1
+	LD	(CANCELLED),A
+	CALL	@ISA.ISA_OPEN
+	POP	HL,DE,BC,AF
+	SCF
+	RET
+.NO_KEY
+	CALL	@ISA.ISA_OPEN
+	POP	HL,DE,BC,AF
+	AND	A
+	RET
+
+; Cancellation flag. Set by CHECK_CANCEL when Esc/Ctrl+Z detected.
+; Top-level error handlers in apps check this and redirect to CANCEL_EXIT.
+CANCELLED	DB 0
 
 ; ------------------------------------------------------
 ; Store old video mode and set 80x32 without clearing the console.

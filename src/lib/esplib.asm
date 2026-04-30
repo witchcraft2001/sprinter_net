@@ -412,21 +412,43 @@ UVR_OK
 UART_WAIT_RS1_INT
 	PUSH	BC,HL
 	LD		BC,(WAIT_MS)
+	LD		HL,200
+	LD		(CANCEL_TICK),HL
 	JR		UVR_NEXT_INT
 UART_WAIT_RS_INT
 	PUSH	BC,HL
+	LD		HL,200
+	LD		(CANCEL_TICK),HL
 UVR_NEXT_INT
 	LD		HL, REG_LSR
 	LD		A,(HL)
 	AND		LSR_DR
 	JR		NZ,UVR_OK_INT
 	CALL	UTIL.DELAY_1MS
+	; Cancel poll every ~200ms (200 * ~0.5ms each = ~100ms wall, close enough).
+	LD		HL,(CANCEL_TICK)
+	DEC		HL
+	LD		(CANCEL_TICK),HL
+	LD		A,H
+	OR		L
+	JR		NZ,.NO_CANCEL_CHECK
+	LD		HL,200
+	LD		(CANCEL_TICK),HL
+	CALL	@WCOMMON.CHECK_CANCEL_IN_ISA
+	JR		C,UVR_CANCEL_INT
+.NO_CANCEL_CHECK
 	DEC		BC
 	LD		A,B
 	OR		C
 	JR		NZ,UVR_NEXT_INT
 	SCF
 UVR_OK_INT
+	POP		HL,BC
+	RET
+UVR_CANCEL_INT
+	; Treat user cancel as a timeout for legacy callers; WCOMMON.CANCELLED flag
+	; is set so top-level error handlers can redirect to CANCEL_EXIT.
+	SCF
 	POP		HL,BC
 	RET
 
@@ -571,6 +593,9 @@ BSIZE		DW 0
 
 ; UART_TX_BUFFER FIFO refill counter
 TX_BURST_LEFT	DB 0
+
+; Periodic cancel-poll counter for UART wait loops
+CANCEL_TICK	DW 0
 
 UART_DIVISOR	DB DEFAULT_DIVISOR
 

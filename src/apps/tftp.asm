@@ -128,6 +128,9 @@ USAGE
 	JP	WCOMMON.EXIT
 
 UDP_ERROR_EXIT
+	LD	A,(WCOMMON.CANCELLED)
+	AND	A
+	JP	NZ,CANCEL_EXIT
 	PUSH	AF
 	CALL	PRINT_UDP_DEBUG
 	LD	A,(UDP_IS_OPEN)
@@ -623,11 +626,17 @@ BUILD_DATA_PACKET_FROM_FILE
 	LD	A,(EXPECTED_BLOCK)
 	LD	(HL),A
 
+	; Pause RX during the slow DSS read so background ESP traffic does
+	; not overflow the 16-byte FIFO.
+	CALL	WIFI.UART_RX_PAUSE
 	LD	A,(IN_FH)
 	LD	HL,PACKET_BUFFER+4
 	LD	DE,TFTP_DATA_SIZE
 	LD	C,DSS_READ_FILE
 	RST	DSS
+	PUSH	AF,DE
+	CALL	WIFI.UART_RX_RESUME
+	POP	DE,AF
 	JR	C,.FILE_ERROR
 	LD	(LAST_DATA_LEN),DE
 	LD	BC,DE
@@ -802,7 +811,14 @@ HANDLE_PACKET
 	CP	(HL)
 	JR	NZ,.PROTO_ERR
 
+	; Pause RX while we do the slow DSS write so the ESP cannot push
+	; bytes (its own notifications, retransmits, etc.) into a 16-byte
+	; FIFO that we are not draining.
+	CALL	WIFI.UART_RX_PAUSE
 	CALL	WRITE_DATA_PAYLOAD
+	PUSH	AF
+	CALL	WIFI.UART_RX_RESUME
+	POP	AF
 	RET	C
 	CALL	BUILD_ACK_PACKET
 	CALL	SEND_PACKET
