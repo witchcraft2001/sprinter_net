@@ -54,6 +54,9 @@ Testing notes
   NETUP again, and check that NETUP reports UART flow control value 3.
   The TCP core is expected to preserve +IPD payloads that are larger than the
   WGET receive buffer and return them across multiple receive calls.
+  WGET keeps its receive buffer below the 0xC000 memory window because DSS file
+  writes switch memory pages internally. Buffers crossing that boundary may
+  produce files with correct size but corrupted zero-filled blocks.
 
 Exit status
   0  File body downloaded.

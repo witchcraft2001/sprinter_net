@@ -24,9 +24,12 @@ Behavior
   DHCP is enabled when DHCP=1. Static IP, gateway and netmask are applied when
   DHCP=0. DNS settings are optional because ESP-AT firmware variants differ.
 
-  BAUD controls the UART speed used by automated tools after NETUP configures
-  the ESP module with AT+UART_CUR. Supported values are 115200, 57600, 38400,
-  19200 and 9600. Use 57600 or 38400 if 115200 loses bytes on your setup.
+  BAUD controls the UART speed used by automated tools. Supported values are
+  115200, 57600, 38400, 19200 and 9600. Use 57600 or 38400 if 115200 loses
+  bytes on your setup.
+  BAUD=115200 is the ESP reset default, so NETUP does not send AT+UART_CUR in
+  this case. This avoids breaking modules or emulators that do not reliably
+  accept runtime UART flow-control changes.
   When BAUD is not 115200, NETUP verifies the new speed by switching the local
   16550 UART to the configured divisor and sending AT again. If verification
   fails, NETUP exits with an ESP communication error instead of leaving later
@@ -35,6 +38,10 @@ Behavior
   After applying UART settings, NETUP queries AT+UART_CUR? and prints the
   current ESP UART configuration. The last value must be 3 for hardware
   RTS/CTS flow control. For example: +UART_CUR:115200,8,1,0,3.
+  If the ESP stops answering after enabling RTS/CTS flow control, NETUP resets
+  the module and continues at 115200 with a warning. For non-default BAUD
+  values it also tries the same speed without ESP-side flow control before
+  reporting a fatal communication error.
 
 Exit status
   0  Network bring-up completed.

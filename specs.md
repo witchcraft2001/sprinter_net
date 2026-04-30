@@ -140,6 +140,13 @@ Rationale:
   automation/batch scenarios.
 - Do not clear the DSS console on startup; tools should append output at the
   current cursor position for scripts and logs.
+- Do not store large zero-filled work buffers in EXE files. Runtime command,
+  URL, packet, TCP/UDP receive and configuration buffers must be defined as
+  explicit BSS memory maps (`EQU` ranges) and initialized at startup only when
+  needed.
+- Keep DSS file read/write buffers below the `0xC000` banking window unless the
+  code explicitly handles page switching. Larger future buffers should use DSS
+  paged memory mapped into `WIN0`-`WIN3`, not static EXE space.
 - Make the first implementation narrow and reliable before adding protocol
   features.
 
@@ -437,6 +444,9 @@ Done when:
 - [x] Follow absolute `http://` redirects up to a small fixed limit.
 - [x] Skip headers and write body to DSS file.
 - [x] Print basic progress while body chunks are written.
+- [x] Keep WGET receive/write buffers below the `0xC000` banking window.
+- [x] Move WGET and shared NET.CFG work buffers out of the EXE image into
+  runtime BSS address ranges.
 - [ ] Clearly report unsupported HTTPS redirects, chunked transfer and gzip.
 
 Done when:

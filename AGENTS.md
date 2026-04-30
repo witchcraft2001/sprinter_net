@@ -71,6 +71,15 @@ end label. Clear that runtime area at program start only when the code depends
 on zeroed memory. Small state variables and required initialized data may remain
 in the file.
 
+Keep runtime memory maps explicit. When a utility needs command, URL, packet,
+TCP/UDP receive, or configuration buffers, define them with `EQU` in a BSS map
+instead of `DS ...,0`, and make sure the ranges do not overlap while both values
+must stay alive. For buffers used as DSS file read/write sources, keep them
+below the `0xC000` banking window unless the code explicitly manages page
+switching. If a future utility needs a large buffer, allocate/use DSS paged
+memory and map it through available `WIN0`-`WIN3` windows instead of embedding
+or assuming a large linear buffer in the `.EXE`.
+
 ## Testing Guidelines
 
 No automated test suite is present. For DSS assembly, assemble every touched entry program and smoke-test on Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed program and verify behavior against an ESP8266 running ESP-AT firmware. For hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify regenerated PDFs, BOMs, and Gerbers before publishing.
