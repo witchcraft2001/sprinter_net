@@ -80,6 +80,13 @@ switching. If a future utility needs a large buffer, allocate/use DSS paged
 memory and map it through available `WIN0`-`WIN3` windows instead of embedding
 or assuming a large linear buffer in the `.EXE`.
 
+Keep optional protocol modes out of common includes. Code for features that are
+not used by every network utility, such as ESP-AT multi-connection mode
+(`AT+CIPMUX=1`) for passive FTP or server-style tools, must live in a separate
+library include or be guarded by assembly-time conditionals. Simple clients such
+as WGET, PING, NTP, UDPTEST, and TFTP should not grow from unused FTP/server
+helpers.
+
 ## Testing Guidelines
 
 No automated test suite is present. For DSS assembly, assemble every touched entry program and smoke-test on Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed program and verify behavior against an ESP8266 running ESP-AT firmware. For hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify regenerated PDFs, BOMs, and Gerbers before publishing.

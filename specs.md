@@ -88,6 +88,14 @@ baseline. `wget.exe` may probe passive mode and fall back, but the reliable path
 for this firmware must remain active `+IPD,<len>:<payload>` receive with correct
 UART flow control and/or conservative receive pacing.
 
+Multi-connection support is present in the checked V2.2.1 firmware. The binary
+contains `AT+CIPMUX`, link-id `AT+CIPSTART`/`AT+CIPSEND` response formats and
+`+IPD,<link>,<len>:<payload>` forms. FTP and future server-mode tools may use
+`AT+CIPMUX=1`, but existing single-connection tools should keep `AT+CIPMUX=0`
+unless they explicitly need parallel control/data sockets. Multi-connection
+helpers must stay outside the common TCP include and live in
+`src/lib/esp_tcp_multi.asm` so simple tools do not pay for unused code.
+
 ## Emulator Requirements
 
 Primary emulation target is MAME Sprinter with `jesperl` acting as an ESP-AT
@@ -492,8 +500,11 @@ Done when:
 
 ### Stage 9 - Passive FTP
 
+- [x] Confirm ESP-AT V2.2.1 firmware exposes multi-connection commands and
+  link-id response formats.
 - [ ] Enable multi-connection mode with `AT+CIPMUX=1`.
-- [ ] Implement link-aware TCP open/send/receive/close.
+- [x] Add initial link-aware TCP open/send/receive/close helpers in a separate
+  `esp_tcp_multi.asm` include.
 - [ ] Implement FTP control channel line parser.
 - [ ] Support `USER`, `PASS`, `TYPE I`, `PASV`, `RETR`, `STOR`, `LIST`, `QUIT`.
 - [ ] Parse `227 Entering Passive Mode (...)`.

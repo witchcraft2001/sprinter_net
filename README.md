@@ -116,6 +116,13 @@ The V2.2.1 binaries do not contain `AT+CIPRECVMODE` or `AT+CIPRECVDATA`, so
 ESP-AT passive TCP receive should be treated as unsupported for this firmware.
 WGET must keep a reliable active `+IPD` receive path for V2.2.1.
 
+The same firmware does expose multi-connection TCP/UDP support through
+`AT+CIPMUX`, link-id `AT+CIPSTART`/`AT+CIPSEND` responses and
+`+IPD,<link>,<len>:...` receive frames. This is the baseline planned for
+passive FTP, where the control and data sockets must be open at the same time.
+These helpers live in `src/lib/esp_tcp_multi.asm` and should be included only
+by programs that explicitly enable `AT+CIPMUX=1`.
+
 ## License
 
 BSD 3-Clause. See `LICENSE`.
