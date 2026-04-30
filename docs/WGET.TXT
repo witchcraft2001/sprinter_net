@@ -25,8 +25,9 @@ Output
 
 Current limitations
   Plain http:// only. HTTPS is not supported.
-  HTTP 2xx responses only.
-  Redirects are not followed.
+  HTTP 2xx responses are downloaded.
+  HTTP redirects with an absolute http:// Location header are followed up to
+  five hops. HTTPS redirects are reported but cannot be downloaded.
   Chunked transfer and gzip content are not decoded yet.
   Unsupported responses print the received HTTP status line when it is present.
 

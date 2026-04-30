@@ -434,9 +434,10 @@ Done when:
 - [x] Use ESP-AT passive receive mode for WGET when supported.
 - [ ] Add `jesperl` support for `AT+CIPRECVMODE` and `AT+CIPRECVDATA`.
 - [x] Parse status line.
+- [x] Follow absolute `http://` redirects up to a small fixed limit.
 - [x] Skip headers and write body to DSS file.
 - [x] Print basic progress while body chunks are written.
-- [ ] Reject or clearly report unsupported redirects, chunked transfer and gzip.
+- [ ] Clearly report unsupported HTTPS redirects, chunked transfer and gzip.
 
 Done when:
 

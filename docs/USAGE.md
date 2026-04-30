@@ -172,13 +172,14 @@ Current utility-specific notes:
 Current `WGET.EXE` limitations:
 
 - Supports plain `http://` only, not HTTPS.
-- The URL must currently include `http://`.
+- If the URL has no scheme, `WGET.EXE` assumes `http://` and prints a warning.
 - Uses ESP-AT passive TCP receive when available, and falls back to active
   `+IPD` receive with a warning when the firmware or emulator does not support
   `AT+CIPRECVMODE` / `AT+CIPRECVDATA`.
-- Accepts HTTP 2xx status only.
-- Does not yet detect redirects, chunked transfer encoding or gzip content
-  encoding.
+- Downloads HTTP 2xx responses.
+- Follows absolute `http://` redirects up to five hops. HTTPS redirects are
+  reported but cannot be downloaded.
+- Does not yet decode chunked transfer encoding or gzip content encoding.
 
 This allows DSS batch scenarios to run `PING.EXE router-or-host` before starting
 another network command and stop when the status is non-zero.
