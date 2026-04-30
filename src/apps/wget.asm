@@ -1538,7 +1538,7 @@ MSG_ERROR_NO
 MSG_FILE_ERROR
 	DB "File error: ",0
 MSG_HTTP_UNSUPPORTED
-	DB "Unsupported HTTP response. Only HTTP 2xx and HTTP redirects are accepted.",0
+	DB "Unsupported HTTP response.",0
 MSG_HTTP_STATUS
 	DB "HTTP status: ",0
 MSG_INCOMPLETE
@@ -1550,7 +1550,7 @@ MSG_REDIRECT
 MSG_REDIRECT_UNSUPPORTED
 	DB "Unsupported redirect URL.",0
 MSG_HTTPS_UNSUPPORTED
-	DB "HTTPS redirects are not supported.",0
+	DB "HTTPS is not supported.",0
 
 CMD_AT
 	DB "AT",13,10,0

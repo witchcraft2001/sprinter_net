@@ -144,7 +144,7 @@ HANDLE_RECEIVE
 	CALL	PUT_A_CHAR
 	LD		A,LF
 	CALL	PUT_A_CHAR
-	JP		CHECK_FOR_END
+	JP		HANDLE_RECEIVE
 
 	; check for printable symbol, and print
 CHK_1F
@@ -154,6 +154,7 @@ CHK_1F
 	; reset error counter if received symbol withoud error
 	XOR		A
 	LD		(RX_ERR),A
+	JP		HANDLE_RECEIVE
 
 CHECK_FOR_END
 	; LD		A,(Q_POS)

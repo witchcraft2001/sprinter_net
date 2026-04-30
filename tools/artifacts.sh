@@ -56,4 +56,5 @@ DIST_EXTRA_FILES=(
   examples/TFTPGET.BAT
   examples/TFTPPUT.BAT
   examples/UDPECHO.BAT
+  examples/UDP_ECHO.PY
 )

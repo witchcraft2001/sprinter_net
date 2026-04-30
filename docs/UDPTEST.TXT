@@ -16,6 +16,7 @@ Defaults
 Examples
   UDPTEST.EXE 192.168.1.36 7 hello
   UDPTEST.EXE 192.168.1.36 6969 test 1069
+  UDPTEST.EXE 192.168.1.36 7777 hello
 
 Typical sequence
   NETUP.EXE
@@ -24,6 +25,12 @@ Typical sequence
 Notes
   UDPTEST expects an echo-like UDP server. If the server does not send a reply,
   the utility reports an ESP/UDP communication error after the receive timeout.
+
+  The package includes examples/UDP_ECHO.PY for host-side testing:
+
+    python3 -u examples/UDP_ECHO.PY
+
+  It listens on UDP port 7777 and sends every received datagram back.
 
   The UDP socket is opened with ESP-AT UDP mode 2. This allows the remote UDP
   peer to change after the first packet, which is required by TFTP because a

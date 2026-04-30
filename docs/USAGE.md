@@ -121,9 +121,10 @@ Use this order during normal testing:
 Bundled batch examples:
 
 - `CONNECT.BAT` runs `NETRESET.EXE`, `NETUP.EXE` and `PING.EXE 8.8.8.8`.
-- `WGETGUT.BAT` downloads Project Gutenberg `pg1.txt`.
-- `WGETCERN.BAT` downloads the CERN browser overview page as `BROWSER.HTM`.
-  The example uses `http://` because `WGET.EXE` does not support TLS/HTTPS yet.
+- `WGETGUT.BAT` tries the requested Project Gutenberg `pg1.txt` URL. It may
+  fail when the server redirects plain HTTP to HTTPS; TLS is not implemented.
+- `WGETCERN.BAT` downloads the short CERN home page as `CERN.HTM`.
+  Keep BAT examples short; some DSS shells are sensitive to long command lines.
 - `TFTPGET.BAT` and `TFTPPUT.BAT` show TFTP download/upload forms for
   `192.168.1.36`.
 - `UDPECHO.BAT` runs `UDPTEST.EXE 192.168.1.36 7777 hello`.
