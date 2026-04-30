@@ -1,16 +1,22 @@
-TFTP.EXE - TFTP downloader
+TFTP.EXE - TFTP client
 
 Purpose
-  Downloads one file from a TFTP server over ESP-AT UDP. This is an initial
-  RFC 1350 RRQ implementation intended to validate the UDP core before adding
-  upload support and protocol options.
+  Downloads or uploads one file through a TFTP server over ESP-AT UDP. This is
+  a minimal RFC 1350 RRQ/WRQ implementation intended to validate the UDP core
+  before adding protocol options.
 
 Usage
   TFTP.EXE tftp://host[:port]/path FILE
+  TFTP.EXE /PUT FILE tftp://host[:port]/path
+  TFTP.EXE /PUT tftp://host[:port]/path FILE
+  TFTP.EXE tftp://host[:port]/path PUT FILE
 
 Examples
   TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
   TFTP.EXE tftp://192.168.1.36:69/boot/screen.scr SCREEN.SCR
+  TFTP.EXE /PUT TEST.BIN tftp://192.168.1.36/upload.bin
+  TFTP.EXE /PUT tftp://192.168.1.36/upload.bin TEST.BIN
+  TFTP.EXE tftp://192.168.1.36/upload.bin PUT TEST.BIN
 
 Typical sequence
   NETUP.EXE
@@ -29,6 +35,16 @@ Testing with macOS
 
     TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
 
+  For upload tests, many TFTP servers require the destination file to exist
+  and be writable before WRQ is accepted:
+
+    sudo touch /private/tftpboot/upload.bin
+    sudo chmod 666 /private/tftpboot/upload.bin
+
+  Then run from DSS:
+
+    TFTP.EXE /PUT TEST.BIN tftp://192.168.1.36/upload.bin
+
   Stop the macOS server after testing:
 
     sudo launchctl unload -w /System/Library/LaunchDaemons/tftp.plist
@@ -38,13 +54,12 @@ Notes
   normally replies from a transfer-specific UDP port instead of port 69.
 
   Current limitations:
-  - download/RRQ only;
   - octet mode only;
   - no blksize/timeout/tsize options yet;
-  - WRQ upload is planned but not implemented.
+  - no directory listing; TFTP is file-only.
 
 Exit status
-  0  Download completed.
+  0  Transfer completed.
   1  Invalid command line.
   2  Sprinter-WiFi hardware was not found.
   3  Network, ESP or TFTP protocol error.

@@ -32,6 +32,8 @@ User-facing setup notes are in `docs/USAGE.md`.
 - `NETCFG.EXE`
 - `NETUP.EXE`
 - `TCPTEST.EXE`
+- `UDPTEST.EXE`
+- `TFTP.EXE`
 - `PING.EXE`
 - `WGET.EXE`
 - `NTP.EXE`
@@ -59,10 +61,27 @@ UDPTEST.EXE host port [message [local_port]]
                  send one UDP datagram and wait for one reply
 TFTP.EXE tftp://host[:port]/path FILE
                  download one file over TFTP
+TFTP.EXE /PUT FILE tftp://host[:port]/path
+                 upload one file over TFTP
+TFTP.EXE /PUT tftp://host[:port]/path FILE
+                 upload one file over TFTP, alternate argument order
+TFTP.EXE tftp://host[:port]/path PUT FILE
+                 upload one file over TFTP, DSS argument compatibility form
 PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url file download an HTTP/1.0 URL to a local file
                   URL must currently include http://
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
+```
+
+Example batch files are included in the package root:
+
+```text
+CONNECT.BAT      NETRESET, NETUP and PING 8.8.8.8
+WGETGUT.BAT      download Project Gutenberg pg1.txt
+WGETCERN.BAT     download CERN BrowserOverview.html as BROWSER.HTM
+TFTPGET.BAT      sample TFTP download from 192.168.1.36
+TFTPPUT.BAT      sample TFTP upload to 192.168.1.36
+UDPECHO.BAT      UDPTEST 192.168.1.36 7777 hello
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.

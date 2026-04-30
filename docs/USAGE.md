@@ -13,6 +13,10 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
   waits for one reply. Use it before testing TFTP.
 - `TFTP.EXE tftp://host[:port]/path FILE` downloads one file over TFTP.
+- `TFTP.EXE /PUT FILE tftp://host[:port]/path` uploads one file over TFTP.
+  `TFTP.EXE /PUT tftp://host[:port]/path FILE` is also accepted.
+  `TFTP.EXE tftp://host[:port]/path PUT FILE` is accepted for DSS shells that
+  pass `/PUT` as a positional token.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
@@ -109,7 +113,20 @@ Use this order during normal testing:
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
 5. `WGET.EXE http://example.com INDEX.HTM` - verify HTTP download.
 6. `NTP.EXE` - set DSS time from ESP SNTP.
-7. Run protocol tools such as future `TFTP.EXE`.
+7. `UDPTEST.EXE server 7777 hello` - verify UDP echo.
+8. `TFTP.EXE tftp://server/file FILE` - verify TFTP download.
+9. `TFTP.EXE /PUT FILE tftp://server/file` - verify TFTP upload where the
+   server permits writes.
+
+Bundled batch examples:
+
+- `CONNECT.BAT` runs `NETRESET.EXE`, `NETUP.EXE` and `PING.EXE 8.8.8.8`.
+- `WGETGUT.BAT` downloads Project Gutenberg `pg1.txt`.
+- `WGETCERN.BAT` downloads the CERN browser overview page as `BROWSER.HTM`.
+  The example uses `http://` because `WGET.EXE` does not support TLS/HTTPS yet.
+- `TFTPGET.BAT` and `TFTPPUT.BAT` show TFTP download/upload forms for
+  `192.168.1.36`.
+- `UDPECHO.BAT` runs `UDPTEST.EXE 192.168.1.36 7777 hello`.
 
 For local receive tests, point `TCPTEST.EXE` at a small file on a local HTTP
 server:
@@ -168,6 +185,12 @@ Current utility-specific notes:
   errors and `5` for local output file errors.
 - `NTP.EXE` returns `0` after DSS time is set, `2` when hardware is not found
   and `3` on ESP SNTP, response parse or DSS SETTIME failure.
+- `UDPTEST.EXE` returns `0` when the echoed UDP payload is received, `1` for
+  invalid command line, `2` when hardware is not found and `3` on ESP/UDP
+  errors.
+- `TFTP.EXE` returns `0` after a successful download or upload, `1` for invalid
+  command line, `2` when hardware is not found, `3` on ESP/UDP/TFTP protocol
+  errors and `5` for local DSS file errors.
 
 Current `WGET.EXE` limitations:
 

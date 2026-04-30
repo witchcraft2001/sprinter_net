@@ -317,6 +317,7 @@ Payload parser:
   local `NET.CFG`.
 - [x] Add build, package and floppy image scripts.
 - [x] Add a shared artifact manifest for future distributable files.
+- [x] Add example BAT files to the package and test floppy image.
 - [x] Decide initial source layout and copy/import only the needed DSS support
   files from `ESPKit`.
 - [x] Add a short `README.md` with scope, build commands and current status.
@@ -476,16 +477,18 @@ Done when:
 - [x] Add `jesperl` support for UDP `CIPSTART`/`CIPSEND`/`+IPD`/`CIPSTATUS`.
 - [x] Determine initial ESP-AT behavior for UDP reply port changes using mode 2.
 - [x] Complete initial TFTP RRQ download.
-- [ ] Complete TFTP WRQ upload.
+- [x] Complete TFTP WRQ upload.
 - [x] Implement DATA/ACK block state machine for RRQ.
 - [x] Implement basic timeout and retry for RRQ.
 - [x] Handle TFTP ERROR packets for RRQ.
-- [ ] Keep RFC 1350 baseline first; add options later only if needed.
+- [x] Keep RFC 1350 baseline first; add options later only if needed.
 
 Done when:
 
 - `tftp.exe tftp://server/file FILE` downloads from a standard TFTP server.
-- `tftp.exe FILE tftp://server/file` uploads where server permits writes.
+- `tftp.exe /PUT FILE tftp://server/file` uploads where server permits writes.
+  `tftp.exe /PUT tftp://server/file FILE` is accepted as an alternate order.
+  `tftp.exe tftp://server/file PUT FILE` is accepted as a DSS compatibility form.
 
 ### Stage 9 - Passive FTP
 
