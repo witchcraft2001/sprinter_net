@@ -1,0 +1,36 @@
+UDPTEST.EXE - UDP smoke test
+
+Purpose
+  Opens a UDP endpoint through ESP-AT, sends one datagram and waits for one
+  reply. This verifies the UDP transport layer before implementing TFTP.
+
+Usage
+  UDPTEST.EXE host port [message [local_port]]
+
+Defaults
+  host: 127.0.0.1
+  port: 7
+  message: Sprinter UDP test
+  local_port: 1069
+
+Examples
+  UDPTEST.EXE 192.168.1.36 7 hello
+  UDPTEST.EXE 192.168.1.36 6969 test 1069
+
+Typical sequence
+  NETUP.EXE
+  UDPTEST.EXE 192.168.1.36 7 hello
+
+Notes
+  UDPTEST expects an echo-like UDP server. If the server does not send a reply,
+  the utility reports an ESP/UDP communication error after the receive timeout.
+
+  The UDP socket is opened with ESP-AT UDP mode 2. This allows the remote UDP
+  peer to change after the first packet, which is required by TFTP because a
+  TFTP server replies from a transfer-specific UDP port instead of port 69.
+
+Exit status
+  0  Test completed.
+  1  Invalid command line.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP/UDP communication error.

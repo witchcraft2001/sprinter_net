@@ -14,6 +14,7 @@ Initial target utilities:
 - `netcfg.exe` / `wcfg.exe` - shared Wi-Fi and TCP/IP configuration.
 - `netup.exe` - initialize SprinterESP and bring the configured network up.
 - `tcptest.exe` - temporary TCP smoke test for the shared TCP client core.
+- `udptest.exe` - temporary UDP smoke test for the shared UDP client core.
 - `ping.exe` - host reachability and latency diagnostic.
 - `wget.exe` - simple HTTP downloader.
 - `ntp.exe` - set DSS time from network time.
@@ -459,13 +460,15 @@ Done when:
 
 ### Stage 8 - UDP Core And TFTP
 
-- [ ] Implement UDP open/send/receive/close.
-- [ ] Determine reliable ESP-AT behavior for UDP reply port changes.
-- [ ] Complete TFTP RRQ download.
+- [x] Add `udptest.exe` as a small UDP test utility.
+- [x] Implement initial UDP open/send/receive/close.
+- [x] Add `jesperl` support for UDP `CIPSTART`/`CIPSEND`/`+IPD`/`CIPSTATUS`.
+- [x] Determine initial ESP-AT behavior for UDP reply port changes using mode 2.
+- [x] Complete initial TFTP RRQ download.
 - [ ] Complete TFTP WRQ upload.
-- [ ] Implement DATA/ACK block state machine.
-- [ ] Implement timeout and retry.
-- [ ] Handle TFTP ERROR packets.
+- [x] Implement DATA/ACK block state machine for RRQ.
+- [x] Implement basic timeout and retry for RRQ.
+- [x] Handle TFTP ERROR packets for RRQ.
 - [ ] Keep RFC 1350 baseline first; add options later only if needed.
 
 Done when:

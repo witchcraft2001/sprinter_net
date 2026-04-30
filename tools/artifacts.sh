@@ -16,9 +16,11 @@ BUILD_APPS=(
   netcfg
   netup
   tcptest
+  udptest
   ping
   wget
   ntp
+  tftp
   wterm
 )
 
@@ -31,9 +33,11 @@ DIST_DOC_FILES=(
   docs/NETRESET.TXT
   docs/NETPROBE.TXT
   docs/TCPTEST.TXT
+  docs/UDPTEST.TXT
   docs/PING.TXT
   docs/WGET.TXT
   docs/NTP.TXT
+  docs/TFTP.TXT
   docs/WTERM.TXT
   LICENSE
 )

@@ -1,0 +1,51 @@
+TFTP.EXE - TFTP downloader
+
+Purpose
+  Downloads one file from a TFTP server over ESP-AT UDP. This is an initial
+  RFC 1350 RRQ implementation intended to validate the UDP core before adding
+  upload support and protocol options.
+
+Usage
+  TFTP.EXE tftp://host[:port]/path FILE
+
+Examples
+  TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
+  TFTP.EXE tftp://192.168.1.36:69/boot/screen.scr SCREEN.SCR
+
+Typical sequence
+  NETUP.EXE
+  TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
+
+Testing with macOS
+  macOS includes a TFTP server. Put test files into /private/tftpboot and
+  start the system daemon from Terminal:
+
+    sudo mkdir -p /private/tftpboot
+    sudo cp test.bin /private/tftpboot/test.bin
+    sudo chmod 644 /private/tftpboot/test.bin
+    sudo launchctl load -w /System/Library/LaunchDaemons/tftp.plist
+
+  Then run from DSS:
+
+    TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
+
+  Stop the macOS server after testing:
+
+    sudo launchctl unload -w /System/Library/LaunchDaemons/tftp.plist
+
+Notes
+  The client opens ESP-AT UDP mode 2. This is required because a TFTP server
+  normally replies from a transfer-specific UDP port instead of port 69.
+
+  Current limitations:
+  - download/RRQ only;
+  - octet mode only;
+  - no blksize/timeout/tsize options yet;
+  - WRQ upload is planned but not implemented.
+
+Exit status
+  0  Download completed.
+  1  Invalid command line.
+  2  Sprinter-WiFi hardware was not found.
+  3  Network, ESP or TFTP protocol error.
+  5  Local DSS file error.

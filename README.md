@@ -55,9 +55,13 @@ NETUP.EXE        initialize ESP and connect using NET.CFG
 TCPTEST.EXE      connect to example.com:80 and print a short HTTP response
 TCPTEST.EXE host port path
                  test an HTTP path on a custom host and port
+UDPTEST.EXE host port [message [local_port]]
+                 send one UDP datagram and wait for one reply
+TFTP.EXE tftp://host[:port]/path FILE
+                 download one file over TFTP
 PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url file download an HTTP/1.0 URL to a local file
-                  URL may omit http://; WGET will assume plain HTTP
+                  URL must currently include http://
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 ```
 

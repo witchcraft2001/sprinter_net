@@ -10,8 +10,11 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETUP.EXE` initializes the ESP module and connects to Wi-Fi using `NET.CFG`.
 - `TCPTEST.EXE [host [port [path]]]` opens a TCP connection and prints a short
   HTTP response. Use it after `NETUP`.
+- `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
+  waits for one reply. Use it before testing TFTP.
+- `TFTP.EXE tftp://host[:port]/path FILE` downloads one file over TFTP.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
-- `WGET.EXE [http://]host[:port]/path FILE` downloads an HTTP/1.0 resource to a
+- `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
 - `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
   `NET.CFG`.
@@ -20,11 +23,12 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
 
-Planned utilities include `TFTP.EXE`, `FTP.EXE`, `CHAT.EXE` and `IRC.EXE`.
+Planned utilities include `FTP.EXE`, `CHAT.EXE` and `IRC.EXE`.
 
 Each current utility also has a short standalone TXT reference file:
 `NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TCPTEST.TXT`,
-`PING.TXT`, `WGET.TXT`, `NTP.TXT` and `WTERM.TXT`.
+`UDPTEST.TXT`, `TFTP.TXT`, `PING.TXT`, `WGET.TXT`, `NTP.TXT` and
+`WTERM.TXT`.
 
 ## Installation
 
@@ -68,7 +72,7 @@ NETCFG.EXE /W
 NETUP.EXE
 TCPTEST.EXE
 PING.EXE example.com
-WGET.EXE example.com INDEX.HTM
+WGET.EXE http://example.com INDEX.HTM
 NTP.EXE
 ```
 
@@ -103,7 +107,7 @@ Use this order during normal testing:
 2. `NETUP.EXE` - connect to Wi-Fi.
 3. `TCPTEST.EXE` - verify TCP access.
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
-5. `WGET.EXE example.com INDEX.HTM` - verify HTTP download.
+5. `WGET.EXE http://example.com INDEX.HTM` - verify HTTP download.
 6. `NTP.EXE` - set DSS time from ESP SNTP.
 7. Run protocol tools such as future `TFTP.EXE`.
 
@@ -168,7 +172,7 @@ Current utility-specific notes:
 Current `WGET.EXE` limitations:
 
 - Supports plain `http://` only, not HTTPS.
-- Adds `http://` automatically when the URL has no scheme and prints a warning.
+- The URL must currently include `http://`.
 - Uses ESP-AT passive TCP receive when available, and falls back to active
   `+IPD` receive with a warning when the firmware or emulator does not support
   `AT+CIPRECVMODE` / `AT+CIPRECVDATA`.
