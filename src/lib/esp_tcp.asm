@@ -74,8 +74,14 @@ SET_PASSIVE
 
 ; ------------------------------------------------------
 ; Return to active socket receive mode. Errors are ignored by design.
+; If passive mode was never successfully enabled (e.g. ESP-AT v2.2.1
+; firmware which does not implement CIPRECVMODE), there is nothing to
+; revert and we skip the command to avoid waiting for a non-response.
 ; ------------------------------------------------------
 SET_ACTIVE
+	LD	A,(PASSIVE_MODE)
+	AND	A
+	RET	Z
 	LD	HL,CMD_CIPRECVMODE_0
 	LD	DE,WIFI.RS_BUFF
 	LD	BC,TCP_DEFAULT_TIMEOUT

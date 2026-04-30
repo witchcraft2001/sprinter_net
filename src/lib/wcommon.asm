@@ -105,6 +105,39 @@ DR_NEXT
 	;;ENDIF
 
 ; ------------------------------------------------------
+; Non-blocking check for user cancel: Esc (E=0x1B / 0x07) or Ctrl+Z (E=0x1A
+; with any Ctrl modifier held). Calls DSS_SCANKEY and consumes the matching
+; key from the buffer.
+; Out: CF=1 - cancel pressed, CF=0 - no cancel.
+; Preserves A, BC, DE, HL.
+; Caller must NOT have ISA window open; SCANKEY may switch memory pages.
+; ------------------------------------------------------
+	;;IFUSED CHECK_CANCEL
+CHECK_CANCEL
+	PUSH	AF,BC,DE,HL
+	DSS_EXEC	DSS_SCANKEY
+	JR	Z,.NO_KEY
+	LD	A,E
+	CP	0x1B
+	JR	Z,.CANCEL
+	CP	0x07
+	JR	Z,.CANCEL
+	CP	0x1A
+	JR	NZ,.NO_KEY
+	LD	A,B
+	AND	KB_CTRL | KB_L_CTRL | KB_R_CTRL
+	JR	Z,.NO_KEY
+.CANCEL
+	POP	HL,DE,BC,AF
+	SCF
+	RET
+.NO_KEY
+	POP	HL,DE,BC,AF
+	AND	A
+	RET
+	;;ENDIF
+
+; ------------------------------------------------------
 ; Store old video mode and set 80x32 without clearing the console.
 ; ------------------------------------------------------
 	;;IFUSED INIT_VMODE
