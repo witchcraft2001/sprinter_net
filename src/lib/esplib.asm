@@ -51,7 +51,8 @@ FCR_TR1         EQU	0x00								; Trigger on 1 byte in fifo
 FCR_TR4         EQU	0x40								; Trigger on 4 bytes in fifo
 FCR_TR8         EQU	0x80								; Trigger on 8 bytes in fifo
 FCR_TR14        EQU	0xC0								; Trigger on 14 bytes in fifo
-FCR_RX_TRIGGER	EQU	FCR_TR8								; Deassert RTS at 8 bytes; gives ESP 8 byte-times to react before FIFO overflows
+;FCR_RX_TRIGGER	EQU	FCR_TR8								; Deassert RTS at 8 bytes; gives ESP 8 byte-times to react before FIFO overflows
+FCR_RX_TRIGGER	EQU	FCR_TR1								; Deassert RTS at first byte; gives ESP 15 byte-times to react before FIFO overflows. Safer for active +IPD,len:payload streams where one lost byte desyncs the parser.
 LSR_DR          EQU	0x01								; Data Ready
 LSR_OE          EQU	0x02								; Overrun Error
 LSR_PE          EQU	0x04								; Parity Error
