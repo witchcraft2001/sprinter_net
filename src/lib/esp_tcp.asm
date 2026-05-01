@@ -69,6 +69,25 @@ CLOSE
 ; Out: CF=0/A=0 on success, CF=1/A=result code on failure.
 ; ------------------------------------------------------
 SEND_BUFFER
+	CALL	START_SEND_BUFFER
+	RET	C
+	JP	WAIT_SEND_OK
+
+; ------------------------------------------------------
+; Send a raw TCP payload and return immediately after UART transmit.
+; In: HL - payload, BC - payload length.
+; Out: CF=0/A=0 after bytes were accepted by the UART.
+;      CF=1/A=result code on prompt/tx timeout.
+; Notes:
+; - Some interactive protocols (FTP control channel) can receive remote data
+;   before ESP prints SEND OK. Waiting for SEND OK as text can consume +IPD
+;   payload, so such callers should scan for +IPD themselves after this call.
+; ------------------------------------------------------
+SEND_BUFFER_NO_WAIT
+	CALL	START_SEND_BUFFER
+	RET
+
+START_SEND_BUFFER
 	LD	(SEND_PTR),HL
 	LD	(SEND_LEN),BC
 
@@ -98,7 +117,8 @@ SEND_BUFFER
 	CALL	WIFI.UART_TX_BUFFER
 	JR	C,.TX_TIMEOUT
 
-	JP	WAIT_SEND_OK
+	XOR	A
+	RET
 
 .TX_TIMEOUT
 	LD	A,RES_TX_TIMEOUT
