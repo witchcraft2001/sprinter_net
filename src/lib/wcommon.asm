@@ -250,6 +250,82 @@ INIT_ESP
 	RET
 	;;ENDIF
 ; ------------------------------------------------------
+; Build "AT+UART_CUR=<baud>,8,1,0,3\r\n" using current NET.CFG baud
+; into UART_FLOW_CMD_BUFF. Out: HL = pointer to ASCIIZ command.
+; Hardcoding the baud (e.g. 115200) breaks utilities when NET.CFG selects a
+; non-default speed: UART_INIT has already switched the local 16550 to that
+; speed, so a static "AT+UART_CUR=115200,..." would arrive at ESP at the
+; wrong baud and brick the UART link.
+; Only assembled when NETCFG library is included (utilities that need
+; per-config flow control: wget, tftp, udptest, etc.).
+; ------------------------------------------------------
+	IFDEF _NETCFG
+BUILD_UART_FLOW_CMD
+	PUSH	BC,DE
+	LD		HL,UART_FLOW_CMD_BUFF
+	LD		DE,UART_FLOW_PREFIX
+	CALL	.APPEND
+	; NETCFG.GET_UART_BAUD_TEXT: out HL = ASCIIZ baud text (e.g. "38400").
+	; Move HL→DE to use as source, restore destination from saved.
+	PUSH	HL								; save dest
+	CALL	@NETCFG.GET_UART_BAUD_TEXT
+	EX		DE,HL							; DE = baud text source
+	POP		HL								; HL = dest
+	CALL	.APPEND
+	LD		DE,UART_FLOW_SUFFIX
+	CALL	.APPEND
+	LD		HL,UART_FLOW_CMD_BUFF
+	POP		DE,BC
+	RET
+
+; Append ASCIIZ string at DE to buffer at HL. Out: HL = terminator pos.
+.APPEND
+	LD		A,(DE)
+	AND		A
+	RET		Z
+	LD		(HL),A
+	INC		HL
+	INC		DE
+	JR		.APPEND
+
+UART_FLOW_PREFIX
+	DB	"AT+UART_CUR=",0
+UART_FLOW_SUFFIX
+	DB	",8,1,0,3",13,10,0
+UART_FLOW_VERIFY_CMD
+	DB	"AT",13,10,0
+
+UART_FLOW_CMD_BUFF
+	DS	40,0
+
+; ------------------------------------------------------
+; Send AT+UART_CUR with NET.CFG baud + flow=3, then re-apply local 16550
+; baud divisor and verify the link with AT.
+; ESP-AT may emit the trailing OK at the *new* baud (not the old one), so
+; the first send is best-effort: we don't trust its success status. After
+; the send we switch local UART to the configured baud and use a fresh AT
+; round-trip to confirm both sides agreed on the new framing.
+; Out: A=0 on success, A=non-zero ESP result on failure.
+; ------------------------------------------------------
+SETUP_UART_FLOW
+	PUSH	BC,DE,HL
+	CALL	BUILD_UART_FLOW_CMD					; HL=cmd buffer
+	LD		DE,@WIFI.RS_BUFF
+	LD		BC,DEFAULT_TIMEOUT
+	CALL	@WIFI.UART_TX_CMD					; ignore status
+
+	CALL	@NETCFG.APPLY_UART_BAUD				; switch local divisor
+	CALL	@WIFI.UART_INIT						; re-init UART with new divisor + flow=on
+
+	LD		HL,UART_FLOW_VERIFY_CMD
+	LD		DE,@WIFI.RS_BUFF
+	LD		BC,DEFAULT_TIMEOUT
+	CALL	@WIFI.UART_TX_CMD					; verify at new baud
+	POP		HL,DE,BC
+	RET
+	ENDIF
+
+; ------------------------------------------------------
 ; Set DHCP mode
 ; Out: CF=1 if error
 ; ------------------------------------------------------

@@ -595,7 +595,7 @@ MSG_SETUP_UART
 MSG_UART_CONFIG
 	DB "ESP UART config:",0
 MSG_UART_DEFAULT
-	DB "Using default ESP UART speed.",0
+	DB "Using default ESP UART speed, enabling flow.",0
 MSG_UART_NO_FLOW
 	DB "RTS/CTS setup failed, trying speed only.",0
 MSG_STATION

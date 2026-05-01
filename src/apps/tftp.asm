@@ -6,7 +6,9 @@
 EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 2000
 RECV_TIMEOUT		EQU 5000
-RETRY_LIMIT		EQU 3
+; UDP datagrams can be dropped silently by ESP/Wi-Fi/network. Bumping the
+; retry budget tolerates a few lost packets before failing the transfer.
+RETRY_LIMIT		EQU 6
 URL_SIZE		EQU 160
 HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
@@ -82,11 +84,10 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
-	; Enable ESP-AT hardware RTS/CTS flow control. Without this, ESP keeps
-	; streaming UDP payload bytes during slow DSS file ops and the Z80
-	; UART FIFO overruns (OE in LSR), causing TFTP block loss / desync.
-	LD	HL,CMD_UART_FLOW
-	CALL	SEND_CMD
+	; Enable ESP-AT hardware RTS/CTS flow control with the configured baud.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JP	NZ,UDP_ERROR_EXIT
 
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
@@ -1142,8 +1143,6 @@ CMD_AT
 	DB "AT",13,10,0
 CMD_ECHO_OFF
 	DB "ATE0",13,10,0
-CMD_UART_FLOW
-	DB "AT+UART_CUR=115200,8,1,0,3",13,10,0
 CMD_CIPMUX_0
 	DB "AT+CIPMUX=0",13,10,0
 CMD_CIPSTATUS
@@ -1184,17 +1183,23 @@ LAST_DATA_LEN	DW 0
 	DEFINE ESP_TCP_BSS_BASE_OVERRIDE
 ESP_TCP_BSS_BASE	EQU 0xB000
 
+	INCLUDE "netcfg_lib.asm"
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"
-	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esp_tcp.asm"
 	INCLUDE "esp_udp.asm"
 	INCLUDE "esplib.asm"
 
 	MODULE MAIN
 
-TFTP_BSS_BASE	EQU NETCFG.NETCFG_BSS_END
+; Place TFTP buffers AFTER TCP/UDP buffers, not just after NETCFG. The
+; ESP_TCP_BSS_BASE override (0xB000) puts TCP/UDP CMD buffers inside the
+; TFTP BSS range — HOST_BUFF then overlaps UDP CMD_BUFFER, and
+; APPEND_IX_STR(HOST_BUFF) inside UDP.OPEN_LOCAL falls into an infinite
+; loop reading from the buffer it's currently writing to (the bug that
+; corrupted memory with repeated "AT+CIPSTART=\"UDP\",\"192.168.1." pattern).
+TFTP_BSS_BASE	EQU UDP.UDP_BSS_END
 NUM_PRINT_BUFF	EQU TFTP_BSS_BASE
 ARG1_BUFF	EQU NUM_PRINT_BUFF + 8
 ARG2_BUFF	EQU ARG1_BUFF + URL_SIZE

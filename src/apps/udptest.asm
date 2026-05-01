@@ -73,11 +73,16 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
-	; Enable ESP-AT hardware RTS/CTS flow control so ESP throttles when the
-	; Z80 deasserts RTS. Without this UART FIFO overruns on multi-packet
-	; echo bursts.
-	LD	HL,CMD_UART_FLOW
-	CALL	SEND_CMD
+	; Enable ESP-AT hardware RTS/CTS flow control with the configured baud.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JR	Z,.UART_FLOW_OK
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+.UART_FLOW_OK
 
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
@@ -524,8 +529,6 @@ CMD_AT
 	DB "AT",13,10,0
 CMD_ECHO_OFF
 	DB "ATE0",13,10,0
-CMD_UART_FLOW
-	DB "AT+UART_CUR=115200,8,1,0,3",13,10,0
 CMD_CIPMUX_0
 	DB "AT+CIPMUX=0",13,10,0
 CMD_CIPSTATUS
@@ -559,17 +562,20 @@ RECV_LEN
 	DEFINE ESP_TCP_BSS_BASE_OVERRIDE
 ESP_TCP_BSS_BASE	EQU 0xB000
 
+	INCLUDE "netcfg_lib.asm"
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"
-	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esp_tcp.asm"
 	INCLUDE "esp_udp.asm"
 	INCLUDE "esplib.asm"
 
 	MODULE MAIN
 
-NUM_PRINT_BUFF	EQU NETCFG.NETCFG_BSS_END
+; Place UDPTEST buffers AFTER TCP/UDP buffers — see analogous comment in
+; tftp.asm. RECV_BUFFER would otherwise overlap UDP CMD_BUFFER and either
+; corrupt incoming packets or feed garbage back into ESP commands.
+NUM_PRINT_BUFF	EQU UDP.UDP_BSS_END
 HOST_BUFF	EQU NUM_PRINT_BUFF + 8
 REMOTE_PORT_BUFF	EQU HOST_BUFF + HOST_SIZE
 LOCAL_PORT_BUFF	EQU REMOTE_PORT_BUFF + PORT_SIZE
