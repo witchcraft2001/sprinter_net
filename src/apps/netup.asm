@@ -202,11 +202,14 @@ SEND_AT_STARTUP
 	JP	SEND_CMD
 
 APPLY_UART_SETTING
+	; Always send AT+UART_CUR — even at default baud — so ESP-AT enables
+	; hardware RTS/CTS flow control. Without this, ESP keeps streaming
+	; bytes during slow Z80 file ops and the 16550 RX FIFO overruns.
 	CALL	NETCFG.GET_UART_DIVISOR
 	CP	8
 	JR	NZ,.CUSTOM_BAUD
 	PRINTLN	MSG_UART_DEFAULT
-	RET
+	; fall through to send AT+UART_CUR=115200,8,1,0,3
 
 .CUSTOM_BAUD
 	CALL	BUILD_UART_CMD

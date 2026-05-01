@@ -82,6 +82,12 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
+	; Enable ESP-AT hardware RTS/CTS flow control. Without this, ESP keeps
+	; streaming UDP payload bytes during slow DSS file ops and the Z80
+	; UART FIFO overruns (OE in LSR), causing TFTP block loss / desync.
+	LD	HL,CMD_UART_FLOW
+	CALL	SEND_CMD
+
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
 
@@ -1136,6 +1142,8 @@ CMD_AT
 	DB "AT",13,10,0
 CMD_ECHO_OFF
 	DB "ATE0",13,10,0
+CMD_UART_FLOW
+	DB "AT+UART_CUR=115200,8,1,0,3",13,10,0
 CMD_CIPMUX_0
 	DB "AT+CIPMUX=0",13,10,0
 CMD_CIPSTATUS
