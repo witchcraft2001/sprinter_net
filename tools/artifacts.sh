@@ -21,6 +21,7 @@ BUILD_APPS=(
   wget
   ntp
   tftp
+  ftp
   wterm
 )
 
@@ -38,6 +39,7 @@ DIST_DOC_FILES=(
   docs/WGET.TXT
   docs/NTP.TXT
   docs/TFTP.TXT
+  docs/FTP.TXT
   docs/WTERM.TXT
   LICENSE
 )

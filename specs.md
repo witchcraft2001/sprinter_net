@@ -502,11 +502,12 @@ Done when:
 
 - [x] Confirm ESP-AT V2.2.1 firmware exposes multi-connection commands and
   link-id response formats.
-- [ ] Enable multi-connection mode with `AT+CIPMUX=1`.
+- [x] Enable multi-connection mode with `AT+CIPMUX=1`.
 - [x] Add initial link-aware TCP open/send/receive/close helpers in a separate
   `esp_tcp_multi.asm` include.
-- [ ] Implement FTP control channel line parser.
-- [ ] Support `USER`, `PASS`, `TYPE I`, `PASV`, `RETR`, `STOR`, `LIST`, `QUIT`.
+- [x] Implement FTP control channel line parser.
+- [x] Support initial `USER`, `PASS`, `TYPE I` and `QUIT` smoke-test commands.
+- [ ] Support passive FTP data commands: `PASV`, `RETR`, `STOR`, `LIST`.
 - [ ] Parse `227 Entering Passive Mode (...)`.
 - [ ] Download through data connection.
 - [ ] Upload through data connection.

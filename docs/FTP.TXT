@@ -1,0 +1,42 @@
+FTP.EXE - FTP control-channel smoke test
+========================================
+
+Purpose
+-------
+  Opens an FTP control connection through SprinterESP in ESP-AT
+  multi-connection mode and verifies the login path. This is the first FTP
+  development step; passive data transfers are planned next.
+
+Usage
+-----
+  FTP.EXE host[:port] [user [password]]
+
+Examples
+--------
+  FTP.EXE 192.168.1.36
+  FTP.EXE 192.168.1.36:2121 test secret
+  FTP.EXE ftp.example.org anonymous sprinter@example
+
+What It Does
+------------
+  1. Initializes the Sprinter-WiFi UART using NET.CFG.
+  2. Enables ESP-AT multi-connection mode with AT+CIPMUX=1.
+  3. Opens TCP link 0 to the FTP server.
+  4. Reads and prints FTP reply lines.
+  5. Sends USER, PASS if needed, TYPE I and QUIT.
+  6. Returns ESP-AT to single-connection mode with AT+CIPMUX=0.
+
+Current Limits
+--------------
+  - no PASV/RETR/STOR/LIST yet;
+  - no ftp:// URL parser yet;
+  - password is passed on the command line for this early diagnostic build;
+  - use a simple test FTP server first.
+
+Exit Codes
+----------
+  0  FTP control-channel login smoke test completed.
+  1  Invalid command line.
+  2  Sprinter-WiFi card was not found.
+  3  ESP/TCP communication error.
+  4  FTP server returned an unexpected or negative reply.

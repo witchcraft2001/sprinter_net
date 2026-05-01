@@ -17,6 +17,8 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   `TFTP.EXE /PUT tftp://host[:port]/path FILE` is also accepted.
   `TFTP.EXE tftp://host[:port]/path PUT FILE` is accepted for DSS shells that
   pass `/PUT` as a positional token.
+- `FTP.EXE host[:port] [user [password]]` verifies FTP control-channel login
+  through ESP-AT multi-connection mode. Passive file transfer is not enabled yet.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
@@ -27,11 +29,11 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
 
-Planned utilities include `FTP.EXE`, `CHAT.EXE` and `IRC.EXE`.
+Planned utilities include `CHAT.EXE` and `IRC.EXE`.
 
 Each current utility also has a short standalone TXT reference file:
 `NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TCPTEST.TXT`,
-`UDPTEST.TXT`, `TFTP.TXT`, `PING.TXT`, `WGET.TXT`, `NTP.TXT` and
+`UDPTEST.TXT`, `TFTP.TXT`, `FTP.TXT`, `PING.TXT`, `WGET.TXT`, `NTP.TXT` and
 `WTERM.TXT`.
 
 ## Installation
