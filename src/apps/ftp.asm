@@ -419,7 +419,18 @@ RECV_CONTROL_REPLY_TIMEOUT
 		JR	Z,.READ
 		LD	A,(TCP.LAST_IPD_LINK)
 		CP	CONTROL_LINK
+		JR	Z,.CONTROL
+		CP	DATA_LINK
 		JR	NZ,.READ
+		; Data link bytes arrived before the control reply.
+		; Print them as listing data instead of dropping them and
+		; flag that we have already started the listing transfer.
+		LD	A,1
+		LD	(DATA_BYTES_SEEN),A
+		LD	HL,RECV_BUFFER
+		CALL	PRINT_BUFFER
+		JR	.READ
+.CONTROL
 		LD	HL,RECV_BUFFER
 		CALL	FEED_CONTROL_BYTES
 		LD	A,(REPLY_DONE)
@@ -667,7 +678,9 @@ RECV_DATA_LIST
 		XOR	A
 		LD	(FINAL_REPLY_SEEN),A
 		LD	(DATA_CLOSE_SEEN),A
-		LD	(DATA_BYTES_SEEN),A
+		; Note: DATA_BYTES_SEEN may already be set by an earlier
+		; RECV_CONTROL_REPLY that received data-link bytes while
+		; waiting for the 150 reply. Don't clear it here.
 		CALL	RESET_REPLY_STATE
 .READ
 		LD	HL,RECV_BUFFER
@@ -683,6 +696,13 @@ RECV_DATA_LIST
 		JR	Z,.DATA
 		CP	CONTROL_LINK
 		JR	NZ,.READ
+		; Treat any control IPD as evidence the transfer is in
+		; progress. Without this, a UART overrun that corrupts the
+		; link-id digit ('1' lost in "+IPD,1,N:") would silently
+		; route directory bytes through FEED_CONTROL_BYTES and
+		; leave DATA_BYTES_SEEN=0, producing a false #4 timeout.
+		LD	A,1
+		LD	(DATA_BYTES_SEEN),A
 		LD	HL,RECV_BUFFER
 		CALL	FEED_CONTROL_BYTES
 		LD	A,(REPLY_DONE)
@@ -701,14 +721,20 @@ RECV_DATA_LIST
 		JR	NZ,.CLOSED
 		JR	.READ
 .ERROR
+		; If we already received any IPD bytes, treat any error
+		; (timeout, parser desync from UART overrun, link closed)
+		; as end-of-listing. TCP can't recover lost bytes anyway,
+		; so report what we have rather than failing the whole run.
+		PUSH	AF
+		LD	A,(DATA_BYTES_SEEN)
+		OR	A
+		JR	Z,.NO_DATA_YET
+		POP	AF
+		JR	.CLOSED
+.NO_DATA_YET
+		POP	AF
 		CP	RES_NOT_CONN
 		JR	Z,.CLOSED
-		CP	RES_RS_TIMEOUT
-		JR	NZ,.FAIL
-		LD	A,(DATA_BYTES_SEEN)
-		AND	A
-		JR	NZ,.CLOSED
-.FAIL
 		SCF
 		RET
 .CLOSED
