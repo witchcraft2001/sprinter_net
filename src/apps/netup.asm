@@ -202,14 +202,18 @@ SEND_AT_STARTUP
 	JP	SEND_CMD
 
 APPLY_UART_SETTING
-	; Always send AT+UART_CUR — even at default baud — so ESP-AT enables
-	; hardware RTS/CTS flow control. Without this, ESP keeps streaming
-	; bytes during slow Z80 file ops and the 16550 RX FIFO overruns.
+	; netup only changes ESP UART params when NET.CFG selects a non-default
+	; baud. For default 115200 we leave ESP at factory defaults — utilities
+	; (wget/tftp/udptest via WCOMMON.SETUP_UART_FLOW) enable RTS/CTS flow
+	; control themselves at run time. Earlier "always send AT+UART_CUR"
+	; broke netup whenever NET.CFG had no/empty BAUD line: GET_UART_DIVISOR
+	; falls back to 8, but the strict IS_DEFAULT_BAUD strcmp returns "not
+	; default", and the failure handler reported "ESP communication error".
 	CALL	NETCFG.GET_UART_DIVISOR
 	CP	8
 	JR	NZ,.CUSTOM_BAUD
 	PRINTLN	MSG_UART_DEFAULT
-	; fall through to send AT+UART_CUR=115200,8,1,0,3
+	RET
 
 .CUSTOM_BAUD
 	CALL	BUILD_UART_CMD
@@ -595,7 +599,7 @@ MSG_SETUP_UART
 MSG_UART_CONFIG
 	DB "ESP UART config:",0
 MSG_UART_DEFAULT
-	DB "Using default ESP UART speed, enabling flow.",0
+	DB "Using default ESP UART speed.",0
 MSG_UART_NO_FLOW
 	DB "RTS/CTS setup failed, trying speed only.",0
 MSG_STATION

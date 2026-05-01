@@ -135,10 +135,16 @@ USAGE
 	JP	WCOMMON.EXIT
 
 UDP_ERROR_EXIT
+	; Save the inbound error code in A *before* poking CANCELLED — the LD
+	; from CANCELLED clobbers A and previously caused every error to print
+	; as #0.
+	PUSH	AF
 	LD	A,(WCOMMON.CANCELLED)
 	AND	A
-	JP	NZ,CANCEL_EXIT
-	PUSH	AF
+	JR	Z,.NOT_CANCELLED
+	POP	AF
+	JP	CANCEL_EXIT
+.NOT_CANCELLED
 	CALL	PRINT_UDP_DEBUG
 	LD	A,(UDP_IS_OPEN)
 	AND	A
@@ -534,18 +540,53 @@ DOWNLOAD_RRQ
 	CALL	BUILD_RRQ_PACKET
 	CALL	SEND_PACKET
 	RET	C
+	LD	A,RETRY_LIMIT
+	LD	(HANDLE_RETRIES),A
 
 .RECV_NEXT
 	CALL	WCOMMON.CHECK_CANCEL
 	JP	C,CANCEL_EXIT
+	; Each TFTP DATA is its own UDP datagram. If a previous READ_PAYLOAD
+	; timed out mid-datagram, PAYLOAD_LEFT is still non-zero, and the next
+	; RECEIVE would skip WAIT_IPD_HEADER and start eating the +IPD header
+	; of the retransmitted block as if it were data. Force a fresh +IPD
+	; parse on every attempt.
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
 	CALL	RECEIVE_PACKET_RETRY
 	RET	C
 	CALL	HANDLE_PACKET
-	RET	C
+	JR	C,.HANDLE_FAIL
+	; Reset the corruption-retry counter on every successful packet —
+	; transient UART OE / ESP desync should not accumulate against later
+	; blocks.
+	LD	A,RETRY_LIMIT
+	LD	(HANDLE_RETRIES),A
 	LD	A,(TRANSFER_DONE)
 	AND	A
 	JR	Z,.RECV_NEXT
 	XOR	A
+	RET
+
+.HANDLE_FAIL
+	; Server-side TFTP ERROR (opcode 5) is fatal — propagate immediately.
+	; Anything else (PROTO_ERR from a desynced +IPD) is recoverable: the
+	; TFTP server retransmits last DATA when it sees no ACK, so just
+	; resend our last packet (RRQ or ACK_{N-1}) and try to receive again.
+	CP	RES_ERROR
+	RET	Z
+	PUSH	AF
+	LD	HL,HANDLE_RETRIES
+	DEC	(HL)
+	JR	Z,.HANDLE_GIVEUP
+	POP	AF
+	PRINTLN MSG_RETRY
+	CALL	SEND_PACKET
+	RET	C
+	JR	.RECV_NEXT
+.HANDLE_GIVEUP
+	POP	AF
+	SCF
 	RET
 
 BUILD_RRQ_PACKET
@@ -579,7 +620,11 @@ UPLOAD_WRQ
 	CALL	BUILD_WRQ_PACKET
 	CALL	SEND_PACKET
 	RET	C
-	CALL	RECEIVE_ACK_RETRY
+	LD	A,RETRY_LIMIT
+	LD	(HANDLE_RETRIES),A
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
+	CALL	WAIT_ACK_WITH_RETRY
 	RET	C
 
 	LD	HL,1
@@ -591,7 +636,14 @@ UPLOAD_WRQ
 	RET	C
 	CALL	SEND_PACKET
 	RET	C
-	CALL	RECEIVE_ACK_RETRY
+	LD	A,RETRY_LIMIT
+	LD	(HANDLE_RETRIES),A
+	; See note in DOWNLOAD_RRQ — clear stale PAYLOAD_LEFT before each ACK
+	; receive so a previous mid-packet timeout doesn't desync the next
+	; +IPD header parse.
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
+	CALL	WAIT_ACK_WITH_RETRY
 	RET	C
 	CALL	CHECK_UPLOAD_DONE
 	RET	Z
@@ -663,10 +715,37 @@ BUILD_DATA_PACKET_FROM_FILE
 	SCF
 	RET
 
+; Wrap RECEIVE_ACK_RETRY with corruption-retry. Caller must initialise
+; HANDLE_RETRIES before invoking. On a PROTO_ERR (RES_RS_TIMEOUT from
+; HANDLE_ACK_PACKET) we resend the last packet and try again, until the
+; corruption budget is exhausted or a fatal/server error occurs.
+WAIT_ACK_WITH_RETRY
+	; Reset stale PAYLOAD_LEFT (see DOWNLOAD_RRQ note).
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
+	CALL	RECEIVE_ACK_RETRY
+	RET	NC
+	CP	RES_RS_TIMEOUT
+	RET	NZ							; not a recoverable case
+	LD	HL,HANDLE_RETRIES
+	DEC	(HL)
+	JR	Z,.GIVEUP
+	PRINTLN MSG_RETRY
+	CALL	SEND_PACKET
+	RET	C
+	JR	WAIT_ACK_WITH_RETRY
+.GIVEUP
+	LD	A,RES_RS_TIMEOUT
+	SCF
+	RET
+
 RECEIVE_ACK_RETRY
 	LD	A,RETRY_LIMIT
 	LD	(RETRIES_LEFT),A
 .TRY
+	; Force fresh +IPD parse on every attempt — see DOWNLOAD_RRQ note.
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
 	LD	HL,PACKET_BUFFER
 	LD	BC,TFTP_PACKET_SIZE
 	LD	DE,RECV_TIMEOUT
@@ -723,8 +802,10 @@ HANDLE_ACK_PACKET
 	SCF
 	RET
 .PROTO_ERR
+	; See note in HANDLE_PACKET.PROTO_ERR — RES_RS_TIMEOUT marks this
+	; failure as recoverable (corrupt ACK, retransmit DATA may help).
 	PRINTLN MSG_PROTO_ERROR
-	LD	A,RES_ERROR
+	LD	A,RES_RS_TIMEOUT
 	SCF
 	RET
 
@@ -767,6 +848,9 @@ RECEIVE_PACKET_RETRY
 	LD	A,RETRY_LIMIT
 	LD	(RETRIES_LEFT),A
 .TRY
+	; Force fresh +IPD parse on every attempt — see DOWNLOAD_RRQ note.
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
 	LD	HL,PACKET_BUFFER
 	LD	BC,TFTP_PACKET_SIZE
 	LD	DE,RECV_TIMEOUT
@@ -841,8 +925,11 @@ HANDLE_PACKET
 	SCF
 	RET
 .PROTO_ERR
+	; Use RES_RS_TIMEOUT (not RES_ERROR) so the caller's recovery path
+	; can distinguish a corrupt/desynced packet (retransmit may help)
+	; from a server-issued TFTP ERROR (fatal).
 	PRINTLN MSG_PROTO_ERROR
-	LD	A,RES_ERROR
+	LD	A,RES_RS_TIMEOUT
 	SCF
 	RET
 
@@ -1172,6 +1259,7 @@ TRANSFER_MODE	DB 0
 FILE_ERROR_FLAG DB 0
 FILE_ERROR_CODE DB 0
 RETRIES_LEFT	DB 0
+HANDLE_RETRIES	DB 0
 EXPECTED_BLOCK	DW 1
 RECV_LEN	DW 0
 LAST_TX_PTR	DW 0

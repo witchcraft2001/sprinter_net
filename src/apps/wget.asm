@@ -163,10 +163,15 @@ USAGE
 	JP	WCOMMON.EXIT
 
 TCP_ERROR_EXIT
+	; Save inbound error code BEFORE reading CANCELLED — otherwise A is
+	; clobbered and every network error gets printed as #0.
+	PUSH	AF
 	LD	A,(WCOMMON.CANCELLED)
 	AND	A
-	JP	NZ,CANCEL_EXIT
-	PUSH	AF
+	JR	Z,.NOT_CANCELLED
+	POP	AF
+	JP	CANCEL_EXIT
+.NOT_CANCELLED
 	LD	A,(TCP_IS_OPEN)
 	AND	A
 	CALL	NZ,TCP.CLOSE
