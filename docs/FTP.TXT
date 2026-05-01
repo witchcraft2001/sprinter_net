@@ -11,6 +11,9 @@ Usage
 -----
   FTP.EXE host[:port] [user [password]]
 
+Run NETUP first. FTP.EXE does not join Wi-Fi by itself; it only opens the
+FTP control connection after the shared ESP/UART configuration is ready.
+
 Examples
 --------
   FTP.EXE 192.168.1.36
@@ -20,11 +23,12 @@ Examples
 What It Does
 ------------
   1. Initializes the Sprinter-WiFi UART using NET.CFG.
-  2. Enables ESP-AT multi-connection mode with AT+CIPMUX=1.
-  3. Opens TCP link 0 to the FTP server.
-  4. Reads and prints FTP reply lines.
-  5. Sends USER, PASS if needed, TYPE I and QUIT.
-  6. Returns ESP-AT to single-connection mode with AT+CIPMUX=0.
+  2. Applies the configured ESP UART speed and RTS/CTS flow control.
+  3. Enables ESP-AT multi-connection mode with AT+CIPMUX=1.
+  4. Opens TCP link 0 to the FTP server.
+  5. Reads and prints FTP reply lines.
+  6. Sends USER, PASS if needed, TYPE I and QUIT.
+  7. Returns ESP-AT to single-connection mode with AT+CIPMUX=0.
 
 Current Limits
 --------------
@@ -32,6 +36,10 @@ Current Limits
   - no ftp:// URL parser yet;
   - password is passed on the command line for this early diagnostic build;
   - use a simple test FTP server first.
+
+If startup fails with ESP communication error #1/#4 before "Connecting to",
+the failure is in ESP-AT/UART initialization, not in the FTP server. Run
+NETRESET, NETUP, then retry FTP.EXE.
 
 Exit Codes
 ----------
