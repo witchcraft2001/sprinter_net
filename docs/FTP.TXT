@@ -4,8 +4,9 @@ FTP.EXE - FTP control-channel smoke test
 Purpose
 -------
   Opens an FTP control connection through SprinterESP in ESP-AT
-  single-connection TCP mode and verifies the login path. This is the first FTP
-  development step; passive data transfers are planned next.
+  single-connection TCP mode, verifies the login path and parses the passive
+  endpoint returned by PASV. This is the first FTP development step; passive
+  data transfers are planned next.
 
 Usage
 -----
@@ -27,11 +28,12 @@ What It Does
   3. Keeps ESP-AT in single-connection mode with AT+CIPMUX=0.
   4. Opens a TCP control connection to the FTP server.
   5. Reads and prints FTP reply lines.
-  6. Sends USER, PASS if needed, TYPE I and QUIT.
+  6. Sends USER, PASS if needed, TYPE I, PASV and QUIT.
+  7. Parses the 227 passive endpoint and prints host:port.
 
 Current Limits
 --------------
-  - no PASV/RETR/STOR/LIST yet;
+  - PASV is parsed, but no RETR/STOR/LIST data transfer yet;
   - no ftp:// URL parser yet;
   - password is passed on the command line for this early diagnostic build;
   - use a simple test FTP server first.

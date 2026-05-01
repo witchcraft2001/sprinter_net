@@ -510,8 +510,8 @@ Done when:
 - [x] Implement FTP control channel line parser.
 - [x] Support initial `USER`, `PASS`, `TYPE I` and `QUIT` smoke-test commands.
 - [x] Verify FTP control login against a simple FTP server.
-- [ ] Support passive FTP data commands: `PASV`, `RETR`, `STOR`, `LIST`.
-- [ ] Parse `227 Entering Passive Mode (...)`.
+- [x] Send `PASV` and parse `227 Entering Passive Mode (...)`.
+- [ ] Support passive FTP data commands after `PASV`: `RETR`, `STOR`, `LIST`.
 - [ ] Download through data connection.
 - [ ] Upload through data connection.
 - [ ] Close data and control links cleanly.
