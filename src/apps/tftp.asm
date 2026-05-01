@@ -553,8 +553,18 @@ DOWNLOAD_RRQ
 	; parse on every attempt.
 	LD	HL,0
 	LD	(TCP.PAYLOAD_LEFT),HL
+	XOR	A
+	LD	(TCP.LSR_ACCUM),A			; clear sticky LSR error bits
 	CALL	RECEIVE_PACKET_RETRY
-	RET	C
+	JR	C,.RX_TIMEOUT
+	; UART overrun (or other LSR error) detected during this RECEIVE
+	; means the +IPD payload is misaligned — even a "correct"-looking
+	; TFTP header at byte 0 is just a coincidence of corrupted bytes.
+	; Drain the UART, scrub state and force the same retry path as a
+	; protocol error (server retransmits DATA after no-ACK timeout).
+	LD	A,(TCP.LSR_ACCUM)
+	AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+	JR	NZ,.RX_CORRUPT
 	CALL	HANDLE_PACKET
 	JR	C,.HANDLE_FAIL
 	; Reset the corruption-retry counter on every successful packet —
@@ -568,11 +578,34 @@ DOWNLOAD_RRQ
 	XOR	A
 	RET
 
+.RX_TIMEOUT
+	; Pure receive timeout from RECEIVE_PACKET_RETRY (no data, no error).
+	; Propagate as-is — caller turns it into "Network/ESP error #4".
+	RET
+
+.RX_CORRUPT
+	; UART overrun: previous packet was lost / mis-aligned. Don't pummel
+	; the server with a duplicate ACK — most TFTP implementations ignore
+	; them per RFC 1350 ("Sorcerer's Apprentice") and wait for their own
+	; retransmit timer (typically 1-3 s). Drain, decrement budget, just
+	; loop back to RECEIVE. The inner RECEIVE_PACKET_RETRY's own timeout
+	; cycle will resend after RECV_TIMEOUT if the server stays silent.
+	CALL	DRAIN_UART_AFTER_OE
+	PRINTLN MSG_OVERRUN
+	LD	HL,HANDLE_RETRIES
+	DEC	(HL)
+	JR	Z,.OE_GIVEUP
+	JR	.RECV_NEXT
+.OE_GIVEUP
+	LD	A,RES_RS_TIMEOUT
+	SCF
+	RET
+
 .HANDLE_FAIL
 	; Server-side TFTP ERROR (opcode 5) is fatal — propagate immediately.
-	; Anything else (PROTO_ERR from a desynced +IPD) is recoverable: the
-	; TFTP server retransmits last DATA when it sees no ACK, so just
-	; resend our last packet (RRQ or ACK_{N-1}) and try to receive again.
+	; Anything else (PROTO_ERR — header that *parsed* but didn't match
+	; expected block) is recoverable: resend our last ACK to nudge the
+	; server's retransmit logic, since its own timer might be far away.
 	CP	RES_ERROR
 	RET	Z
 	PUSH	AF
@@ -723,10 +756,34 @@ WAIT_ACK_WITH_RETRY
 	; Reset stale PAYLOAD_LEFT (see DOWNLOAD_RRQ note).
 	LD	HL,0
 	LD	(TCP.PAYLOAD_LEFT),HL
+	XOR	A
+	LD	(TCP.LSR_ACCUM),A
 	CALL	RECEIVE_ACK_RETRY
-	RET	NC
+	JR	C,.RECV_FAIL
+	; Same OE check as in download — corrupt UART means the +IPD parser
+	; landed on misaligned bytes, so even a "correct"-looking ACK is just
+	; a coincidence. Drain and retry.
+	LD	A,(TCP.LSR_ACCUM)
+	AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+	JR	NZ,.RX_CORRUPT
+	XOR	A
+	RET
+
+.RECV_FAIL
 	CP	RES_RS_TIMEOUT
 	RET	NZ							; not a recoverable case
+	JR	.RETRY
+
+.RX_CORRUPT
+	; OE on ACK reception — passive wait for server retransmit, no
+	; duplicate DATA send (same rationale as DOWNLOAD_RRQ.RX_CORRUPT).
+	CALL	DRAIN_UART_AFTER_OE
+	PRINTLN MSG_OVERRUN
+	LD	HL,HANDLE_RETRIES
+	DEC	(HL)
+	JR	Z,.GIVEUP
+	JR	WAIT_ACK_WITH_RETRY
+.RETRY
 	LD	HL,HANDLE_RETRIES
 	DEC	(HL)
 	JR	Z,.GIVEUP
@@ -868,6 +925,28 @@ RECEIVE_PACKET_RETRY
 .TIMEOUT
 	LD	A,RES_RS_TIMEOUT
 	SCF
+	RET
+
+; ------------------------------------------------------
+; Recover from a UART overrun: deassert RTS, give ESP up to ~50 ms to
+; drain any bytes still queued in its UART TX buffer (it should stop
+; almost instantly with flow=3 but we are paranoid), reset the 16550 RX
+; FIFO and clear the sticky LSR_ACCUM. After return RX is resumed and
+; the +IPD parser is in a clean state.
+; ------------------------------------------------------
+DRAIN_UART_AFTER_OE
+	PUSH	AF,BC,DE,HL
+	CALL	@WIFI.UART_RX_PAUSE
+	LD	HL,50
+	CALL	@UTIL.DELAY
+	CALL	@WIFI.UART_EMPTY_RS
+	XOR	A
+	LD	(TCP.LSR_ACCUM),A
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
+	LD	(TCP.LAST_IPD_LEN),HL
+	CALL	@WIFI.UART_RX_RESUME
+	POP	HL,DE,BC,AF
 	RET
 
 HANDLE_PACKET
@@ -1205,6 +1284,8 @@ MSG_ERROR_NO
 	DB "n!",0
 MSG_PROTO_ERROR
 	DB "Unexpected TFTP packet.",0
+MSG_OVERRUN
+	DB "UART overrun, retrying.",0
 MSG_TFTP_ERROR
 	DB "TFTP error: ",0
 MSG_UDP_NOT_CONFIRMED
