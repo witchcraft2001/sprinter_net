@@ -78,6 +78,22 @@ CLOSE_LINK
 ; Out: CF=0/A=0 on success, CF=1/A=result code on failure.
 ; ------------------------------------------------------
 SEND_BUFFER_LINK
+	CALL	START_SEND_BUFFER_LINK
+	RET	C
+	JP	WAIT_SEND_OK_LINK
+
+; ------------------------------------------------------
+; Send a raw TCP payload through a multi-connection link and return
+; immediately after UART transmit.
+; In: A - link id, HL - payload, BC - payload length.
+; Out: CF=0/A=0 after bytes were accepted by the UART.
+;      CF=1/A=result code on prompt/tx timeout.
+; ------------------------------------------------------
+SEND_BUFFER_LINK_NO_WAIT
+	CALL	START_SEND_BUFFER_LINK
+	RET
+
+START_SEND_BUFFER_LINK
 	LD	(LINK_ID),A
 	LD	(SEND_PTR),HL
 	LD	(SEND_LEN),BC
@@ -112,7 +128,8 @@ SEND_BUFFER_LINK
 	CALL	WIFI.UART_TX_BUFFER
 	JR	C,.TX_TIMEOUT
 
-	JP	WAIT_SEND_OK_LINK
+	XOR	A
+	RET
 
 .TX_TIMEOUT
 	LD	A,RES_TX_TIMEOUT

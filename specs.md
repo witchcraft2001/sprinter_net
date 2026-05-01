@@ -503,22 +503,26 @@ Done when:
 - [x] Confirm ESP-AT V2.2.1 firmware exposes multi-connection commands and
   link-id response formats.
 - [x] Keep the initial FTP control smoke test on single-connection TCP
-  (`AT+CIPMUX=0`) so it follows the same stable path as `wget.exe` and
-  `tcptest.exe`.
+  (`AT+CIPMUX=0`) while control-channel parsing is stabilized.
 - [x] Add initial link-aware TCP open/send/receive/close helpers in a separate
   `esp_tcp_multi.asm` include.
 - [x] Implement FTP control channel line parser.
 - [x] Support initial `USER`, `PASS`, `TYPE I` and `QUIT` smoke-test commands.
 - [x] Verify FTP control login against a simple FTP server.
 - [x] Send `PASV` and parse `227 Entering Passive Mode (...)`.
-- [ ] Support passive FTP data commands after `PASV`: `RETR`, `STOR`, `LIST`.
+- [x] Switch FTP to ESP-AT multi-connection mode only inside `ftp.exe` after
+  jesperl support for link-id TCP commands was added.
+- [x] Open the passive data TCP link after `PASV`.
+- [x] Add first passive `LIST` smoke test and print the directory listing.
+- [ ] Support passive FTP file commands after `PASV`: `RETR`, `STOR`.
 - [ ] Download through data connection.
 - [ ] Upload through data connection.
-- [ ] Close data and control links cleanly.
+- [x] Close data and control links cleanly.
 
 Done when:
 
-- `ftp.exe` can login to a simple FTP server in passive mode.
+- `ftp.exe` can login to a simple FTP server, enter passive mode and print a
+  directory listing.
 - Binary download and upload work for small and medium files.
 
 ### Stage 10 - Text Chat / IRC Baseline

@@ -34,6 +34,7 @@ User-facing setup notes are in `docs/USAGE.md`.
 - `TCPTEST.EXE`
 - `UDPTEST.EXE`
 - `TFTP.EXE`
+- `FTP.EXE`
 - `PING.EXE`
 - `WGET.EXE`
 - `NTP.EXE`
@@ -67,6 +68,8 @@ TFTP.EXE /PUT tftp://host[:port]/path FILE
                  upload one file over TFTP, alternate argument order
 TFTP.EXE tftp://host[:port]/path PUT FILE
                  upload one file over TFTP, DSS argument compatibility form
+FTP.EXE host[:port] [user [password]]
+                 login, enter passive mode and print a LIST directory listing
 PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url file download an HTTP/1.0 URL to a local file
                   URL must currently include http://

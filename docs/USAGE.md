@@ -17,8 +17,9 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   `TFTP.EXE /PUT tftp://host[:port]/path FILE` is also accepted.
   `TFTP.EXE tftp://host[:port]/path PUT FILE` is accepted for DSS shells that
   pass `/PUT` as a positional token.
-- `FTP.EXE host[:port] [user [password]]` verifies FTP control-channel login
-  through ESP-AT multi-connection mode. Passive file transfer is not enabled yet.
+- `FTP.EXE host[:port] [user [password]]` logs in through ESP-AT
+  multi-connection mode, enters passive mode and prints a `LIST` directory
+  listing. File transfer commands are not enabled yet.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
   local DSS file.
@@ -119,6 +120,8 @@ Use this order during normal testing:
 8. `TFTP.EXE tftp://server/file FILE` - verify TFTP download.
 9. `TFTP.EXE /PUT FILE tftp://server/file` - verify TFTP upload where the
    server permits writes.
+10. `FTP.EXE server anonymous sprinter` - verify FTP login, passive mode and
+    directory listing.
 
 Bundled batch examples:
 
