@@ -71,6 +71,13 @@ end label. Clear that runtime area at program start only when the code depends
 on zeroed memory. Small state variables and required initialized data may remain
 in the file.
 
+Utilities that accept long command lines, including `WGET`, `UDPTEST`, `TFTP`,
+`FTP`, and similar future tools, must use the full 512-byte DSS EXE header with
+code file offset `0x0200`, load address `0x8100`, and entry point `0x8100`.
+This keeps DSS command-line storage at `0x8080` from overlapping the program
+entry code. The required header padding is allowed and is not a runtime buffer;
+large runtime buffers still must live outside the `.EXE` image.
+
 Keep runtime memory maps explicit. When a utility needs command, URL, packet,
 TCP/UDP receive, or configuration buffers, define them with `EQU` in a BSS map
 instead of `DS ...,0`, and make sure the ranges do not overlap while both values

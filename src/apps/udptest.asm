@@ -18,12 +18,14 @@ RECV_BUFFER_SIZE	EQU 512
 
 	MODULE MAIN
 
-	ORG 0x8080
+	; Full 512-byte DSS EXE header. Long command lines are written
+	; at 0x8080, so these tools must not use the compact header.
+	ORG 0x7F00
 
 EXE_HEADER
 	DB "EXE"
 	DB EXE_VERSION
-	DW 0x0080
+	DW 0x0200
 	DW 0
 	DW 0
 	DW 0
@@ -32,7 +34,7 @@ EXE_HEADER
 	DW START
 	DW START
 	DW STACK_TOP
-	DS 106, 0
+	DS 490, 0
 
 	ORG 0x8100
 @STACK_TOP

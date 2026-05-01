@@ -39,6 +39,11 @@ Later expansion targets:
 - Hardware RTS/CTS flow control is required for reliable operation at 115200.
 - ESP firmware baseline is ESP8266 ESP-AT 2.2.1 or compatible.
 - DSS programs use standard DSS EXE format and DSS file APIs.
+- Utilities with long command lines (`WGET`, `UDPTEST`, `TFTP`, `FTP`, and
+  similar future tools) must use the full 512-byte DSS EXE header with code
+  file offset `0x0200`, load address `0x8100`, and entry point `0x8100`. Do
+  not use the compact 128-byte header for these tools because DSS command-line
+  storage at `0x8080` can overlap the start of the loaded program.
 - DSS filesystem uses FAT-style 8.3 names; paths use backslash.
 
 ### ESP8266 ESP-AT V2.2.1 Command Support
@@ -152,6 +157,9 @@ Rationale:
   URL, packet, TCP/UDP receive and configuration buffers must be defined as
   explicit BSS memory maps (`EQU` ranges) and initialized at startup only when
   needed.
+- The zero padding required by a full 512-byte DSS EXE header is part of the
+  executable format and is allowed. Do not use that exception for runtime
+  buffers.
 - Keep DSS file read/write buffers below the `0xC000` banking window unless the
   code explicitly handles page switching. Larger future buffers should use DSS
   paged memory mapped into `WIN0`-`WIN3`, not static EXE space.
