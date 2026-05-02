@@ -740,6 +740,16 @@ RECV_DATA_LIST
 .CLOSED
 		XOR	A
 		LD	(DATA_OPEN),A
+		; Reset TCP receive state. Without this a partially-read
+		; +IPD chunk leaves PAYLOAD_LEFT non-zero and LAST_IPD_LINK
+		; pointing at the data link, so the next RECEIVE_ANY_LINK
+		; (e.g. waiting for the QUIT reply) skips WAIT_IPD_HEADER
+		; and consumes "0,SEND OK\r\n+IPD,0,N:..." as stale payload,
+		; printing it through PRINT_BUFFER.
+		LD	HL,0
+		LD	(TCP.PAYLOAD_LEFT),HL
+		LD	A,0xFF
+		LD	(TCP.LAST_IPD_LINK),A
 		PRINT WCOMMON.LINE_END
 		RET
 
