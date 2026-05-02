@@ -73,6 +73,7 @@ START
 	CALL	@WCOMMON.FIND_SWF
 
 	PRINTLN WCOMMON.MSG_UART_INIT
+	CALL	NETCFG.LOAD
 	CALL	WIFI.UART_INIT
 
 	PRINTLN WCOMMON.MSG_ESP_RESET
@@ -129,11 +130,11 @@ HANDLE_RECEIVE
 	LD		HL,REG_LSR
 	CALL	WIFI.UART_READ
 	LD		D,A
-	AND		LSR_RCVE
-	JP		NZ, RX_WARN
+	; Read pending data first. LSR_RCVE may be set while valid bytes are
+	; still waiting in FIFO; flushing here truncates long ESP replies.
 	LD		A,D
 	AND		LSR_DR
-	JP		Z, CHECK_FOR_END
+	JP		Z, CHECK_RX_ERROR
 	; rx queue is not empty, read
 	LD		HL,REG_RBR
 	CALL	WIFI.UART_READ
@@ -141,20 +142,25 @@ HANDLE_RECEIVE
 	CP		CR
 	JR		NZ, CHK_1F
 	; print CR+LF
-	CALL	PUT_A_CHAR
+	CALL	PUT_RX_CHAR
 	LD		A,LF
-	CALL	PUT_A_CHAR
+	CALL	PUT_RX_CHAR
 	JP		HANDLE_RECEIVE
 
 	; check for printable symbol, and print
 CHK_1F
 	CP		0x20
-	CALL	P, PUT_A_CHAR
+	CALL	P, PUT_RX_CHAR
 	
 	; reset error counter if received symbol withoud error
 	XOR		A
 	LD		(RX_ERR),A
 	JP		HANDLE_RECEIVE
+
+CHECK_RX_ERROR
+	LD		A,D
+	AND		LSR_RCVE
+	JP		NZ, RX_WARN
 
 CHECK_FOR_END
 	; LD		A,(Q_POS)
@@ -167,7 +173,6 @@ RX_WARN
 	LD		DE,MSG_LSR_VALUE
 	CALL	@UTIL.HEXB
 	PRINTLN	MSG_RX_ERROR
-	CALL	WIFI.UART_EMPTY_RS
 	LD		HL,RX_ERR
 	INC		(HL)
 	LD		A,(HL)
@@ -189,6 +194,11 @@ PUT_A_CHAR
 	DSS_EXEC	DSS_PUTCHAR
 	POP		DE,BC
 	RET
+
+PUT_RX_CHAR
+	CALL	WIFI.UART_RX_PAUSE
+	CALL	PUT_A_CHAR
+	JP		WIFI.UART_RX_RESUME
 
 ; ------------------------------------------------------
 ; Do Some
@@ -248,6 +258,7 @@ BUFF_TEST1	DS RS_BUFF_SIZE,0
 	INCLUDE "dss_error.asm"
 	;INCLUDE "util.asm"
 	INCLUDE "isa.asm"
+	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esplib.asm"
 
     END ;MAIN.START
