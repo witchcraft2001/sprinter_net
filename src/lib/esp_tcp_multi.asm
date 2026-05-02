@@ -258,15 +258,9 @@ READ_IPD_LINK_LEN
 ; ------------------------------------------------------
 ; Read decimal field until ',' or ':'.
 ; Out: HL=value, IPD_DELIM=delimiter.
-; Requires at least one digit before the delimiter; an empty field
-; (e.g., a digit lost to UART overrun in "+IPD,1,N:") is rejected as
-; RES_ERROR rather than silently returning 0 and routing payload to
-; the wrong link.
 ; ------------------------------------------------------
 READ_DEC_FIELD
 	LD	HL,0
-	XOR	A
-	LD	(DEC_HAS_DIGIT),A
 .NEXT
 	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
 	JR	C,.TIMEOUT
@@ -278,10 +272,6 @@ READ_DEC_FIELD
 	JR	C,.ERROR
 	CP	'9'+1
 	JR	NC,.ERROR
-	PUSH	AF
-	LD	A,1
-	LD	(DEC_HAS_DIGIT),A
-	POP	AF
 	SUB	'0'
 	LD	E,A
 	LD	D,0
@@ -295,9 +285,6 @@ READ_DEC_FIELD
 	JR	.NEXT
 .DELIM
 	LD	(IPD_DELIM),A
-	LD	A,(DEC_HAS_DIGIT)
-	AND	A
-	JR	Z,.ERROR_EMPTY
 	XOR	A
 	RET
 .TIMEOUT
@@ -306,7 +293,6 @@ READ_DEC_FIELD
 	RET
 .ERROR
 	LD	(IPD_BAD_CHAR),A
-.ERROR_EMPTY
 	LD	A,RES_ERROR
 	SCF
 	RET
@@ -373,7 +359,6 @@ LINK_ID		DB 0
 LAST_IPD_LINK	DB 0
 PAYLOAD_LINK	DB 0
 IPD_DELIM	DB 0
-DEC_HAS_DIGIT	DB 0
 
 	ENDMODULE
 
