@@ -109,6 +109,40 @@ STRCMP
 	RET
 	;;ENDIF
 
+; ------------------------------------------------------
+; Compare strings case-insensitively for ASCII letters.
+; 	Inp: 	HL, DE - pointers to asciiz strings to compare
+; 	Out: 	CF=0 - equal, CF=1 - not equal
+; ------------------------------------------------------
+STRCMP_CI
+	PUSH	BC,DE,HL
+.NEXT
+	LD	A,(DE)
+	CALL	UPCASE
+	LD	C,A
+	LD	A,(HL)
+	CALL	UPCASE
+	CP	C
+	JR	NZ,.NE
+	AND	A
+	JR	Z,.EQ
+	INC	DE
+	INC	HL
+	JR	.NEXT
+.NE
+	SCF
+.EQ
+	POP	HL,DE,BC
+	RET
+
+UPCASE
+	CP	'a'
+	RET	C
+	CP	'z'+1
+	RET	NC
+	SUB	'a'-'A'
+	RET
+
 
 
 ; ------------------------------------------------------

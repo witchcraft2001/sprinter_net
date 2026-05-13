@@ -1,23 +1,27 @@
-FTP.EXE - FTP passive LIST smoke test
-=====================================
+FTP.EXE - FTP passive directory listing
+=======================================
 
 Purpose
 -------
-  Opens an FTP control connection through SprinterESP, verifies the login
-  path, opens the passive data connection and prints a directory listing.
+  Opens an FTP control connection through SprinterESP, verifies the login path,
+  opens the passive data connection and prints a LIST or NLST directory
+  listing.
 
 Usage
 -----
-  FTP.EXE host[:port] [user [password]]
+  FTP.EXE host[:port] [path] -l [-u user] [-p pass]
+  FTP.EXE host[:port] [path] -n [-u user] [-p pass]
+  FTP.EXE /?
 
 Run NETUP first. FTP.EXE does not join Wi-Fi by itself; it only opens the
 FTP control connection after the shared ESP/UART configuration is ready.
 
 Examples
 --------
-  FTP.EXE 192.168.1.36
-  FTP.EXE 192.168.1.36:2121 test secret
-  FTP.EXE ftp.example.org anonymous sprinter@example
+  FTP.EXE 192.168.1.36 -l
+  FTP.EXE 192.168.1.36 pub -n
+  FTP.EXE 192.168.1.36:2121 -l -u test -p secret
+  FTP.EXE ftp.example.org / -l -u anonymous -p anonymous@
 
 What It Does
 ------------
@@ -29,15 +33,18 @@ What It Does
   6. Sends USER, PASS if needed, TYPE I and PASV.
   7. Parses the 227 passive endpoint and prints host:port.
   8. Opens the passive data TCP connection as link 1.
-  9. Sends LIST and prints the directory listing.
+  9. Sends LIST or NLST and prints the directory listing.
   10. Sends QUIT and closes the control connection.
 
 Current Limits
 --------------
-  - only LIST is implemented for the passive data connection;
+  - only directory listing modes are implemented for the passive data
+    connection: LIST and NLST;
   - RETR/STOR are not implemented yet;
-  - no ftp:// URL parser yet;
-  - password is passed on the command line for this early diagnostic build;
+  - FTP.EXE uses the same flag style as the RTL8019AS network kit for the
+    implemented listing modes. File download/upload CLI forms are reserved
+    until RETR/STOR are implemented in this SprinterESP build;
+  - password is passed on the command line;
   - use a simple test FTP server first.
 
 If startup fails with ESP communication error #1/#4 before "Connecting to",
@@ -46,7 +53,7 @@ NETRESET, NETUP, then retry FTP.EXE.
 
 Exit Codes
 ----------
-  0  FTP login, PASV and LIST smoke test completed.
+  0  FTP login, PASV and directory listing completed.
   1  Invalid command line.
   2  Sprinter-WiFi card was not found.
   3  ESP/TCP communication error.

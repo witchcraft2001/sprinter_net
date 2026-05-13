@@ -215,5 +215,7 @@ Do not commit Wi-Fi credentials, local serial-port settings, temporary build fil
   - `/Users/dmitry/dev/zx/sprinter/utils`
   - `/Users/dmitry/dev/zx/sprinter/sprinter_wifi/ESPKit`
   - `/Users/dmitry/dev/zx/sprinter/sprinter_wifi/SprinterESP`
+  - `/Users/dmitry/dev/zx/sprinter/sprinter-rtl8019a` - CLI standard source
+    for analogous network utilities such as WGET, FTP, and TFTP.
   - `/Users/dmitry/dev/zx/zx-wifi`
 - Treat them as reference material only; this repository remains the source of truth for changes you make here.

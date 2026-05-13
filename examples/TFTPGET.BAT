@@ -1,1 +1,1 @@
-TFTP.EXE tftp://192.168.1.36/fformat.txt FFORMAT.TXT
+TFTP.EXE 192.168.1.36 GET fformat.txt -o FFORMAT.TXT -y

@@ -60,19 +60,15 @@ TCPTEST.EXE host port path
                  test an HTTP path on a custom host and port
 UDPTEST.EXE host port [message [local_port]]
                  send one UDP datagram and wait for one reply
-TFTP.EXE tftp://host[:port]/path FILE
+TFTP.EXE host[:port] GET remote [-o local] [-y]
                  download one file over TFTP
-TFTP.EXE /PUT FILE tftp://host[:port]/path
+TFTP.EXE host[:port] PUT local [-o remote]
                  upload one file over TFTP
-TFTP.EXE /PUT tftp://host[:port]/path FILE
-                 upload one file over TFTP, alternate argument order
-TFTP.EXE tftp://host[:port]/path PUT FILE
-                 upload one file over TFTP, DSS argument compatibility form
-FTP.EXE host[:port] [user [password]]
-                 login, enter passive mode and print a LIST directory listing
+FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]
+                 login, enter passive mode and print a LIST/NLST listing
 PING.EXE host    test host reachability using ESP-AT AT+PING
-WGET.EXE url file download an HTTP/1.0 URL to a local file
-                  URL must currently include http://
+WGET.EXE url [-o output] [-y]
+                 download an HTTP/1.0 URL to a local file
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 ```
 

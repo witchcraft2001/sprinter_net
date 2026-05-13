@@ -12,17 +12,16 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   HTTP response. Use it after `NETUP`.
 - `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
   waits for one reply. Use it before testing TFTP.
-- `TFTP.EXE tftp://host[:port]/path FILE` downloads one file over TFTP.
-- `TFTP.EXE /PUT FILE tftp://host[:port]/path` uploads one file over TFTP.
-  `TFTP.EXE /PUT tftp://host[:port]/path FILE` is also accepted.
-  `TFTP.EXE tftp://host[:port]/path PUT FILE` is accepted for DSS shells that
-  pass `/PUT` as a positional token.
-- `FTP.EXE host[:port] [user [password]]` logs in through ESP-AT
-  multi-connection mode, enters passive mode and prints a `LIST` directory
-  listing. File transfer commands are not enabled yet.
+- `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y]` downloads one
+  file over TFTP.
+- `TFTP.EXE host[:port] PUT local-file [-o remote-name]` uploads one file over
+  TFTP.
+- `FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]` logs in through
+  ESP-AT multi-connection mode, enters passive mode and prints a `LIST` or
+  `NLST` directory listing. File transfer commands are not enabled yet.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
-- `WGET.EXE http://host[:port]/path FILE` downloads an HTTP/1.0 resource to a
-  local DSS file.
+- `WGET.EXE url [-o output] [-y]` downloads an HTTP/1.0 resource to a local DSS
+  file. Without `-o`, the output name is derived from the URL path.
 - `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
   `NET.CFG`.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a
@@ -79,7 +78,7 @@ NETCFG.EXE /W
 NETUP.EXE
 TCPTEST.EXE
 PING.EXE example.com
-WGET.EXE http://example.com INDEX.HTM
+WGET.EXE http://example.com -o INDEX.HTM -y
 NTP.EXE
 ```
 
@@ -114,14 +113,13 @@ Use this order during normal testing:
 2. `NETUP.EXE` - connect to Wi-Fi.
 3. `TCPTEST.EXE` - verify TCP access.
 4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
-5. `WGET.EXE http://example.com INDEX.HTM` - verify HTTP download.
+5. `WGET.EXE http://example.com -o INDEX.HTM -y` - verify HTTP download.
 6. `NTP.EXE` - set DSS time from ESP SNTP.
 7. `UDPTEST.EXE server 7777 hello` - verify UDP echo.
-8. `TFTP.EXE tftp://server/file FILE` - verify TFTP download.
-9. `TFTP.EXE /PUT FILE tftp://server/file` - verify TFTP upload where the
+8. `TFTP.EXE server GET file -o FILE -y` - verify TFTP download.
+9. `TFTP.EXE server PUT FILE -o file` - verify TFTP upload where the
    server permits writes.
-10. `FTP.EXE server anonymous sprinter` - verify FTP login, passive mode and
-    directory listing.
+10. `FTP.EXE server -l` - verify FTP login, passive mode and directory listing.
 
 Bundled batch examples:
 

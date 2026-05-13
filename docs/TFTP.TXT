@@ -6,21 +6,18 @@ Purpose
   before adding protocol options.
 
 Usage
-  TFTP.EXE tftp://host[:port]/path FILE
-  TFTP.EXE /PUT FILE tftp://host[:port]/path
-  TFTP.EXE /PUT tftp://host[:port]/path FILE
-  TFTP.EXE tftp://host[:port]/path PUT FILE
+  TFTP.EXE host[:port] GET remote-file [-o local-name] [-y]
+  TFTP.EXE host[:port] PUT local-file  [-o remote-name]
+  TFTP.EXE /?
 
 Examples
-  TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
-  TFTP.EXE tftp://192.168.1.36:69/boot/screen.scr SCREEN.SCR
-  TFTP.EXE /PUT TEST.BIN tftp://192.168.1.36/upload.bin
-  TFTP.EXE /PUT tftp://192.168.1.36/upload.bin TEST.BIN
-  TFTP.EXE tftp://192.168.1.36/upload.bin PUT TEST.BIN
+  TFTP.EXE 192.168.1.36 GET test.bin -o TEST.BIN -y
+  TFTP.EXE 192.168.1.36:69 GET boot/screen.scr -o SCREEN.SCR
+  TFTP.EXE 192.168.1.36 PUT TEST.BIN -o upload.bin
 
 Typical sequence
   NETUP.EXE
-  TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
+  TFTP.EXE 192.168.1.36 GET test.bin -o TEST.BIN -y
 
 Testing with macOS
   macOS includes a TFTP server. Put test files into /private/tftpboot and
@@ -33,7 +30,7 @@ Testing with macOS
 
   Then run from DSS:
 
-    TFTP.EXE tftp://192.168.1.36/test.bin TEST.BIN
+    TFTP.EXE 192.168.1.36 GET test.bin -o TEST.BIN -y
 
   For upload tests, many TFTP servers require the destination file to exist
   and be writable before WRQ is accepted:
@@ -43,13 +40,18 @@ Testing with macOS
 
   Then run from DSS:
 
-    TFTP.EXE /PUT TEST.BIN tftp://192.168.1.36/upload.bin
+    TFTP.EXE 192.168.1.36 PUT TEST.BIN -o upload.bin
 
   Stop the macOS server after testing:
 
     sudo launchctl unload -w /System/Library/LaunchDaemons/tftp.plist
 
 Notes
+  Without -o, GET saves to the basename of remote-file and PUT sends the
+  basename of local-file as the remote filename. The -y option is accepted for
+  command-line compatibility with the RTL8019AS network kit; this SprinterESP
+  build currently overwrites GET output without prompting.
+
   The client opens ESP-AT UDP mode 2. This is required because a TFTP server
   normally replies from a transfer-specific UDP port instead of port 69.
 
