@@ -30,9 +30,15 @@ HTTP_UNSUPPORTED_GZIP	EQU 4
 
 	MODULE MAIN
 
-	; Full 512-byte DSS EXE header. Long command lines are written
-	; at 0x8080, so these tools must not use the compact header.
-	ORG 0x7F00
+	; Load this utility at 0x4100 so all code+BSS+stack live below
+	; 0xC000, well clear of the ISA banking window. Long command lines
+	; live at load_addr-0x80 = 0x4080.
+LOAD_ADDR	EQU 0x4100
+CMDLINE_ADDR	EQU LOAD_ADDR - 0x80
+STACK_TOP	EQU 0xC000
+
+	; Full 512-byte DSS EXE header.
+	ORG LOAD_ADDR - 0x0200
 
 EXE_HEADER
 	DB "EXE"
@@ -43,13 +49,12 @@ EXE_HEADER
 	DW 0
 	DW 0
 	DW 0
-	DW START
-	DW START
-	DW STACK_TOP
+	DW START			; load address (offset 16)
+	DW START			; entry point  (offset 18)
+	DW STACK_TOP			; stack pointer (offset 20)
 	DS 490, 0
 
-	ORG 0x8100
-@STACK_TOP
+	ORG LOAD_ADDR
 
 START
 	CALL	CLEAR_BSS
@@ -214,7 +219,7 @@ CANCEL_EXIT
 ; Parse command line: WGET.EXE http://host[:port]/path FILE
 ; ------------------------------------------------------
 PARSE_CMD_LINE
-	LD	HL,0x8080
+	LD	HL,CMDLINE_ADDR
 	LD	A,(HL)
 	AND	A
 	JR	Z,.ERR
@@ -1848,6 +1853,10 @@ HEADER_LINE	EQU REQ_BUFF + REQ_SIZE
 LOCATION_BUFF	EQU HEADER_LINE + HEADER_LINE_SIZE
 RECV_BUFFER	EQU LOCATION_BUFF + URL_SIZE
 WGET_BSS_END	EQU RECV_BUFFER + RECV_BUFFER_SIZE
+	; RECV_BUFFER is the source of DSS_WRITE in WRITE_BODY. Until PAGE1
+	; safety across DSS calls is confirmed on real hardware, keep it in
+	; PAGE2 (after code+BSS) rather than moving to BIGBUF.
+	ASSERT	WGET_BSS_END < 0xC000
 
 	ENDMODULE
 

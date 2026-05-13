@@ -8,7 +8,10 @@ DEFAULT_TIMEOUT		EQU 2000
 RECV_TIMEOUT		EQU 5000
 ; UDP datagrams can be dropped silently by ESP/Wi-Fi/network. Bumping the
 ; retry budget tolerates a few lost packets before failing the transfer.
-RETRY_LIMIT		EQU 6
+; For large transfers on real hardware the per-block OE-recovery budget
+; needs to be generous — a few percent OE rate over hundreds of blocks
+; can otherwise burn through a small retry pool.
+RETRY_LIMIT		EQU 16
 URL_SIZE		EQU 160
 HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
@@ -26,9 +29,14 @@ NO_HANDLE		EQU 0xFF
 
 	MODULE MAIN
 
-	; Full 512-byte DSS EXE header. Long command lines are written
-	; at 0x8080, so these tools must not use the compact header.
-	ORG 0x7F00
+	; Load at 0x4100 so code+BSS+stack live below the 0xC000 ISA window.
+	; Cmdline lives at load_addr-0x80 = 0x4080.
+LOAD_ADDR	EQU 0x4100
+CMDLINE_ADDR	EQU LOAD_ADDR - 0x80
+STACK_TOP	EQU 0xC000
+
+	; Full 512-byte DSS EXE header.
+	ORG LOAD_ADDR - 0x0200
 
 EXE_HEADER
 	DB "EXE"
@@ -44,8 +52,7 @@ EXE_HEADER
 	DW STACK_TOP
 	DS 490, 0
 
-	ORG 0x8100
-@STACK_TOP
+	ORG LOAD_ADDR
 
 START
 	CALL	CLEAR_BSS
@@ -235,7 +242,7 @@ CANCEL_EXIT
 PARSE_CMD_LINE
 	XOR	A
 	LD	(TRANSFER_MODE),A
-	LD	HL,0x8080
+	LD	HL,CMDLINE_ADDR
 	LD	A,(HL)
 	AND	A
 	JP	Z,.ERR
@@ -581,19 +588,37 @@ DOWNLOAD_RRQ
 	RET
 
 .RX_TIMEOUT
-	; Pure receive timeout from RECEIVE_PACKET_RETRY (no data, no error).
-	; Propagate as-is — caller turns it into "Network/ESP error #4".
+	; Receive returned an error. If LSR_ACCUM has any error bit set,
+	; the failure was caused by OE/PE/FE corrupting the +IPD parser
+	; mid-frame (the parser can return RES_RS_TIMEOUT *or* RES_ERROR
+	; depending on where the corruption struck the length field) —
+	; treat both as recoverable: DRAIN + ACK retransmit + retry. Without
+	; this, OE that bubbles out as #1 (RES_ERROR from
+	; READ_IPD_LEN.ERROR_BAD_CHAR) or #4 (RES_RS_TIMEOUT from a stuck
+	; payload read) silently aborts a transfer that should retry.
+	LD	C,A
+	LD	A,(TCP.LSR_ACCUM)
+	AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+	JR	NZ,.RX_CORRUPT
+	; Pure receive timeout (no data, no UART error). Propagate caller's
+	; result code unchanged.
+	LD	A,C
+	SCF
 	RET
 
 .RX_CORRUPT
-	; UART overrun: previous packet was lost / mis-aligned. Don't pummel
-	; the server with a duplicate ACK — most TFTP implementations ignore
-	; them per RFC 1350 ("Sorcerer's Apprentice") and wait for their own
-	; retransmit timer (typically 1-3 s). Drain, decrement budget, just
-	; loop back to RECEIVE. The inner RECEIVE_PACKET_RETRY's own timeout
-	; cycle will resend after RECV_TIMEOUT if the server stays silent.
+	; UART overrun: previous packet was lost / mis-aligned. Drain UART
+	; state and re-send our last ACK *immediately* — without it, the
+	; server's own retransmit timer (1–5 s) may be the only thing nudging
+	; the next DATA, and if the server already retried during our drain
+	; window it can give up before our next RECV_TIMEOUT (5 s) elapses.
+	; The "Sorcerer's Apprentice" concern (RFC 1350) only matters when
+	; we are exchanging ACKs for blocks the server has already seen ACKed;
+	; here we never delivered the DATA, so an extra ACK for the previous
+	; block is exactly what TFTP recovery expects.
 	CALL	DRAIN_UART_AFTER_OE
 	PRINTLN MSG_OVERRUN
+	CALL	SEND_PACKET
 	LD	HL,HANDLE_RETRIES
 	DEC	(HL)
 	JR	Z,.OE_GIVEUP
@@ -720,8 +745,8 @@ BUILD_DATA_PACKET_FROM_FILE
 	LD	A,(EXPECTED_BLOCK)
 	LD	(HL),A
 
-	; Pause RX during the slow DSS read so background ESP traffic does
-	; not overflow the 16-byte FIFO.
+	; Pause RX during the slow DSS_READ_FILE; resume so SEND_PACKET that
+	; follows can read its '>' / SEND OK via WAIT_PROMPT.
 	CALL	WIFI.UART_RX_PAUSE
 	LD	A,(IN_FH)
 	LD	HL,PACKET_BUFFER+4
@@ -772,15 +797,27 @@ WAIT_ACK_WITH_RETRY
 	RET
 
 .RECV_FAIL
+	; If a UART error bit is set, the receive failure was caused by OE
+	; corrupting the +IPD parser — recover via DRAIN + retransmit nudge.
+	; Preserve A (RECEIVE_ACK_RETRY's result) across the LSR check so
+	; non-OE error codes still propagate via the normal path below.
+	LD	C,A
+	LD	A,(TCP.LSR_ACCUM)
+	AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+	JR	NZ,.RX_CORRUPT
+	LD	A,C
 	CP	RES_RS_TIMEOUT
 	RET	NZ							; not a recoverable case
 	JR	.RETRY
 
 .RX_CORRUPT
-	; OE on ACK reception — passive wait for server retransmit, no
-	; duplicate DATA send (same rationale as DOWNLOAD_RRQ.RX_CORRUPT).
+	; OE on ACK reception. Resend our last DATA packet so the server,
+	; which may be waiting for our ACK and hold off retransmit, sees
+	; activity and either ACKs again or re-sends. Same rationale as
+	; DOWNLOAD_RRQ.RX_CORRUPT.
 	CALL	DRAIN_UART_AFTER_OE
 	PRINTLN MSG_OVERRUN
+	CALL	SEND_PACKET
 	LD	HL,HANDLE_RETRIES
 	DEC	(HL)
 	JR	Z,.GIVEUP
@@ -931,10 +968,10 @@ RECEIVE_PACKET_RETRY
 
 ; ------------------------------------------------------
 ; Recover from a UART overrun: deassert RTS, give ESP up to ~50 ms to
-; drain any bytes still queued in its UART TX buffer (it should stop
-; almost instantly with flow=3 but we are paranoid), reset the 16550 RX
-; FIFO and clear the sticky LSR_ACCUM. After return RX is resumed and
-; the +IPD parser is in a clean state.
+; drain any bytes still queued in its UART TX buffer, reset the 16550 RX
+; FIFO and clear the sticky LSR_ACCUM. RX is resumed on exit so the
+; subsequent retry path (PRINTLN "UART overrun, retrying" + next
+; RECEIVE) and any intermediate SEND_PACKET work normally.
 ; ------------------------------------------------------
 DRAIN_UART_AFTER_OE
 	PUSH	AF,BC,DE,HL
@@ -983,9 +1020,10 @@ HANDLE_PACKET
 	CP	(HL)
 	JR	NZ,.PROTO_ERR
 
-	; Pause RX while we do the slow DSS write so the ESP cannot push
-	; bytes (its own notifications, retransmits, etc.) into a 16-byte
-	; FIFO that we are not draining.
+	; Pause RX during the slow DSS_WRITE so ESP can't push next-block
+	; bytes into a 16-byte FIFO we aren't draining. RESUME before ACK
+	; build/send so SEND_BUFFER's WAIT_PROMPT can read the '>' / SEND OK
+	; responses.
 	CALL	WIFI.UART_RX_PAUSE
 	CALL	WRITE_DATA_PAYLOAD
 	PUSH	AF
@@ -1383,6 +1421,10 @@ OUT_FILE	EQU REMOTE_FILE + REMOTE_FILE_SIZE
 PACKET_BUFFER	EQU OUT_FILE + LOCAL_FILE_SIZE
 ACK_BUFFER	EQU PACKET_BUFFER + TFTP_PACKET_SIZE
 TFTP_BSS_END	EQU ACK_BUFFER + 4
+	; PACKET_BUFFER is the DSS_WRITE source on download and DSS_READ_FILE
+	; target on upload. Keep it in PAGE2 (after code+BSS) until PAGE1
+	; safety across DSS calls is confirmed; then it can move to BIGBUF.
+	ASSERT	TFTP_BSS_END < 0xC000
 
 	ENDMODULE
 

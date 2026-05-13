@@ -204,37 +204,116 @@ CAN_READ_ANOTHER_ACTIVE_IPD
 
 ; ------------------------------------------------------
 ; Wait for ESP CIPSEND prompt.
+; Reads bytes until '>'. If a "+IPD,N:<payload>" frame arrives mid-wait
+; (ESP forwards queued network data interleaved with AT-command output),
+; consume it by length and continue waiting. Without this, the IPD
+; binary payload bytes would be silently discarded one at a time as
+; "not '>'" and lost; a TFTP retransmit of the lost block would then
+; be eaten the same way on every subsequent ACK SEND_PACKET round-trip,
+; producing the partial-then-timeout-forever symptom on real hardware.
 ; ------------------------------------------------------
 WAIT_PROMPT
-	LD	BC,TCP_DEFAULT_TIMEOUT
+	PUSH	IX
+	LD	IX,IPD_PREFIX
 .NEXT
+	LD	BC,TCP_DEFAULT_TIMEOUT
 	CALL	READ_BYTE_TIMEOUT
-	JR	C,.TIMEOUT
+	JR	C,.TIMEOUT_POP
+	LD	E,A
 	CP	'>'
-	JR	Z,.OK
+	JR	Z,.OK_POP
+	LD	A,(IX+0)
+	CP	E
+	JR	NZ,.IPD_RESET
+	INC	IX
+	LD	A,(IX+0)
+	AND	A
+	JR	Z,.IPD_HIT
 	JR	.NEXT
-.OK
+.IPD_RESET
+	LD	IX,IPD_PREFIX
+	LD	A,E
+	CP	'+'
+	JR	NZ,.NEXT
+	INC	IX
+	JR	.NEXT
+.IPD_HIT
+	CALL	SKIP_IPD_FRAME
+	JR	C,.TIMEOUT_POP
+	LD	IX,IPD_PREFIX
+	JR	.NEXT
+.OK_POP
+	POP	IX
 	XOR	A
 	RET
-.TIMEOUT
+.TIMEOUT_POP
+	POP	IX
 	LD	A,RES_RS_TIMEOUT
 	SCF
 	RET
 
 ; ------------------------------------------------------
-; Wait until ESP reports SEND OK.
+; Wait until ESP reports SEND OK / ERROR / FAIL.
+; Like WAIT_PROMPT, this is IPD-aware: when the line being accumulated
+; starts with "+IPD," we switch to length-driven skip instead of trying
+; to match a CR/LF terminator inside binary payload.
 ; ------------------------------------------------------
 WAIT_SEND_OK
-	CALL	READ_LINE
-	RET	C
+.RESTART
+	LD	IX,LINE_BUFFER
+	LD	A,TCP_LINE_SIZE-1
+	LD	(LINE_REMAIN),A
+	LD	HL,IPD_PREFIX
+	LD	(IPD_STATE_PTR),HL
+.NEXT_BYTE
+	LD	BC,TCP_DEFAULT_TIMEOUT
+	CALL	READ_BYTE_TIMEOUT
+	JR	C,.TIMEOUT
+	LD	E,A
+	CP	13
+	JR	Z,.NEXT_BYTE
+	CP	10
+	JR	Z,.END_LINE
+	; If still potentially matching "+IPD," at the start of this line,
+	; advance the state; otherwise IPD detection is dead for this line.
+	LD	HL,(IPD_STATE_PTR)
+	LD	A,H
+	OR	L
+	JR	Z,.STORE_CHAR
+	LD	A,(HL)
+	CP	E
+	JR	NZ,.IPD_GAVE_UP
+	INC	HL
+	LD	(IPD_STATE_PTR),HL
+	LD	A,(HL)
+	AND	A
+	JR	Z,.IPD_LINE_HIT
+	JR	.STORE_CHAR
+.IPD_GAVE_UP
+	LD	HL,0
+	LD	(IPD_STATE_PTR),HL
+.STORE_CHAR
+	LD	A,(LINE_REMAIN)
+	AND	A
+	JR	Z,.NEXT_BYTE
+	LD	(IX+0),E
+	INC	IX
+	DEC	A
+	LD	(LINE_REMAIN),A
+	JR	.NEXT_BYTE
+.IPD_LINE_HIT
+	CALL	SKIP_IPD_FRAME
+	JR	C,.TIMEOUT
+	JR	.RESTART
+.END_LINE
+	LD	(IX+0),0
+	LD	A,(LINE_BUFFER)
+	AND	A
+	JR	Z,.RESTART
 	LD	HL,MSG_SEND_OK
 	LD	DE,LINE_BUFFER
 	CALL	UTIL.STRCMP
 	JR	NC,.OK
-	LD	HL,MSG_OK
-	LD	DE,LINE_BUFFER
-	CALL	UTIL.STRCMP
-	JR	NC,WAIT_SEND_OK
 	LD	HL,MSG_ERROR
 	LD	DE,LINE_BUFFER
 	CALL	UTIL.STRCMP
@@ -243,7 +322,7 @@ WAIT_SEND_OK
 	LD	DE,LINE_BUFFER
 	CALL	UTIL.STRCMP
 	JR	NC,.FAIL
-	JR	WAIT_SEND_OK
+	JR	.RESTART
 .OK
 	XOR	A
 	RET
@@ -253,6 +332,86 @@ WAIT_SEND_OK
 	RET
 .FAIL
 	LD	A,RES_FAIL
+	SCF
+	RET
+.TIMEOUT
+	LD	A,RES_RS_TIMEOUT
+	SCF
+	RET
+
+; ------------------------------------------------------
+; SKIP_IPD_FRAME: consume the "<len>[,<ip>,<port>]:<payload>" suffix
+; of a "+IPD," frame whose 5-byte prefix has already been read from
+; UART. Handles single-conn (CIPDINFO=0 and =1) and mux formats by
+; treating the last numeric field before ':' as the payload length.
+; Returns CF=0 on success, CF=1 / A=RES_RS_TIMEOUT on UART timeout.
+; Preserves no working registers (caller must save what it needs).
+; ------------------------------------------------------
+SKIP_IPD_FRAME
+	PUSH	BC,DE,HL
+	LD	HL,0
+	LD	(IPD_REMOTE_LEN),HL
+	XOR	A
+	LD	(IPD_HAVE_REMOTE_LEN),A
+.LEN_LOOP
+	LD	BC,TCP_DEFAULT_TIMEOUT
+	CALL	READ_BYTE_TIMEOUT
+	JR	C,.TIMEOUT_POP
+	CP	':'
+	JR	Z,.LEN_DONE
+	CP	','
+	JR	Z,.NEXT_FIELD
+	CP	'0'
+	JR	C,.REMOTE_INFO
+	CP	'9'+1
+	JR	NC,.REMOTE_INFO
+	SUB	'0'
+	LD	E,A
+	LD	D,0
+	LD	B,H
+	LD	C,L
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,BC
+	ADD	HL,HL
+	ADD	HL,DE
+	JR	.LEN_LOOP
+.NEXT_FIELD
+	LD	(IPD_REMOTE_LEN),HL
+	LD	A,1
+	LD	(IPD_HAVE_REMOTE_LEN),A
+	LD	HL,0
+	JR	.LEN_LOOP
+.REMOTE_INFO
+	LD	A,(IPD_HAVE_REMOTE_LEN)
+	AND	A
+	JR	Z,.TIMEOUT_POP
+.SKIP_REMOTE_INFO
+	LD	BC,TCP_DEFAULT_TIMEOUT
+	CALL	READ_BYTE_TIMEOUT
+	JR	C,.TIMEOUT_POP
+	CP	':'
+	JR	NZ,.SKIP_REMOTE_INFO
+	LD	HL,(IPD_REMOTE_LEN)
+.LEN_DONE
+	LD	A,H
+	OR	L
+	JR	Z,.DONE_POP
+.DISCARD
+	LD	BC,TCP_DEFAULT_TIMEOUT
+	CALL	READ_BYTE_TIMEOUT
+	JR	C,.TIMEOUT_POP
+	DEC	HL
+	LD	A,H
+	OR	L
+	JR	NZ,.DISCARD
+.DONE_POP
+	POP	HL,DE,BC
+	XOR	A
+	RET
+.TIMEOUT_POP
+	POP	HL,DE,BC
+	LD	A,RES_RS_TIMEOUT
 	SCF
 	RET
 
@@ -604,6 +763,11 @@ LSR_ACCUM	DB 0
 RBT_CANCEL_TICK	DW 0
 
 LINE_REMAIN	DB 0
+
+; Pointer into IPD_PREFIX while WAIT_SEND_OK is incrementally checking
+; whether the line being accumulated starts with "+IPD,". Set to zero
+; once detection has given up for the current line.
+IPD_STATE_PTR	DW 0
 
 	IFNDEF	ESP_TCP_BSS_BASE_OVERRIDE
 ESP_TCP_BSS_BASE	EQU WIFI.RS_BUFF + RS_BUFF_SIZE

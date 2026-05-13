@@ -27,9 +27,14 @@ DATA_CLOSED_LEN		EQU 8
 
 		MODULE MAIN
 
-		; Full 512-byte DSS EXE header. Long command lines are written
-		; at 0x8080, so these tools must not use the compact header.
-		ORG 0x7F00
+		; Load at 0x4100 so code+BSS+stack live below the 0xC000 ISA window.
+		; Cmdline lives at load_addr-0x80 = 0x4080.
+LOAD_ADDR	EQU 0x4100
+CMDLINE_ADDR	EQU LOAD_ADDR - 0x80
+STACK_TOP	EQU 0xC000
+
+		; Full 512-byte DSS EXE header.
+		ORG LOAD_ADDR - 0x0200
 EXE_HEADER
 		DB "EXE"
 		DB EXE_VERSION
@@ -44,8 +49,7 @@ EXE_HEADER
 		DW STACK_TOP
 		DS 490, 0
 
-		ORG 0x8100
-@STACK_TOP
+		ORG LOAD_ADDR
 
 START
 		CALL	CLEAR_BSS
@@ -169,7 +173,13 @@ START
 		JP	C,NET_ERROR_EXIT
 		CALL	CHECK_LIST_PRELIM_REPLY
 		JP	C,FTP_ERROR_EXIT
+		; After the 125/150 prelim reply, the server begins streaming the
+		; listing on the data link. Pause RX so the "Directory listing:"
+		; PRINTLN below doesn't overlap with incoming bytes — that gap
+		; was where the very first OE was firing on real hardware.
+		CALL	WIFI.UART_RX_PAUSE
 		PRINTLN MSG_LISTING
+		CALL	WIFI.UART_RX_RESUME
 		CALL	RECV_DATA_LIST
 		JP	C,NET_ERROR_EXIT
 		LD	A,(FINAL_REPLY_SEEN)
@@ -239,7 +249,7 @@ PARSE_CMD_LINE
 		LD	DE,PASS_BUFF
 		CALL	COPY_ASCIIZ_DE
 
-		LD	HL,0x8080
+		LD	HL,CMDLINE_ADDR
 		LD	A,(HL)
 		AND	A
 		JR	Z,.ERR
@@ -251,7 +261,14 @@ PARSE_CMD_LINE
 		LD	C,HOST_SIZE-1
 		CALL	COPY_ARG
 		JR	C,.ERR
+		; SPLIT_HOST_PORT scans HOST_BUFF and clobbers HL/DE. Preserve our
+		; cmdline pointer (HL) and remaining-length counter (B) across the
+		; call so SKIP_SPACES below still walks the cmdline, not HOST_BUFF.
+		PUSH	HL
+		PUSH	BC
 		CALL	SPLIT_HOST_PORT
+		POP	BC
+		POP	HL
 
 		CALL	SKIP_SPACES
 		JR	C,.OK
@@ -409,11 +426,21 @@ RECV_CONTROL_REPLY_TIMEOUT
 		LD	(CONTROL_TIMEOUT),DE
 		CALL	RESET_REPLY_STATE
 .READ
+		; Clear sticky LSR error bits before each RECEIVE so OE detection
+		; below reflects only this iteration's UART status.
+		XOR	A
+		LD	(TCP.LSR_ACCUM),A
 		LD	HL,RECV_BUFFER
 		LD	BC,RECV_SIZE
 		LD	DE,(CONTROL_TIMEOUT)
 		CALL	TCP.RECEIVE_ANY_LINK
 		RET	C
+		; UART overrun/parity/framing error during RECEIVE means the +IPD
+		; payload is misaligned. TCP can't recover lost bytes, so propagate
+		; as a fatal error rather than processing corrupt control bytes.
+		LD	A,(TCP.LSR_ACCUM)
+		AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+		JR	NZ,.UART_ERROR
 		LD	A,B
 		OR	C
 		JR	Z,.READ
@@ -422,21 +449,36 @@ RECV_CONTROL_REPLY_TIMEOUT
 		JR	Z,.CONTROL
 		CP	DATA_LINK
 		JR	NZ,.READ
-		; Data link bytes arrived before the control reply.
-		; Print them as listing data instead of dropping them and
-		; flag that we have already started the listing transfer.
+		; Data link bytes arrived before the control reply. Pause RX for
+		; the slow per-char PRINT_BUFFER — same rationale as in
+		; RECV_DATA_LIST: DSS_PUTCHAR per byte is much slower than UART
+		; byte time, so we manually de-assert RTS instead of trusting
+		; auto-RTS while we print.
 		LD	A,1
 		LD	(DATA_BYTES_SEEN),A
+		CALL	WIFI.UART_RX_PAUSE
 		LD	HL,RECV_BUFFER
 		CALL	PRINT_BUFFER
+		CALL	WIFI.UART_RX_RESUME
 		JR	.READ
 .CONTROL
+		; FEED_CONTROL_BYTES calls FINISH_LINE → PRINTLN on every CR/LF.
+		; PRINTLN uses DSS_PCHARS which can be slow on text mode. Pause
+		; RX for the duration.
+		CALL	WIFI.UART_RX_PAUSE
 		LD	HL,RECV_BUFFER
 		CALL	FEED_CONTROL_BYTES
+		CALL	WIFI.UART_RX_RESUME
 		LD	A,(REPLY_DONE)
 		AND	A
 		JR	Z,.READ
 		XOR	A
+		RET
+
+.UART_ERROR
+		PRINTLN MSG_UART_OVERRUN
+		LD	A,RES_RS_TIMEOUT
+		SCF
 		RET
 
 RESET_REPLY_STATE
@@ -683,11 +725,21 @@ RECV_DATA_LIST
 		; waiting for the 150 reply. Don't clear it here.
 		CALL	RESET_REPLY_STATE
 .READ
+		; Clear sticky LSR error bits before each RECEIVE — see same
+		; rationale in RECV_CONTROL_REPLY_TIMEOUT.
+		XOR	A
+		LD	(TCP.LSR_ACCUM),A
 		LD	HL,RECV_BUFFER
 		LD	BC,RECV_SIZE
 		LD	DE,FTP_DATA_TIMEOUT
 		CALL	TCP.RECEIVE_ANY_LINK
 		JR	C,.ERROR
+		; UART error during data-link receive: bytes are misaligned and
+		; TCP cannot retransmit lost UART bytes. Treat as end-of-listing
+		; if anything has been received already; otherwise propagate.
+		LD	A,(TCP.LSR_ACCUM)
+		AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+		JR	NZ,.UART_ERROR
 		LD	A,B
 		OR	C
 		JR	Z,.READ
@@ -714,8 +766,13 @@ RECV_DATA_LIST
 .DATA
 		LD	A,1
 		LD	(DATA_BYTES_SEEN),A
+		; Manually de-assert RTS for the slow per-char PRINT_BUFFER so
+		; ESP holds the next listing burst in its own UART buffer instead
+		; of overflowing our 16-byte FIFO during DSS_PUTCHAR calls.
+		CALL	WIFI.UART_RX_PAUSE
 		LD	HL,RECV_BUFFER
 		CALL	PRINT_BUFFER
+		CALL	WIFI.UART_RX_RESUME
 		LD	A,(DATA_CLOSE_SEEN)
 		AND	A
 		JR	NZ,.CLOSED
@@ -735,6 +792,14 @@ RECV_DATA_LIST
 		POP	AF
 		CP	RES_NOT_CONN
 		JR	Z,.CLOSED
+		SCF
+		RET
+.UART_ERROR
+		PRINTLN MSG_UART_OVERRUN
+		LD	A,(DATA_BYTES_SEEN)
+		OR	A
+		JR	NZ,.CLOSED
+		LD	A,RES_RS_TIMEOUT
 		SCF
 		RET
 .CLOSED
@@ -999,6 +1064,8 @@ MSG_NET_ERROR_NO
 		DB "n!",0
 MSG_FTP_ERROR
 		DB "FTP server returned error: ",0
+MSG_UART_OVERRUN
+		DB "UART overrun. Try lower BAUD or check RTS/CTS flow control.",0
 
 CMD_AT
 		DB "AT",13,10,0
@@ -1095,6 +1162,9 @@ PASV_HOST_BUFF	EQU LINE_BUFF + LINE_SIZE
 PASV_PORT_BUFF	EQU PASV_HOST_BUFF + 16
 NUM_TMP_BUFF	EQU PASV_PORT_BUFF + 8
 FTP_BSS_END	EQU NUM_TMP_BUFF + 8
+	; FTP RECV_BUFFER feeds PRINT_BUFFER → DSS_PUTCHAR. Keep in PAGE2
+	; until PAGE1 safety across DSS calls is verified on real hardware.
+	ASSERT	FTP_BSS_END < 0xC000
 
 		ENDMODULE
 

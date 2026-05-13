@@ -71,12 +71,28 @@ end label. Clear that runtime area at program start only when the code depends
 on zeroed memory. Small state variables and required initialized data may remain
 in the file.
 
-Utilities that accept long command lines, including `WGET`, `UDPTEST`, `TFTP`,
-`FTP`, and similar future tools, must use the full 512-byte DSS EXE header with
-code file offset `0x0200`, load address `0x8100`, and entry point `0x8100`.
-This keeps DSS command-line storage at `0x8080` from overlapping the program
-entry code. The required header padding is allowed and is not a runtime buffer;
-large runtime buffers still must live outside the `.EXE` image.
+Utilities that accept long command lines must use the full 512-byte DSS EXE
+header with code file offset `0x0200`. There are two valid load profiles:
+
+- **`ORG 0x8100` (legacy, light utilities):** load address `0x8100`, entry
+  point `0x8100`, command-line storage at `0x8080`. Available memory:
+  `0x8100..0xBFFF` (≈16 KB). Used by simple tools where code + BSS fits
+  comfortably below the `0xC000` ISA banking window. Currently: `UDPTEST`,
+  `PING`, `NETUP`, `NTP`, `NETPROBE`, `NETCFG`, `WTERM`, `NETRESET`,
+  `TCPTEST`.
+
+- **`ORG 0x4100` (preferred for data-heavy utilities):** load address
+  `0x4100`, entry point `0x4100`, command-line storage at
+  `load_addr - 0x80 = 0x4080`, stack top `0xC000`. Available memory:
+  `0x4100..0xBFFF` (≈31 KB). Use this when code + receive/file buffers
+  would otherwise crowd toward `0xC000`. Currently: `WGET`, `TFTP`, `FTP`.
+
+In both cases the header padding is allowed and is not a runtime buffer;
+large runtime buffers still must live outside the `.EXE` image (use
+`DS ...,0` only for small initialised state, never for receive buffers).
+Define `LOAD_ADDR`, `CMDLINE_ADDR`, `STACK_TOP` constants at the top of the
+utility's source and read the cmdline via `LD HL,CMDLINE_ADDR` instead of a
+hard-coded address.
 
 Keep runtime memory maps explicit. When a utility needs command, URL, packet,
 TCP/UDP receive, or configuration buffers, define them with `EQU` in a BSS map
@@ -199,4 +215,5 @@ Do not commit Wi-Fi credentials, local serial-port settings, temporary build fil
   - `/Users/dmitry/dev/zx/sprinter/utils`
   - `/Users/dmitry/dev/zx/sprinter/sprinter_wifi/ESPKit`
   - `/Users/dmitry/dev/zx/sprinter/sprinter_wifi/SprinterESP`
+  - `/Users/dmitry/dev/zx/zx-wifi`
 - Treat them as reference material only; this repository remains the source of truth for changes you make here.
