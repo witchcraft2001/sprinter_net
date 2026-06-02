@@ -13,15 +13,21 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
   waits for one reply. Use it before testing TFTP.
 - `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y]` downloads one
-  file over TFTP.
+  file over TFTP. Existing output files require confirmation unless `-y` is
+  used.
 - `TFTP.EXE host[:port] PUT local-file [-o remote-name]` uploads one file over
   TFTP.
+- `FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]` downloads one
+  file over passive FTP using `RETR`. Without `-o`, the local name is the
+  basename of the remote file. If the local file exists, FTP asks before
+  overwriting; `-y` overwrites without prompting.
 - `FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]` logs in through
   ESP-AT multi-connection mode, enters passive mode and prints a `LIST` or
-  `NLST` directory listing. File transfer commands are not enabled yet.
+  `NLST` directory listing.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
 - `WGET.EXE url [-o output] [-y]` downloads an HTTP/1.0 resource to a local DSS
-  file. Without `-o`, the output name is derived from the URL path.
+  file. Without `-o`, the output name is derived from the URL path. Existing
+  output files require confirmation unless `-y` is used.
 - `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
   `NET.CFG`.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a
@@ -195,14 +201,21 @@ Current utility-specific notes:
 - `TFTP.EXE` returns `0` after a successful download or upload, `1` for invalid
   command line, `2` when hardware is not found, `3` on ESP/UDP/TFTP protocol
   errors and `5` for local DSS file errors.
+- `FTP.EXE` returns `0` after a successful download or listing, `1` for invalid
+  command line, `2` when hardware is not found, `3` on ESP/TCP communication
+  errors, `4` on FTP server errors and `5` for local DSS file errors.
 
 Current `WGET.EXE` limitations:
 
 - Supports plain `http://` only, not HTTPS.
 - If the URL has no scheme, `WGET.EXE` assumes `http://` and prints a warning.
-- Uses ESP-AT passive TCP receive when available, and falls back to active
-  `+IPD` receive with a warning when the firmware or emulator does not support
-  `AT+CIPRECVMODE` / `AT+CIPRECVDATA`.
+- Uses ESP-AT active `+IPD` receive. The target ESP-AT V2.2.1 firmware does not
+  expose `AT+CIPRECVMODE` / `AT+CIPRECVDATA`.
+- Uses a 16 KB receive buffer below the `0xC000` ISA window so several `+IPD`
+  frames can be drained from UART before slow DSS file writes.
+- If a `Content-Length` response closes early, retries the same URL with
+  `Range: bytes=<downloaded>-` and appends the missing tail. Range retries are
+  accepted only when the server returns HTTP `206 Partial Content`.
 - Downloads HTTP 2xx responses.
 - Follows absolute `http://` redirects up to five hops. HTTPS redirects are
   reported but cannot be downloaded.

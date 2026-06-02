@@ -64,6 +64,8 @@ TFTP.EXE host[:port] GET remote [-o local] [-y]
                  download one file over TFTP
 TFTP.EXE host[:port] PUT local [-o remote]
                  upload one file over TFTP
+FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]
+                 download one file over passive FTP
 FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]
                  login, enter passive mode and print a LIST/NLST listing
 PING.EXE host    test host reachability using ESP-AT AT+PING

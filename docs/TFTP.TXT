@@ -48,9 +48,9 @@ Testing with macOS
 
 Notes
   Without -o, GET saves to the basename of remote-file and PUT sends the
-  basename of local-file as the remote filename. The -y option is accepted for
-  command-line compatibility with the RTL8019AS network kit; this SprinterESP
-  build currently overwrites GET output without prompting.
+  basename of local-file as the remote filename. If GET output already exists,
+  TFTP asks for overwrite confirmation. Use -y to overwrite without prompting,
+  matching the RTL8019AS network kit command-line style.
 
   The client opens ESP-AT UDP mode 2. This is required because a TFTP server
   normally replies from a transfer-specific UDP port instead of port 69.

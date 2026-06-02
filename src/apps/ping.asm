@@ -210,7 +210,10 @@ BUILD_PING_CMD
 
 ; ------------------------------------------------------
 ; Print parsed +PING response or raw ESP response if +PING is missing.
-; Out: CF=0 - valid +PING response found, CF=1 - no +PING result.
+; Accepts both ESP-AT forms seen in the field:
+;   +PING:<ms>
+;   +<ms>
+; Out: CF=0 - valid ping response found, CF=1 - no ping result.
 ; ------------------------------------------------------
 PRINT_PING_RESULT
 	LD	HL,WIFI.RS_BUFF
@@ -220,12 +223,19 @@ PRINT_PING_RESULT
 	JR	Z,.RAW
 	LD	DE,RESP_PING_PREFIX
 	CALL	UTIL.STARTSWITH
-	JR	Z,.FOUND
+	JR	Z,.FOUND_PING
+	LD	A,(HL)
+	CP	'+'
+	JR	Z,.FOUND_SHORT
 	CALL	SKIP_LINE
 	JR	.NEXT
-.FOUND
+.FOUND_PING
 	LD	BC,6
 	ADD	HL,BC
+	JR	.FOUND_DECIMAL
+.FOUND_SHORT
+	INC	HL
+.FOUND_DECIMAL
 	CALL	FIND_DECIMAL_FIELD
 	JR	C,.RAW
 	PUSH	HL

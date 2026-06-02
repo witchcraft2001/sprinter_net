@@ -159,7 +159,7 @@ RECEIVE_ANY_LINK
 	LD	A,H
 	OR	L
 	JR	NZ,.CONTINUE_PAYLOAD
-	CALL	WAIT_IPD_HEADER
+	CALL	WAIT_IPD_HEADER_MULTI
 	JR	C,.DONE
 	CALL	READ_IPD_LINK_LEN
 	JR	C,.DONE
@@ -210,6 +210,41 @@ WAIT_SEND_OK_LINK
 	RET
 .FAIL
 	LD	A,RES_FAIL
+	SCF
+	RET
+
+; ------------------------------------------------------
+; Wait for '+IPD,' in ESP-AT multi-connection mode.
+; Do not treat "<link>,CLOSED" as a fatal close here: control and data links
+; close independently, and a control "0,CLOSED" can arrive after "226" while
+; data-link +IPD frames are still queued.
+; ------------------------------------------------------
+WAIT_IPD_HEADER_MULTI
+	LD	IX,IPD_PREFIX
+.NEXT
+	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
+	JR	C,.TIMEOUT
+	LD	E,A
+	LD	A,(IX+0)
+	CP	E
+	JR	NZ,.RESET
+	INC	IX
+	LD	A,(IX+0)
+	AND	A
+	JR	Z,.OK
+	JR	.NEXT
+.RESET
+	LD	IX,IPD_PREFIX
+	LD	A,E
+	CP	'+'
+	JR	NZ,.NEXT
+	INC	IX
+	JR	.NEXT
+.OK
+	XOR	A
+	RET
+.TIMEOUT
+	LD	A,RES_RS_TIMEOUT
 	SCF
 	RET
 

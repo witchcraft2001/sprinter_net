@@ -83,9 +83,22 @@ header with code file offset `0x0200`. There are two valid load profiles:
 
 - **`ORG 0x4100` (preferred for data-heavy utilities):** load address
   `0x4100`, entry point `0x4100`, command-line storage at
-  `load_addr - 0x80 = 0x4080`, stack top `0xC000`. Available memory:
-  `0x4100..0xBFFF` (≈31 KB). Use this when code + receive/file buffers
-  would otherwise crowd toward `0xC000`. Currently: `WGET`, `TFTP`, `FTP`.
+  `load_addr - 0x80 = 0x4080`, stack top `0x8000`. Code and small BSS live in
+  `0x4100..0x7FFF`; large receive/file buffers should use a DSS-allocated page
+  mapped in WIN2 (`0x8000..0xBFFF`). Currently: `WGET`, `TFTP`, `FTP`.
+
+For `ORG 0x4100` utilities, do not assume DSS allocated WIN2
+(`#8000..#BFFF`) merely because the BSS map reaches that range. If the loaded
+EXE body is smaller than 16 KB and does not physically occupy `#8000..#BFFF`,
+DSS may allocate only WIN1 for the program; a later `GETMEM` can then hand a
+separate page to the utility. Do not fix this by padding the `.EXE` body up to
+`#8000`; that violates the compact EXE rule and embeds bytes that should be
+runtime memory. Instead, keep `STACK_TOP EQU 0x8000` so the stack grows downward
+in WIN1, make the first startup action `DSS_GETMEM` for the required page
+count, open it with `DSS_SETWIN2`, and place large buffers at `WIN2_BASE EQU
+0x8000`. The `RST #10` dispatcher itself uses the current stack (`PUSH HL`,
+`EX (SP),HL`, `RET`), so do not generalize this into a blanket "all DSS calls
+require WIN2" rule. Current examples: `WGET`, `TFTP`, and `FTP`.
 
 In both cases the header padding is allowed and is not a runtime buffer;
 large runtime buffers still must live outside the `.EXE` image (use
@@ -142,6 +155,17 @@ with the target ESP-AT firmware behavior. If the command is missing from
 either adding a fallback path or extending `jesperl` before reverting the real
 firmware-oriented implementation.
 
+Target ESP-AT V2.2.1 firmware notes verified from `/Users/dmitry/Downloads/V2.2.1`:
+the package contains flashing READMEs and binary images, not an AT command
+reference. A text search of the tree and a `strings` scan of all
+`bin/at/*/*.bin` and `bin/at_sdio/*/*.bin` images show active TCP receive
+formats such as `+IPD,%d:` and commands such as `+CIPSEND`, `+CIPSENDEX`,
+`+CIPSENDBUF`, `+CIPDINFO`, and `+CIPMUX`, but no `CIPRECVMODE`,
+`CIPRECVDATA`, or `CIPRECV*` strings. Do not design or change Sprinter DSS
+clients to depend on ESP-AT passive TCP receive
+(`AT+CIPRECVMODE=1`/`AT+CIPRECVDATA=<n>`) for this firmware unless a different
+firmware image is explicitly selected and verified.
+
 Current `jesperl` improvement mini-spec for this project:
 
 - Support basic no-op success commands used during initialization:
@@ -161,11 +185,10 @@ Current `jesperl` improvement mini-spec for this project:
   clients: `AT+CIPMUX=0`, `AT+CIPSTART="TCP","host",port`,
   `AT+CIPSEND=<len>` with `>` prompt and `SEND OK`, `AT+CIPCLOSE`,
   `CLOSED`, and `+IPD,<len>:<binary payload>`.
-- Support passive TCP receive used by `wget.exe`: `AT+CIPRECVMODE=1` should
-  switch TCP sockets to passive receive notifications, `+IPD,<len>` should
-  announce available bytes without pushing payload bytes, `AT+CIPRECVDATA=<n>`
-  should return `+CIPRECVDATA:<actual_len>,<binary payload>` followed by `OK`,
-  and `AT+CIPRECVMODE=0` should restore active `+IPD,<len>:<payload>` mode.
+- Do not add `AT+CIPRECVMODE`/`AT+CIPRECVDATA` to `jesperl` as a required path
+  for project utilities while the target hardware firmware is ESP-AT V2.2.1.
+  Emulator support for those commands would model a different firmware and must
+  be treated as optional, not as proof of hardware support.
 - Pace `+IPD` output toward MAME/Z80 instead of writing large TCP bursts
   instantaneously. Provide configurable knobs such as `JESPERL_IPD_CHUNK`
   (suggested default 256 or 512 bytes for debugging, 1500 for stress tests) and
