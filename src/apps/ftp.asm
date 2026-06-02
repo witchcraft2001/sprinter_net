@@ -20,9 +20,16 @@ PATH_SIZE		EQU 128
 ARG_SIZE		EQU 128
 CMD_SIZE		EQU 128
 RECV_SIZE		EQU 16384
+; Retain-tail margin for file downloads: once the server-announced size is
+; within this many bytes of completion we stop pausing for DSS_WRITE and
+; accumulate the final bytes in RECV_BUFFER, flushing only after the data link
+; closes. This keeps RTS asserted across the close so ESP-AT never discards
+; queued-but-unsent +IPD data on the data-connection FIN. Must be < RECV_SIZE.
+FTP_HOLD_TAIL_MARGIN	EQU 8192
 LINE_SIZE		EQU 112
 NO_HANDLE		EQU 0xFF
 DATA_CLOSED_LEN		EQU 8
+FTP_RESUME_LIMIT	EQU 10			; max FTP REST re-fetch attempts per file
 DSS_CREATE_OVERWRITE	EQU 0x0A
 OUT_SIZE		EQU 80
 
@@ -220,6 +227,20 @@ START
 .RECV_TRANSFER
 			CALL	RECV_DATA_TRANSFER
 			JP	C,NET_ERROR_EXIT
+			; For a file download with a known size, auto-resume via FTP REST
+			; when the data link closed short. ESP-AT (active +IPD mode) drops
+			; the ~1.5 KB still queued in its UART output when the data-link FIN
+			; is processed, and that close is unavoidable in FTP, so we refetch
+			; the missing tail rather than fail. The output file stays open and
+			; positioned at end, so resumed bytes append contiguously.
+			LD	A,(LIST_FLAG)
+			AND	A
+			JR	NZ,.TRANSFER_DONE
+			CALL	DOWNLOAD_COMPLETE
+			JR	Z,.TRANSFER_DONE
+			CALL	TRY_FTP_RESUME
+			JP	NC,.RECV_TRANSFER
+.TRANSFER_DONE
 			CALL	CLOSE_OUTPUT_FILE
 			JP	C,FILE_ERROR_EXIT
 			CALL	VERIFY_DATA_SIZE
@@ -737,6 +758,175 @@ BUILD_RETR_COMMAND
 		LD	IX,PATH_BUFF
 		JP	BUILD_FTP_COMMAND
 
+; Build "REST <DATA_TOTAL>\r\n" into CMD_BUFF for an FTP restart/resume.
+BUILD_REST_COMMAND
+		LD	HL,CMD_BUFF
+		LD	DE,FTP_REST_PREFIX
+		CALL	APPEND_STR
+		CALL	APPEND_DATA_TOTAL_DEC
+		LD	DE,CMD_CRLF
+		CALL	APPEND_STR
+		JP	SET_CMD_LEN
+
+; Append DATA_TOTAL (32-bit LE) as decimal text at HL. Out: HL past digits.
+APPEND_DATA_TOTAL_DEC
+		PUSH	HL
+		LD	HL,DATA_TOTAL
+		LD	DE,U32_WORK
+		LD	BC,4
+		LDIR
+		POP	HL
+		LD	IX,U32_DIGITS
+		LD	C,0				; digit count
+.GEN
+		PUSH	HL
+		PUSH	IX
+		CALL	DIV32_WORK_BY_10		; A = next least-significant digit
+		POP	IX
+		POP	HL
+		ADD	A,'0'
+		LD	(IX+0),A
+		INC	IX
+		INC	C
+		LD	A,(U32_WORK)			; loop until the value is zero
+		PUSH	HL
+		LD	HL,U32_WORK+1
+		OR	(HL)
+		INC	HL
+		OR	(HL)
+		INC	HL
+		OR	(HL)
+		POP	HL
+		JR	NZ,.GEN
+.OUT
+		DEC	IX				; emit collected digits most-significant first
+		LD	A,(IX+0)
+		LD	(HL),A
+		INC	HL
+		DEC	C
+		JR	NZ,.OUT
+		RET
+
+; U32_WORK /= 10; returns remainder (0..9) in A. Trashes IX,B,HL.
+DIV32_WORK_BY_10
+		XOR	A				; running remainder
+		LD	IX,U32_WORK+3			; most-significant byte first
+		LD	B,4
+.BL
+		LD	H,A
+		LD	L,(IX+0)			; HL = remainder*256 + byte
+		PUSH	BC
+		CALL	DIV_HL_10			; L = quotient byte, A = remainder
+		POP	BC
+		LD	(IX+0),L
+		DEC	IX
+		DJNZ	.BL
+		RET
+
+; HL /= 10; quotient in HL, remainder in A. Preserves BC,DE.
+DIV_HL_10
+		PUSH	BC
+		XOR	A
+		LD	B,16
+.DL
+		ADD	HL,HL
+		RLA
+		CP	10
+		JR	C,.DS
+		SUB	10
+		INC	L
+.DS
+		DJNZ	.DL
+		POP	BC
+		RET
+
+; Z=1 iff the download is complete (DATA_TOTAL >= DATA_EXPECTED), or the size
+; is unknown (then resume is not meaningful). Trashes A,B,DE,HL.
+DOWNLOAD_COMPLETE
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		JR	Z,.COMPLETE
+		LD	HL,DATA_EXPECTED+3
+		LD	DE,DATA_TOTAL+3
+		LD	B,4
+.CMP
+		LD	A,(DE)				; total byte
+		CP	(HL)				; total - expected (from MSB down)
+		JR	C,.INCOMPLETE			; total < expected
+		JR	NZ,.COMPLETE			; total > expected
+		DEC	DE
+		DEC	HL
+		DJNZ	.CMP
+.COMPLETE
+		XOR	A				; Z=1
+		RET
+.INCOMPLETE
+		OR	0xFF				; NZ
+		RET
+
+; Re-fetch the missing tail of a short download via FTP REST: reopen a PASV data
+; link, REST to DATA_TOTAL, RETR again. The output file stays open at end, so
+; resumed bytes append contiguously and DATA_TOTAL keeps accumulating.
+; Out: CF=0 ready to receive more on the data link; CF=1 give up (limit hit,
+; send/reply error, or server rejected REST).
+TRY_FTP_RESUME
+		LD	A,(RESUME_COUNT)
+		CP	FTP_RESUME_LIMIT
+		JR	NC,.GIVEUP
+		INC	A
+		LD	(RESUME_COUNT),A
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		JR	Z,.GIVEUP
+		; Consume the previous transfer's final (226) reply if not yet seen,
+		; so the control link is clean before the next REST/RETR.
+		LD	A,(FINAL_REPLY_SEEN)
+		AND	A
+		JR	NZ,.HAVE_FINAL
+		CALL	RECV_CONTROL_REPLY_OPTIONAL
+.HAVE_FINAL
+		LD	A,DATA_LINK			; drop the stale data link
+		CALL	TCP.CLOSE_LINK
+		XOR	A
+		LD	(DATA_OPEN),A
+		PRINTLN	MSG_RESUME
+		CALL	RESET_REPLY_STATE
+		LD	DE,FTP_PASV
+		CALL	BUILD_SIMPLE_COMMAND
+		CALL	SEND_CONTROL
+		JR	C,.GIVEUP
+		CALL	RECV_CONTROL_REPLY
+		JR	C,.GIVEUP
+		CALL	PARSE_PASV_ENDPOINT		; also rebuilds PASV_HOST/PORT_BUFF
+		JR	C,.GIVEUP
+		LD	A,DATA_LINK
+		LD	HL,PASV_HOST_BUFF
+		LD	DE,PASV_PORT_BUFF
+		CALL	TCP.OPEN_LINK
+		JR	C,.GIVEUP
+		LD	A,1
+		LD	(DATA_OPEN),A
+		CALL	BUILD_REST_COMMAND
+		CALL	SEND_CONTROL
+		JR	C,.GIVEUP
+		CALL	RECV_CONTROL_REPLY
+		JR	C,.GIVEUP
+		LD	A,(REPLY_FIRST)
+		CP	'3'				; 350 Restart marker accepted
+		JR	NZ,.GIVEUP			; server does not support REST
+		CALL	BUILD_RETR_COMMAND
+		CALL	SEND_CONTROL
+		JR	C,.GIVEUP
+		CALL	RECV_CONTROL_REPLY
+		JR	C,.GIVEUP
+		CALL	CHECK_LIST_PRELIM_REPLY		; expect 1xx/2xx
+		JR	C,.GIVEUP
+		XOR	A				; CF=0: ready to receive
+		RET
+.GIVEUP
+		SCF
+		RET
+
 SEND_CONTROL
 		LD	HL,CMD_BUFF
 		LD	BC,(CMD_LEN)
@@ -1225,6 +1415,9 @@ RECV_DATA_TRANSFER
 			XOR	A
 			LD	(FINAL_REPLY_SEEN),A
 			LD	(DATA_CLOSE_SEEN),A
+			LD	(HOLD_MODE),A
+			LD	(HOLD_LEN),A
+			LD	(HOLD_LEN+1),A
 		; Note: DATA_BYTES_SEEN may already be set by an earlier
 		; RECV_CONTROL_REPLY that received data-link bytes while
 		; waiting for the 150 reply. Don't clear it here.
@@ -1235,9 +1428,22 @@ RECV_DATA_TRANSFER
 		; rationale in RECV_CONTROL_REPLY_TIMEOUT.
 		XOR	A
 		LD	(TCP.LSR_ACCUM),A
-		LD	HL,RECV_BUFFER
-		LD	BC,RECV_SIZE
+		; Enter retain-tail mode before the read once the file is within
+		; FTP_HOLD_TAIL_MARGIN of completion (see FTP_UPDATE_HOLD_MODE).
+		CALL	FTP_UPDATE_HOLD_MODE
+		CALL	FTP_SETUP_RECV_DEST
+		LD	HL,(RECV_DEST)
+		LD	BC,(RECV_CAP)
+		; Once the control link has delivered the final "226 Transfer complete"
+		; the server is done; if the ESP then stops short of the announced size
+		; (its FIN-time +IPD drop) wait only a short grace instead of the full
+		; data timeout, so a truncated transfer no longer hangs ~20-30 s.
 		LD	DE,FTP_DATA_TIMEOUT
+		LD	A,(FINAL_REPLY_SEEN)
+		AND	A
+		JR	Z,.HAVE_TIMEOUT
+		LD	DE,FTP_FINAL_TIMEOUT
+.HAVE_TIMEOUT
 		CALL	TCP.RECEIVE_ANY_LINK
 		PUSH	AF,BC
 		CALL	WIFI.UART_RX_PAUSE
@@ -1264,7 +1470,7 @@ RECV_DATA_TRANSFER
 		; leave DATA_BYTES_SEEN=0, producing a false #4 timeout.
 		LD	A,1
 		LD	(DATA_BYTES_SEEN),A
-		LD	HL,RECV_BUFFER
+		LD	HL,(RECV_DEST)
 		CALL	FEED_CONTROL_BYTES
 		LD	A,(REPLY_DONE)
 		AND	A
@@ -1275,12 +1481,19 @@ RECV_DATA_TRANSFER
 .DATA
 		LD	A,1
 		LD	(DATA_BYTES_SEEN),A
+			; In retain-tail mode each +IPD is held as-is (no burst
+			; accumulation), so the final bytes never sit behind a slow
+			; DSS_WRITE while the data link is closing.
+			LD	A,(HOLD_MODE)
+			AND	A
+			JR	NZ,.DATA_NOBURST
 			CALL	ACCUMULATE_DATA_BURST
+.DATA_NOBURST
 			; Manually de-assert RTS for the slow console/file output path so
 			; ESP holds the next burst in its own UART buffer instead of
 			; overflowing our 16-byte FIFO.
 			; RX is already paused immediately after RECEIVE_ANY_LINK.
-			LD	HL,RECV_BUFFER
+			LD	HL,(RECV_DEST)
 			CALL	HANDLE_DATA_BUFFER
 			JR	NC,.DATA_HANDLED
 			CALL	WIFI.UART_RX_RESUME
@@ -1291,7 +1504,7 @@ RECV_DATA_TRANSFER
 			LD	A,(DATA_CLOSE_SEEN)
 		AND	A
 		JR	NZ,.CLOSED
-		JR	.READ
+		JP	.READ
 .ERROR
 		PUSH	AF
 		CALL	WIFI.UART_RX_RESUME
@@ -1323,6 +1536,10 @@ RECV_DATA_TRANSFER
 		RET
 .CLOSED
 		CALL	WIFI.UART_RX_RESUME
+		; Persist the retained tail now that the data link has closed and all
+		; +IPD bytes have been drained into RECV_BUFFER.
+		CALL	FTP_FLUSH_HOLD
+		JP	C,FILE_ERROR_EXIT
 		XOR	A
 		LD	(DATA_OPEN),A
 		; Reset TCP receive state. Without this a partially-read
@@ -1350,7 +1567,9 @@ ACCUMULATE_DATA_BURST
 			XOR	A
 			LD	(PENDING_CONTROL_SEEN),A
 .LOOP
-			LD	HL,RECV_SIZE
+			; Ceiling is RECV_CAP, not RECV_SIZE: in stream mode it is clamped
+			; so the burst never crosses into the final retain-tail bytes.
+			LD	HL,(RECV_CAP)
 			LD	DE,(DATA_ACCUM_LEN)
 			OR	A
 			SBC	HL,DE
@@ -1494,6 +1713,9 @@ WRITE_DATA_BUFFER
 		LD	A,B
 		OR	C
 		RET	Z
+		LD	A,(HOLD_MODE)
+		AND	A
+		JR	NZ,.HOLD
 		PUSH	BC
 		LD	D,B
 		LD	E,C
@@ -1505,6 +1727,149 @@ WRITE_DATA_BUFFER
 		CALL	ADD_DATA_TOTAL
 		LD	A,'.'
 		CALL	PUT_CHAR
+		XOR	A
+		RET
+.HOLD
+		; Retain-tail: bytes are already at RECV_BUFFER+HOLD_LEN (HL==RECV_DEST).
+		; Account them and defer the DSS_WRITE to FTP_FLUSH_HOLD after close.
+		LD	HL,(HOLD_LEN)
+		ADD	HL,BC
+		LD	(HOLD_LEN),HL
+		CALL	ADD_DATA_TOTAL
+		LD	A,'.'
+		CALL	PUT_CHAR
+		XOR	A
+		RET
+
+; ------------------------------------------------------
+; Enter retain-tail (hold) mode once a file download is within
+; FTP_HOLD_TAIL_MARGIN bytes of the server-announced size. Called at the loop
+; top before the read so the final bytes are accumulated, never written under
+; an RTS-off pause. Latches HOLD_MODE; never clears it mid-transfer. No-op for
+; directory listings or when the size is unknown.
+; ------------------------------------------------------
+FTP_UPDATE_HOLD_MODE
+		LD	A,(HOLD_MODE)
+		AND	A
+		RET	NZ
+		LD	A,(LIST_FLAG)
+		AND	A
+		RET	NZ
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		RET	Z
+		CALL	FTP_DATA_REMAINING
+		RET	NZ				; remaining >= 65536 or already over
+		LD	A,H
+		OR	L
+		RET	Z				; remaining 0 -> done
+		EX	DE,HL				; DE = remaining
+		LD	HL,FTP_HOLD_TAIL_MARGIN
+		OR	A
+		SBC	HL,DE				; MARGIN - remaining; CF=1 -> MARGIN < remaining
+		RET	C
+		LD	A,1
+		LD	(HOLD_MODE),A
+		LD	HL,0
+		LD	(HOLD_LEN),HL
+		RET
+
+; ------------------------------------------------------
+; remaining = DATA_EXPECTED - DATA_TOTAL (32-bit).
+; Out: if high word 0 and EXPECTED>=TOTAL: Z=1, HL=remaining low word.
+;      otherwise NZ. Trashes A,BC,DE.
+; ------------------------------------------------------
+FTP_DATA_REMAINING
+		OR	A
+		LD	HL,(DATA_EXPECTED)
+		LD	DE,(DATA_TOTAL)
+		SBC	HL,DE
+		PUSH	HL
+		LD	HL,(DATA_EXPECTED+2)
+		LD	DE,(DATA_TOTAL+2)
+		SBC	HL,DE
+		JR	C,.NEG
+		LD	A,H
+		OR	L
+		POP	HL
+		RET
+.NEG
+		POP	HL
+		OR	1
+		RET
+
+; ------------------------------------------------------
+; Compute RECV_DEST / RECV_CAP for the next RECEIVE_ANY_LINK. In hold mode data
+; is appended at RECV_BUFFER+HOLD_LEN. In stream mode it overwrites from the
+; start, but the capacity is clamped so neither the first read nor
+; ACCUMULATE_DATA_BURST crosses into the final FTP_HOLD_TAIL_MARGIN bytes.
+; ------------------------------------------------------
+FTP_SETUP_RECV_DEST
+		LD	A,(HOLD_MODE)
+		AND	A
+		JR	Z,.STREAM
+		LD	HL,RECV_BUFFER
+		LD	DE,(HOLD_LEN)
+		ADD	HL,DE
+		LD	(RECV_DEST),HL
+		EX	DE,HL
+		LD	HL,RECV_BUFFER+RECV_SIZE
+		OR	A
+		SBC	HL,DE
+		LD	(RECV_CAP),HL
+		RET
+.STREAM
+		LD	HL,RECV_BUFFER
+		LD	(RECV_DEST),HL
+		LD	HL,RECV_SIZE
+		LD	(RECV_CAP),HL
+		LD	A,(LIST_FLAG)
+		AND	A
+		RET	NZ
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		RET	Z
+		CALL	FTP_DATA_REMAINING
+		RET	NZ				; remaining >= 65536 -> full buffer
+		LD	DE,FTP_HOLD_TAIL_MARGIN
+		OR	A
+		SBC	HL,DE
+		RET	C				; remaining < MARGIN -> next loop holds
+		RET	Z				; remaining == MARGIN -> next loop holds
+		; allowed = HL = remaining - MARGIN; cap = min(RECV_SIZE, allowed)
+		LD	DE,RECV_SIZE
+		PUSH	HL
+		OR	A
+		SBC	HL,DE
+		POP	HL				; HL = allowed
+		RET	NC				; allowed >= buffer -> keep full cap
+		LD	(RECV_CAP),HL
+		RET
+
+; ------------------------------------------------------
+; Write any retained tail (HOLD_LEN bytes from RECV_BUFFER) to the output file
+; and leave hold mode. CF=1 on a DSS_WRITE error.
+; ------------------------------------------------------
+FTP_FLUSH_HOLD
+		LD	A,(HOLD_MODE)
+		AND	A
+		RET	Z
+		LD	BC,(HOLD_LEN)
+		LD	A,B
+		OR	C
+		JR	Z,.CLEAR
+		LD	HL,RECV_BUFFER
+		LD	D,B
+		LD	E,C
+		LD	A,(OUT_FH)
+		LD	C,DSS_WRITE
+		RST	DSS
+		RET	C
+.CLEAR
+		XOR	A
+		LD	(HOLD_MODE),A
+		LD	HL,0
+		LD	(HOLD_LEN),HL
 		XOR	A
 		RET
 
@@ -1694,6 +2059,10 @@ CONFIRM_OVERWRITE
 		PRINT	MSG_OVERWRITE_PRE
 		PRINT	OUT_FILE
 		PRINT	MSG_OVERWRITE_POST
+		; Drop the Enter that launched the command (and any other stale keys)
+		; so WAITKEY blocks for a fresh Y/N instead of consuming the leftover.
+		LD	C,DSS_KCLEAR
+		RST	DSS
 		LD	C,DSS_WAITKEY
 		RST	DSS
 		PUSH	AF
@@ -1898,6 +2267,8 @@ MSG_NET_ERROR_NO
 		DB "n!",0
 MSG_FTP_ERROR
 		DB "FTP server returned error: ",0
+MSG_RESUME
+		DB "Data link closed early; resuming via REST...",0
 MSG_UART_OVERRUN
 		DB "UART overrun. Try lower BAUD or check RTS/CTS flow control.",0
 MSG_FILE_ERROR
@@ -1944,6 +2315,8 @@ FTP_NLST_PREFIX
 		DB "NLST ",0
 FTP_RETR_PREFIX
 		DB "RETR ",0
+FTP_REST_PREFIX
+		DB "REST ",0
 FTP_QUIT
 		DB "QUIT",13,10,0
 DATA_CLOSED_TOKEN
@@ -2018,6 +2391,22 @@ DATA_TOTAL
 		DD 0
 DATA_REMAIN
 		DD 0
+; Retain-tail (hold) mode state for file downloads.
+HOLD_MODE
+		DB 0
+HOLD_LEN
+		DW 0
+; FTP REST-resume state and 32-bit decimal scratch for the REST offset.
+RESUME_COUNT
+		DB 0
+U32_WORK
+		DS 4,0
+U32_DIGITS
+		DS 12,0
+RECV_DEST
+		DW 0
+RECV_CAP
+		DW 0
 U32_DIGIT
 		DB 0
 U32_TMP

@@ -12,6 +12,15 @@ TCP_CMD_SIZE		EQU 192
 TCP_LINE_SIZE		EQU 64
 TCP_DEBUG_SIZE		EQU 12
 TCP_ACTIVE_IPD_MAX	EQU 1500
+; Busy-poll iterations spent waiting for the next UART byte before falling back
+; to a 1 ms timeout tick. Sized to comfortably bridge the gap between FIFO
+; bursts at 115200 baud across the Sprinter clock range; tune up if downloads
+; still see per-burst stalls, down if a stalled link should time out sooner.
+RX_SPIN_BUDGET		EQU 200
+; Short timeout for peeking whether another back-to-back +IPD frame is coming
+; within one RECEIVE call. Bounds the end-of-stream wait on an idle keep-alive
+; socket without giving up on a still-active burst.
+TCP_CONT_TIMEOUT	EQU 800
 
 	MODULE TCP
 
@@ -138,6 +147,7 @@ RECEIVE
 	LD	(RECV_PTR),HL
 	LD	(RECV_REMAIN),BC
 	LD	(RECV_TIMEOUT),DE
+	LD	(RECV_FULL_TIMEOUT),DE
 	LD	HL,0
 	LD	(RECV_STORED),HL
 
@@ -160,7 +170,16 @@ RECEIVE
 	JR	NZ,.DONE
 	CALL	CAN_READ_ANOTHER_ACTIVE_IPD
 	JR	C,.RETURN_STORED_OK
+	; Peek for another back-to-back +IPD with a short timeout. At line rate the
+	; next frame arrives within it; if the stream has paused/ended (e.g. a
+	; keep-alive socket idle after the final byte) we return the data already
+	; buffered instead of blocking the full receive timeout. No data is lost:
+	; any later bytes are picked up by the next RECEIVE call.
+	LD	HL,TCP_CONT_TIMEOUT
+	LD	(RECV_TIMEOUT),HL
 	CALL	WAIT_IPD_HEADER
+	LD	HL,(RECV_FULL_TIMEOUT)
+	LD	(RECV_TIMEOUT),HL
 	JR	NC,.NEXT_ACTIVE
 	LD	HL,(RECV_STORED)
 	LD	A,H
@@ -642,24 +661,40 @@ READ_BYTE_RECV_TIMEOUT
 	LD	BC,(RECV_TIMEOUT)
 	JP	READ_BYTE_TIMEOUT
 
+; Read one UART byte while the ISA window is open, with a caller-supplied
+; millisecond timeout in BC.
+;
+; The hot path is a busy-poll on LSR.DR with NO per-byte delay: at 115200 baud a
+; byte arrives every ~87 us and a TR8 FIFO burst is drained back-to-back while
+; DR stays set, so the old "DELAY_1MS on every empty poll" (which throttled the
+; link to ~1 KB/s and kept the ESP permanently backpressured) is gone. Only when
+; the spin budget is exhausted without a byte do we fall back to a 1 ms tick that
+; advances the timeout and the periodic cancel poll, so a genuinely stalled link
+; still times out.
+; Out: CF=0, A=byte, C=byte. CF=1 on timeout/cancel.
 READ_BYTE_TIMEOUT_OPEN
-	PUSH	BC,HL
+	PUSH	BC,DE,HL
 	LD	HL,200
 	LD	(RBT_CANCEL_TICK),HL
-.NEXT
+.MS_TICK
+	LD	DE,RX_SPIN_BUDGET
+.SPIN
 	LD	HL,REG_LSR
 	LD	A,(HL)
 	LD	(LAST_LSR),A
 	PUSH	AF
-	LD	E,A
-	LD	A,(LSR_ACCUM)
-	OR	E
-	LD	(LSR_ACCUM),A
+	LD	HL,LSR_ACCUM
+	OR	(HL)
+	LD	(HL),A
 	POP	AF
 	AND	LSR_DR
 	JR	NZ,.OK
+	DEC	DE
+	LD	A,D
+	OR	E
+	JR	NZ,.SPIN
+	; Spin window elapsed with no byte: advance the ms timeout / cancel poll.
 	CALL	UTIL.DELAY_1MS
-	; Cancel poll every ~200 ms.
 	LD	HL,(RBT_CANCEL_TICK)
 	DEC	HL
 	LD	(RBT_CANCEL_TICK),HL
@@ -674,28 +709,46 @@ READ_BYTE_TIMEOUT_OPEN
 	DEC	BC
 	LD	A,B
 	OR	C
-	JR	NZ,.NEXT
+	JR	NZ,.MS_TICK
 	SCF
-	POP	HL,BC
+	POP	HL,DE,BC
 	RET
 .OK
 	LD	HL,REG_RBR
-	LD	A,(HL)
-	LD	E,A
-	AND	A
-	POP	HL,BC
-	LD	A,E
-	LD	C,E
+	LD	A,(HL)			; A = received byte
+	POP	HL,DE,BC
+	LD	C,A
+	AND	A			; CF=0 (success); A unchanged
 	RET
 .CANCEL
 	; User cancel: return as if timeout; WCOMMON.CANCELLED flag is set.
 	SCF
-	POP	HL,BC
+	POP	HL,DE,BC
 	RET
 
 READ_BYTE_RECV_TIMEOUT_OPEN
 	LD	BC,(RECV_TIMEOUT)
 	JP	READ_BYTE_TIMEOUT_OPEN
+
+; ------------------------------------------------------
+; Diagnostics: snapshot the UART flow-control registers into LAST_MCR/LAST_MSR.
+; MCR bit1 (0x02) = our RTS intent (1 = telling ESP "send to me"); MCR bit5
+; (0x20) = AFE auto-flow enable. MSR bit4 (0x10) = CTS level (ESP's RTS to us).
+; Reading MSR also clears its delta bits, so call once at the point of interest.
+; ------------------------------------------------------
+CAPTURE_FLOW_STATE
+	PUSH	HL
+	LD	HL,REG_MCR
+	CALL	WIFI.UART_READ
+	LD	(LAST_MCR),A
+	LD	HL,REG_MSR
+	CALL	WIFI.UART_READ
+	LD	(LAST_MSR),A
+	POP	HL
+	RET
+
+CMD_CIPSTATUS
+	DB	"AT+CIPSTATUS",13,10,0
 
 ; ------------------------------------------------------
 ; Append ASCIIZ from DE to destination at HL.
@@ -750,6 +803,7 @@ SEND_LEN	DW 0
 RECV_PTR	DW 0
 RECV_REMAIN	DW 0
 RECV_TIMEOUT	DW 0
+RECV_FULL_TIMEOUT DW 0
 RECV_STORED	DW 0
 PAYLOAD_LEFT	DW 0
 LAST_IPD_LEN	DW 0
@@ -758,6 +812,9 @@ IPD_HAVE_REMOTE_LEN DB 0
 IPD_BAD_CHAR	DB 0
 LAST_LSR	DB 0
 LSR_ACCUM	DB 0
+; Diagnostics: flow-control register snapshot captured at a stall.
+LAST_MCR	DB 0
+LAST_MSR	DB 0
 
 ; Periodic cancel-poll counter for byte read loop
 RBT_CANCEL_TICK	DW 0

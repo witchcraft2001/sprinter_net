@@ -28,6 +28,7 @@ DSS_SYSTIME         EQU 0x21
 DSS_SETTIME         EQU 0x22
 DSS_SCANKEY			EQU 0x31
 DSS_ECHOKEY			EQU	0x32
+DSS_KCLEAR			EQU 0x35			; clear keyboard buffer
 DSS_SETWIN			EQU 0x38
 DSS_SETWIN1			EQU 0x39
 DSS_SETWIN2			EQU 0x3A
@@ -37,7 +38,10 @@ DSS_GETMEM			EQU 0x3D
 DSS_FREEMEM			EQU	0x3E
 DSS_SETMEM			EQU DSS_SETWIN			; Backward-compatible alias.
 DSS_EXIT            EQU 0x41
-DSS_WAITKEY			EQU 0x48
+; Blocking key read is function 0x30 (per DSS function map). The previous value
+; 0x48 is not a defined DSS function, so RST DSS returned immediately and any
+; "press a key"/overwrite prompt self-cancelled without waiting for input.
+DSS_WAITKEY			EQU 0x30
 DSS_SETVMOD			EQU 0x50
 DSS_GETVMOD			EQU 0x51
 DSS_CLEAR			EQU 0x56

@@ -8,6 +8,13 @@ DEFAULT_TIMEOUT		EQU 2000
 RECV_TIMEOUT		EQU 7000
 CLOSED_DRAIN_TIMEOUT	EQU 1500
 RECV_BUFFER_SIZE	EQU 16384
+; Retain-tail margin: once the announced body is within this many bytes of
+; completion we stop pausing for DSS_WRITE and instead accumulate the final
+; bytes in RECV_BUFFER, flushing only after the transfer ends. This keeps RTS
+; asserted (ESP drained) across the connection close, so ESP-AT never discards
+; queued-but-unsent +IPD data on FIN. Must be < RECV_BUFFER_SIZE and safely
+; larger than the largest tail ESP can drop in one close (~1-2 KB observed).
+HOLD_TAIL_MARGIN	EQU 8192
 URL_SIZE		EQU 160
 HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
@@ -688,6 +695,10 @@ CONFIRM_OVERWRITE
 	PRINT	MSG_OVERWRITE_PRE
 	PRINT	OUT_FILE
 	PRINT	MSG_OVERWRITE_POST
+	; Drop the Enter that launched the command (and any other stale keys)
+	; so WAITKEY blocks for a fresh Y/N instead of consuming the leftover.
+	LD	C,DSS_KCLEAR
+	RST	DSS
 	LD	C,DSS_WAITKEY
 	RST	DSS
 	PUSH	AF
@@ -849,13 +860,19 @@ RECEIVE_HTTP
 	LD	(REDIRECT_PENDING),A
 	LD	(LOCATION_SEEN),A
 	LD	(HTTP_UNSUPPORTED_REASON),A
+	LD	(HOLD_MODE),A
+	LD	(HOLD_LEN),A
+	LD	(HOLD_LEN+1),A
 
 .LOOP
 	CALL	WCOMMON.CHECK_CANCEL
 	JP	C,.CANCELLED
 		CALL	WIFI.UART_RX_RESUME
-		LD	HL,RECV_BUFFER
-		LD	BC,RECV_BUFFER_SIZE
+		; Switch to retain-tail mode before the read once the body is within
+		; HOLD_TAIL_MARGIN of completion; SETUP_RECV_DEST then accumulates into
+		; RECV_BUFFER at a growing offset instead of overwriting from the start.
+		CALL	UPDATE_HOLD_MODE
+		CALL	SETUP_RECV_DEST
 		LD	A,(SAW_CLOSED)
 		AND	A
 		JR	NZ,.AFTER_CLOSE_TIMEOUT
@@ -864,6 +881,8 @@ RECEIVE_HTTP
 .AFTER_CLOSE_TIMEOUT
 		LD	DE,CLOSED_DRAIN_TIMEOUT
 .RECV
+		LD	HL,(RECV_DEST)
+		LD	BC,(RECV_CAP)
 		CALL	TCP.RECEIVE
 	; Pause RX immediately so ESP stops sending while we run the (slow)
 	; HTTP parser, debug print, file write etc. Resumed at .LOOP top.
@@ -871,7 +890,7 @@ RECEIVE_HTTP
 	CALL	WIFI.UART_RX_PAUSE
 	CALL	STORE_RECV_DEBUG
 	POP	BC,AF
-	JR	C,.RX_ERROR
+	JP	C,.RX_ERROR
 	CALL	UART_RX_ERROR_SEEN
 	JP	NZ,.RX_UART_ERROR
 	LD	A,B
@@ -903,16 +922,21 @@ RECEIVE_HTTP
 	CALL	ADJUST_TO_HTTP_STATUS
 	JR	.PROCESS_DATA
 .PROCESS_FROM_START
-	LD	HL,RECV_BUFFER
+	LD	HL,(RECV_DEST)
 .PROCESS_DATA
 		CALL	PROCESS_HTTP_DATA
 		JR	C,.PROCESS_ERR
+		; Finish as soon as the whole announced body is in, without waiting for
+		; the server to close. Required for keep-alive (no CLOSED arrives) and a
+		; useful speedup otherwise.
+		CALL	BODY_IS_COMPLETE
+		JP	Z,.RX_DONE
 		LD	A,(SAW_CLOSED)
 		AND	A
-		JR	Z,.LOOP
+		JP	Z,.LOOP
 		CALL	SHOULD_FINISH_AFTER_CLOSED
 		JR	Z,.RX_DONE
-		JR	.LOOP
+		JP	.LOOP
 
 .PROCESS_ERR
 	CALL	WIFI.UART_RX_RESUME
@@ -936,6 +960,8 @@ RECEIVE_HTTP
 	LD	A,(HAVE_BODY)
 	AND	A
 	JR	Z,.NO_BODY
+	CALL	FLUSH_HOLD
+	JP	C,FILE_ERROR_EXIT
 	JP	CHECK_CONTENT_LENGTH
 .RX_ERROR
 	LD	(LAST_TCP_ERR),A
@@ -1366,7 +1392,7 @@ TRIM_CLOSED_SUFFIX
 	JR	Z,.NO_MATCH
 	CALL	BODY_PLUS_BC_OVER_CL
 	JR	NC,.NO_MATCH
-	LD	HL,RECV_BUFFER
+	LD	HL,(RECV_DEST)
 	ADD	HL,BC
 .SKIP_TAIL_CRLF
 	LD	BC,(TRIM_CAND_LEN)
@@ -1531,6 +1557,12 @@ WRITE_BODY
 	POP	BC
 	POP	HL
 .LOG_DONE
+	LD	A,(HOLD_MODE)
+	AND	A
+	JR	NZ,.HOLD
+	; Safe zone: still more than HOLD_TAIL_MARGIN bytes to come (and reads are
+	; capped to stop exactly at that boundary), so a DSS_WRITE pause here can
+	; never coincide with the connection close.
 	PUSH	BC
 	CALL	WRITE_OUTPUT
 	POP	BC
@@ -1540,6 +1572,147 @@ WRITE_BODY
 	CALL	PUT_CHAR
 	LD	A,1
 	LD	(HAVE_BODY),A
+	RET
+.HOLD
+	; Retain-tail: do NOT write to disk. Hold mode is entered at the loop top
+	; before the read, so RECEIVE already placed these bytes contiguously at
+	; RECV_BUFFER+HOLD_LEN (HL == RECV_DEST). They are flushed once the
+	; transfer completes (FLUSH_HOLD). With no write pause RTS stays asserted,
+	; so ESP delivers every +IPD before CLOSED and drops nothing.
+	LD	HL,(HOLD_LEN)
+	ADD	HL,BC
+	LD	(HOLD_LEN),HL
+	CALL	ADD_BODY_BYTES
+	LD	A,'.'
+	CALL	PUT_CHAR
+	LD	A,1
+	LD	(HAVE_BODY),A
+	RET
+
+; ------------------------------------------------------
+; Enter retain-tail (hold) mode once the announced body has at most
+; HOLD_TAIL_MARGIN bytes left to receive. Called at the loop top BEFORE the
+; read so the final bytes are accumulated, never written under an RTS-off
+; pause. Latches HOLD_MODE; never clears it mid-transfer. No-op without a
+; known Content-Length.
+; ------------------------------------------------------
+UPDATE_HOLD_MODE
+	LD	A,(HOLD_MODE)
+	AND	A
+	RET	NZ
+	LD	A,(CONTENT_LENGTH_SEEN)
+	AND	A
+	RET	Z
+	CALL	BODY_REMAINING			; HL=low, A=0 and Z if <65536 & not negative
+	RET	NZ				; remaining >= 65536 or CL < BODY -> not yet
+	LD	A,H
+	OR	L
+	RET	Z				; remaining 0 -> done, no need to hold
+	EX	DE,HL				; DE = remaining
+	LD	HL,HOLD_TAIL_MARGIN
+	OR	A
+	SBC	HL,DE				; MARGIN - remaining; CF=1 -> MARGIN < remaining
+	RET	C				; remaining > MARGIN -> not yet
+	LD	A,1
+	LD	(HOLD_MODE),A
+	LD	HL,0
+	LD	(HOLD_LEN),HL
+	RET
+
+; ------------------------------------------------------
+; remaining = CONTENT_LENGTH - BODY_BYTES (32-bit).
+; Out: if the high word is 0 and CL>=BODY: Z=1, A=0, HL=remaining low word.
+;      otherwise NZ (remaining >= 65536, or CL < BODY). Trashes BC,DE.
+; ------------------------------------------------------
+BODY_REMAINING
+	OR	A
+	LD	HL,(CONTENT_LENGTH)
+	LD	DE,(BODY_BYTES)
+	SBC	HL,DE
+	PUSH	HL				; remaining low
+	LD	HL,(CONTENT_LENGTH+2)
+	LD	DE,(BODY_BYTES+2)
+	SBC	HL,DE				; remaining high, CF=borrow if CL<BODY
+	JR	C,.NEG
+	LD	A,H
+	OR	L				; Z iff high word 0
+	POP	HL				; remaining low (preserves flags)
+	RET
+.NEG
+	POP	HL
+	OR	1				; force NZ
+	RET
+
+; ------------------------------------------------------
+; Compute RECV_DEST / RECV_CAP for the next TCP.RECEIVE. In hold mode data is
+; appended at RECV_BUFFER+HOLD_LEN. In stream mode it overwrites from the start,
+; but the capacity is clamped so a read never crosses into the final
+; HOLD_TAIL_MARGIN bytes (that tail is always taken in hold mode instead).
+; ------------------------------------------------------
+SETUP_RECV_DEST
+	LD	A,(HOLD_MODE)
+	AND	A
+	JR	Z,.STREAM
+	; hold: dest = RECV_BUFFER + HOLD_LEN, cap = RECV_BUFFER_SIZE - HOLD_LEN
+	LD	HL,RECV_BUFFER
+	LD	DE,(HOLD_LEN)
+	ADD	HL,DE
+	LD	(RECV_DEST),HL
+	EX	DE,HL
+	LD	HL,RECV_BUFFER+RECV_BUFFER_SIZE
+	OR	A
+	SBC	HL,DE
+	LD	(RECV_CAP),HL
+	RET
+.STREAM
+	LD	HL,RECV_BUFFER
+	LD	(RECV_DEST),HL
+	LD	HL,RECV_BUFFER_SIZE
+	LD	(RECV_CAP),HL
+	LD	A,(CONTENT_LENGTH_SEEN)
+	AND	A
+	RET	Z
+	CALL	BODY_REMAINING
+	RET	NZ				; remaining >= 65536 -> full buffer
+	; allowed = remaining - HOLD_TAIL_MARGIN; if <= 0 hold mode handles it
+	LD	DE,HOLD_TAIL_MARGIN
+	OR	A
+	SBC	HL,DE
+	RET	C				; remaining < MARGIN -> next loop enters hold
+	RET	Z				; remaining == MARGIN -> next loop enters hold
+	; cap = min(RECV_BUFFER_SIZE, allowed) so the last stream read ends exactly
+	; HOLD_TAIL_MARGIN before the body end.
+	LD	DE,RECV_BUFFER_SIZE
+	PUSH	HL
+	OR	A
+	SBC	HL,DE
+	POP	HL				; HL = allowed
+	RET	NC				; allowed >= buffer -> keep full buffer cap
+	LD	(RECV_CAP),HL
+	RET
+
+; ------------------------------------------------------
+; Write any retained tail (HOLD_LEN bytes from RECV_BUFFER) to the output file
+; and leave hold mode. Called once the transfer body is complete. CF=1 on a
+; DSS_WRITE error.
+; ------------------------------------------------------
+FLUSH_HOLD
+	LD	A,(HOLD_MODE)
+	AND	A
+	RET	Z
+	LD	BC,(HOLD_LEN)
+	LD	A,B
+	OR	C
+	JR	Z,.CLEAR
+	LD	HL,RECV_BUFFER
+	CALL	WRITE_OUTPUT
+	RET	C
+.CLEAR
+	XOR	A
+	LD	(HOLD_MODE),A
+	LD	HL,0
+	LD	(HOLD_LEN),HL
+	XOR	A
 	RET
 
 PRINT_BODY_LOG_HEADER
@@ -1567,6 +1740,14 @@ PRINT_DOWNLOADED_BYTES
 	RET
 
 PREPARE_RESUME_RETRY
+	; Diagnostics: probe the ESP's socket state at the stall, while the
+	; connection is still up (before the resume tears it down).
+	CALL	PROBE_CIPSTATUS
+	; Persist any retained tail before resuming: BODY_BYTES counts the held
+	; bytes as received, so the file must contain them before a Range refetch
+	; continues from BODY_BYTES.
+	CALL	FLUSH_HOLD
+	JP	C,FILE_ERROR_EXIT
 	LD	A,(RESUME_COUNT)
 	CP	RESUME_LIMIT
 	JR	NC,.GIVE_UP
@@ -1663,6 +1844,44 @@ PRINT_RECV_DEBUG
 	LD	HL,TOTAL_BYTES
 	CALL	PRINT_U32_AT_HL
 	PRINT	WCOMMON.LINE_END
+	CALL	PRINT_FLOW_DEBUG
+	RET
+
+; ------------------------------------------------------
+; Diagnostics printed at a receive stall: the UART flow-control registers (our
+; RTS intent in MCR, ESP's CTS in MSR) and the ESP's view of the socket via
+; AT+CIPSTATUS. Tells us whether we left RTS deasserted (our flow control), or
+; RTS is asserted but the ESP/socket is wedged.
+; ------------------------------------------------------
+; Safe register snapshot (read-only) — usable even mid-drain.
+PRINT_FLOW_DEBUG
+	CALL	TCP.CAPTURE_FLOW_STATE
+	PRINT	MSG_DBG_MCR
+	LD	A,(TCP.LAST_MCR)
+	LD	C,A
+	LD	DE,DEBUG_MCR_HEX
+	CALL	UTIL.HEXB
+	PRINT	DEBUG_MCR_HEX
+	PRINT	MSG_DBG_MSR
+	LD	A,(TCP.LAST_MSR)
+	LD	C,A
+	LD	DE,DEBUG_MSR_HEX
+	CALL	UTIL.HEXB
+	PRINT	DEBUG_MSR_HEX
+	PRINT	WCOMMON.LINE_END
+	RET
+
+; Ask the ESP whether the TCP socket is still alive at the stall. This sends an
+; AT command and flushes the RX FIFO, so only call it at a terminal point (just
+; before tearing the connection down for a resume), never mid-drain.
+PROBE_CIPSTATUS
+	PRINT	MSG_DBG_CIPSTATUS
+	LD	HL,TCP.CMD_CIPSTATUS
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	WIFI.UART_TX_CMD
+	PRINT	WIFI.RS_BUFF
+	PRINT	WCOMMON.LINE_END
 	RET
 
 PRINT_A_DEC
@@ -1750,6 +1969,33 @@ PRINT_UART_OVERRUN_HINT
 	AND	LSR_OE
 	RET	Z
 	PRINTLN	MSG_UART_OVERRUN
+	RET
+
+; Z=1 iff Content-Length is known and BODY_BYTES >= CONTENT_LENGTH.
+BODY_IS_COMPLETE
+	LD	A,(CONTENT_LENGTH_SEEN)
+	AND	A
+	JR	Z,.INCOMPLETE
+	OR	A
+	LD	HL,(CONTENT_LENGTH)
+	LD	DE,(BODY_BYTES)
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L			; BC = low(CL - BODY)
+	LD	HL,(CONTENT_LENGTH+2)
+	LD	DE,(BODY_BYTES+2)
+	SBC	HL,DE			; HL = high(CL - BODY); CF=1 if CL < BODY
+	JR	C,.COMPLETE		; body overshoots CL -> complete
+	LD	A,H
+	OR	L
+	OR	B
+	OR	C
+	JR	Z,.COMPLETE		; remaining == 0 -> complete
+.INCOMPLETE
+	OR	0xFF
+	RET
+.COMPLETE
+	XOR	A
 	RET
 
 SHOULD_FINISH_AFTER_CLOSED
@@ -2178,6 +2424,12 @@ MSG_DBG_LSR_ACC
 	DB " lsr_acc=0x",0
 MSG_DBG_TOTAL
 	DB " total=",0
+MSG_DBG_MCR
+	DB "  flow: mcr=0x",0
+MSG_DBG_MSR
+	DB " msr=0x",0
+MSG_DBG_CIPSTATUS
+	DB "CIPSTATUS:",13,10,0
 MSG_NO_RESPONSE
 	DB "No HTTP response received.",0
 MSG_NO_BODY
@@ -2270,7 +2522,7 @@ SWITCH_HELP_H_DASH
 REQ_GET
 	DB "GET ",0
 REQ_HTTP
-	DB " HTTP/1.0",13,10,"Host: ",0
+	DB " HTTP/1.1",13,10,"Host: ",0
 REQ_PORT_SEP
 	DB ":",0
 REQ_RANGE
@@ -2278,8 +2530,14 @@ REQ_RANGE
 REQ_RANGE_END
 	DB "-",0
 REQ_END
+	; Keep-alive so the server does NOT close after the body. In active +IPD
+	; mode ESP-AT discards the ~1-1.5 KB still queued in its UART output when it
+	; processes the peer FIN, which truncated every download. With keep-alive
+	; the server leaves the socket open, the ESP delivers the whole body, we
+	; stop once Content-Length bytes are in (BODY_IS_COMPLETE) and close it
+	; ourselves. Servers that ignore keep-alive fall back to the resume path.
 	DB 13,10
-	DB "Connection: close",13,10
+	DB "Connection: keep-alive",13,10
 	DB 13,10,0
 
 ARG_LEN		DB 0
@@ -2323,9 +2581,16 @@ DEBUG_RECV_BYTES DW 0
 DEBUG_PRINTED	DB 0
 DEBUG_LSR_HEX	DB "xx",0
 DEBUG_LSR_ACC_HEX DB "xx",0
+DEBUG_MCR_HEX	DB "xx",0
+DEBUG_MSR_HEX	DB "xx",0
 TRIM_ORIG_LEN	DW 0
 TRIM_CAND_LEN	DW 0
 TRIM_TMP	DD 0
+; Retain-tail (hold) mode state.
+HOLD_MODE	DB 0
+HOLD_LEN	DW 0
+RECV_DEST	DW 0
+RECV_CAP	DW 0
 U32_POW10_TABLE
 	DD 1000000000
 	DD 100000000

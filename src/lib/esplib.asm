@@ -51,8 +51,15 @@ FCR_TR1         EQU	0x00								; Trigger on 1 byte in fifo
 FCR_TR4         EQU	0x40								; Trigger on 4 bytes in fifo
 FCR_TR8         EQU	0x80								; Trigger on 8 bytes in fifo
 FCR_TR14        EQU	0xC0								; Trigger on 14 bytes in fifo
-;FCR_RX_TRIGGER	EQU	FCR_TR8								; Deassert RTS at 8 bytes; gives ESP 8 byte-times to react before FIFO overflows
-FCR_RX_TRIGGER	EQU	FCR_TR1								; Deassert RTS at first byte; gives ESP 15 byte-times to react before FIFO overflows. Safer for active +IPD,len:payload streams where one lost byte desyncs the parser.
+; RX FIFO trigger for RTS/CTS auto-flow. TR1 (deassert RTS at the first byte)
+; throttles the ESP to one byte per RTS round-trip; combined with the per-poll
+; delay in the byte-read loop that capped throughput at ~1 KB/s and kept the ESP
+; permanently backpressured (which also lost the tail of downloads on close).
+; TR8 lets the ESP deliver 8-byte bursts that the Z80 drains without a delay,
+; while still leaving 8 FIFO byte-times of margin for the ESP to honour RTS
+; (auto-flow prevents overrun; OE is monitored by the download utilities).
+;FCR_RX_TRIGGER	EQU	FCR_TR1								; legacy: 1 byte/RTS cycle, ~1 KB/s
+FCR_RX_TRIGGER	EQU	FCR_TR8								; deassert RTS at 8 bytes; ~8x faster bursts
 LSR_DR          EQU	0x01								; Data Ready
 LSR_OE          EQU	0x02								; Overrun Error
 LSR_PE          EQU	0x04								; Parity Error
