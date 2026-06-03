@@ -119,6 +119,8 @@ START
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
 
+	CALL	TPUT.START			; start the transfer timer
+
 .REQUEST_LOOP
 	PRINT MSG_CONNECTING
 	PRINT HOST_BUFF
@@ -184,6 +186,11 @@ START
 
 	PRINT WCOMMON.LINE_END
 	CALL	PRINT_DOWNLOADED_BYTES
+	; Report speed over the bytes received THIS session (BODY_BYTES), which for
+	; a resumed (Range) download is just the refetched tail, not the whole file.
+	LD	HL,(BODY_BYTES)
+	LD	DE,(BODY_BYTES+2)
+	CALL	TPUT.REPORT
 	PRINTLN MSG_DONE
 	LD	B,0
 	JP	WCOMMON.EXIT
@@ -663,14 +670,43 @@ OPEN_OUTPUT_FILE
 	LD	A,FA_READONLY
 	LD	C,DSS_OPEN_FILE
 	RST	DSS
-	JR	C,.CREATE
+	JR	C,.CREATE			; does not exist -> fresh download
 	LD	C,DSS_CLOSE_FILE
-	RST	DSS
+	RST	DSS				; close the existence-test handle
 	LD	A,(FORCE_OVERWRITE)
 	AND	A
-	JR	NZ,.DELETE
-	CALL	CONFIRM_OVERWRITE
-	JR	C,.ABORT
+	JR	NZ,.DELETE			; -y forces overwrite
+	CALL	CONFIRM_EXISTING		; A = 'R' resume / 'O' overwrite / 'C' cancel
+	CP	'R'
+	JR	Z,.RESUME
+	CP	'O'
+	JR	Z,.DELETE
+	JR	.ABORT				; cancel
+.RESUME
+	; Reopen the existing file read/write and seek to its end so the new bytes
+	; append; seed TOTAL_BYTES with the current size so BUILD_HTTP_REQUEST asks
+	; for "Range: bytes=<size>-" and the server resumes from there.
+	LD	HL,OUT_FILE
+	LD	A,0				; FileMode RW
+	LD	C,DSS_OPEN_FILE
+	RST	DSS
+	JR	C,.CREATE			; cannot reopen -> fall back to fresh
+	LD	(OUT_FH),A
+	LD	A,(OUT_FH)
+	LD	B,SEEK_END
+	LD	HL,0
+	LD	IX,0
+	LD	C,DSS_MOVE_FP
+	RST	DSS				; HL:IX = size (HL high, IX low)
+	LD	(TOTAL_BYTES),IX
+	LD	(TOTAL_BYTES+2),HL
+	XOR	A
+	LD	(OUTPUT_ABORTED),A
+	PRINT	MSG_RESUME_AT
+	LD	HL,TOTAL_BYTES
+	CALL	PRINT_U32_AT_HL
+	PRINTLN	MSG_BYTES
+	RET
 .DELETE
 	LD	HL,OUT_FILE
 	LD	C,DSS_DELETE
@@ -691,12 +727,15 @@ OPEN_OUTPUT_FILE
 	SCF
 	RET
 
-CONFIRM_OVERWRITE
+; Ask what to do about an existing output file. Returns A = 'R' (resume),
+; 'O' (overwrite) or 'C' (cancel). Y=overwrite, N/Esc=cancel for familiarity.
+CONFIRM_EXISTING
 	PRINT	MSG_OVERWRITE_PRE
 	PRINT	OUT_FILE
 	PRINT	MSG_OVERWRITE_POST
+.ASK
 	; Drop the Enter that launched the command (and any other stale keys)
-	; so WAITKEY blocks for a fresh Y/N instead of consuming the leftover.
+	; so WAITKEY blocks for a fresh choice instead of consuming the leftover.
 	LD	C,DSS_KCLEAR
 	RST	DSS
 	LD	C,DSS_WAITKEY
@@ -711,11 +750,37 @@ CONFIRM_OVERWRITE
 	LD	C,DSS_PUTCHAR
 	RST	DSS
 	POP	AF
+	CP	'R'
+	JR	Z,.RES
+	CP	'r'
+	JR	Z,.RES
+	CP	'O'
+	JR	Z,.OVR
+	CP	'o'
+	JR	Z,.OVR
 	CP	'Y'
-	RET	Z
+	JR	Z,.OVR
 	CP	'y'
-	RET	Z
-	SCF
+	JR	Z,.OVR
+	CP	'C'
+	JR	Z,.CAN
+	CP	'c'
+	JR	Z,.CAN
+	CP	'N'
+	JR	Z,.CAN
+	CP	'n'
+	JR	Z,.CAN
+	CP	0x1B				; Esc
+	JR	Z,.CAN
+	JR	.ASK				; unrecognised -> ask again
+.RES
+	LD	A,'R'
+	RET
+.OVR
+	LD	A,'O'
+	RET
+.CAN
+	LD	A,'C'
 	RET
 
 CLOSE_OUTPUT_FILE
@@ -1740,9 +1805,6 @@ PRINT_DOWNLOADED_BYTES
 	RET
 
 PREPARE_RESUME_RETRY
-	; Diagnostics: probe the ESP's socket state at the stall, while the
-	; connection is still up (before the resume tears it down).
-	CALL	PROBE_CIPSTATUS
 	; Persist any retained tail before resuming: BODY_BYTES counts the held
 	; bytes as received, so the file must contain them before a Range refetch
 	; continues from BODY_BYTES.
@@ -1843,44 +1905,6 @@ PRINT_RECV_DEBUG
 	PRINT	MSG_DBG_TOTAL
 	LD	HL,TOTAL_BYTES
 	CALL	PRINT_U32_AT_HL
-	PRINT	WCOMMON.LINE_END
-	CALL	PRINT_FLOW_DEBUG
-	RET
-
-; ------------------------------------------------------
-; Diagnostics printed at a receive stall: the UART flow-control registers (our
-; RTS intent in MCR, ESP's CTS in MSR) and the ESP's view of the socket via
-; AT+CIPSTATUS. Tells us whether we left RTS deasserted (our flow control), or
-; RTS is asserted but the ESP/socket is wedged.
-; ------------------------------------------------------
-; Safe register snapshot (read-only) — usable even mid-drain.
-PRINT_FLOW_DEBUG
-	CALL	TCP.CAPTURE_FLOW_STATE
-	PRINT	MSG_DBG_MCR
-	LD	A,(TCP.LAST_MCR)
-	LD	C,A
-	LD	DE,DEBUG_MCR_HEX
-	CALL	UTIL.HEXB
-	PRINT	DEBUG_MCR_HEX
-	PRINT	MSG_DBG_MSR
-	LD	A,(TCP.LAST_MSR)
-	LD	C,A
-	LD	DE,DEBUG_MSR_HEX
-	CALL	UTIL.HEXB
-	PRINT	DEBUG_MSR_HEX
-	PRINT	WCOMMON.LINE_END
-	RET
-
-; Ask the ESP whether the TCP socket is still alive at the stall. This sends an
-; AT command and flushes the RX FIFO, so only call it at a terminal point (just
-; before tearing the connection down for a resume), never mid-drain.
-PROBE_CIPSTATUS
-	PRINT	MSG_DBG_CIPSTATUS
-	LD	HL,TCP.CMD_CIPSTATUS
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	PRINT	WIFI.RS_BUFF
 	PRINT	WCOMMON.LINE_END
 	RET
 
@@ -2424,12 +2448,6 @@ MSG_DBG_LSR_ACC
 	DB " lsr_acc=0x",0
 MSG_DBG_TOTAL
 	DB " total=",0
-MSG_DBG_MCR
-	DB "  flow: mcr=0x",0
-MSG_DBG_MSR
-	DB " msr=0x",0
-MSG_DBG_CIPSTATUS
-	DB "CIPSTATUS:",13,10,0
 MSG_NO_RESPONSE
 	DB "No HTTP response received.",0
 MSG_NO_BODY
@@ -2447,7 +2465,9 @@ MSG_ABORTED
 MSG_OVERWRITE_PRE
 	DB "Local file '",0
 MSG_OVERWRITE_POST
-	DB "' exists. Overwrite [Y/N]? ",0
+	DB "' exists. [R]esume / [O]verwrite / [C]ancel? ",0
+MSG_RESUME_AT
+	DB "Resuming at ",0
 MSG_HTTP_UNSUPPORTED
 	DB "Unsupported HTTP response.",0
 MSG_HTTP_STATUS
@@ -2581,8 +2601,6 @@ DEBUG_RECV_BYTES DW 0
 DEBUG_PRINTED	DB 0
 DEBUG_LSR_HEX	DB "xx",0
 DEBUG_LSR_ACC_HEX DB "xx",0
-DEBUG_MCR_HEX	DB "xx",0
-DEBUG_MSR_HEX	DB "xx",0
 TRIM_ORIG_LEN	DW 0
 TRIM_CAND_LEN	DW 0
 TRIM_TMP	DD 0
@@ -2610,6 +2628,10 @@ U32_POW10_TABLE
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"
 	INCLUDE "esp_tcp.asm"
+	INCLUDE "tput_lib.asm"
+	; esplib.asm MUST be last: it ends with the RS_BUFF label that anchors the
+	; runtime receive buffer and all BSS. Any include placed after it would have
+	; its code/data overlaid by the ESP receive buffer.
 	INCLUDE "esplib.asm"
 
 	MODULE MAIN

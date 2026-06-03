@@ -7,7 +7,7 @@ EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 5000
 FTP_RECV_TIMEOUT	EQU 10000
 FTP_DATA_TIMEOUT	EQU 20000
-FTP_FINAL_TIMEOUT	EQU 2500
+FTP_FINAL_TIMEOUT	EQU 800				; short wait for post-transfer 226 / QUIT 221 replies (the busy-poll receive inflates this, so keep it small)
 FTP_BURST_TIMEOUT	EQU 120
 FTP_ACTIVE_IPD_MAX	EQU 3000
 CONTROL_LINK		EQU 0
@@ -29,7 +29,7 @@ FTP_HOLD_TAIL_MARGIN	EQU 8192
 LINE_SIZE		EQU 112
 NO_HANDLE		EQU 0xFF
 DATA_CLOSED_LEN		EQU 8
-FTP_RESUME_LIMIT	EQU 10			; max FTP REST re-fetch attempts per file
+FTP_RESUME_LIMIT	EQU 12			; max automatic REST re-fetch attempts per download
 DSS_CREATE_OVERWRITE	EQU 0x0A
 OUT_SIZE		EQU 80
 
@@ -93,110 +93,126 @@ START
 		CALL	WIFI.UART_INIT
 		PRINTLN MSG_UART_READY
 
-		LD	HL,CMD_AT
-		CALL	SEND_CMD_RECOVER
-		LD	HL,CMD_ECHO_OFF
-		CALL	SEND_CMD
-		CALL	WCOMMON.SETUP_UART_FLOW
-		AND	A
-		JP	NZ,NET_ERROR_EXIT
-		LD	HL,CMD_CIPMUX_1
-		CALL	SEND_CMD
-
-		PRINT MSG_CONNECTING
-		PRINT HOST_BUFF
-		PRINT MSG_COLON
-		PRINT PORT_BUFF
-		PRINT WCOMMON.LINE_END
-
-		LD	A,CONTROL_LINK
-		LD	HL,HOST_BUFF
-		LD	DE,PORT_BUFF
-		CALL	TCP.OPEN_LINK
-		JP	C,NET_ERROR_EXIT
-		LD	A,1
-		LD	(CONTROL_OPEN),A
-
-		CALL	RECV_CONTROL_REPLY
-		JP	C,NET_ERROR_EXIT
-		CALL	CHECK_REPLY_POSITIVE
-		JP	C,FTP_ERROR_EXIT
-
-		PRINTLN MSG_LOGIN
-		LD	DE,FTP_USER_PREFIX
-		LD	IX,USER_BUFF
-		CALL	BUILD_FTP_COMMAND
-		CALL	SEND_CONTROL
-		JP	C,NET_ERROR_EXIT
-		CALL	RECV_CONTROL_REPLY
-		JP	C,NET_ERROR_EXIT
-		CALL	CHECK_USER_REPLY
-		JP	C,FTP_ERROR_EXIT
-
-		LD	A,(REPLY_FIRST)
-		CP	'3'
-		JR	NZ,.NO_PASS
-		LD	DE,FTP_PASS_PREFIX
-		LD	IX,PASS_BUFF
-		CALL	BUILD_FTP_COMMAND
-		CALL	SEND_CONTROL
-		JP	C,NET_ERROR_EXIT
-		CALL	RECV_CONTROL_REPLY
-		JP	C,NET_ERROR_EXIT
-		CALL	CHECK_REPLY_POSITIVE
-		JP	C,FTP_ERROR_EXIT
-
-.NO_PASS
-		PRINTLN MSG_BINARY
-		LD	DE,FTP_TYPE_I
-		CALL	BUILD_SIMPLE_COMMAND
-		CALL	SEND_CONTROL
-		JP	C,NET_ERROR_EXIT
-		CALL	RECV_CONTROL_REPLY
-		JP	C,NET_ERROR_EXIT
-		CALL	CHECK_REPLY_POSITIVE
-		JP	C,FTP_ERROR_EXIT
-
-		PRINTLN MSG_PASV
-		LD	DE,FTP_PASV
-		CALL	BUILD_SIMPLE_COMMAND
-		CALL	SEND_CONTROL
-		JP	C,NET_ERROR_EXIT
-		CALL	RECV_CONTROL_REPLY
-		JP	C,NET_ERROR_EXIT
-		CALL	PARSE_PASV_ENDPOINT
-		JP	C,FTP_ERROR_EXIT
-		PRINT MSG_PASV_ENDPOINT
-		PRINT PASV_HOST_BUFF
-		PRINT MSG_COLON
-		PRINT PASV_PORT_BUFF
-		PRINT WCOMMON.LINE_END
-
-		PRINT MSG_OPEN_DATA
-		PRINT PASV_HOST_BUFF
-		PRINT MSG_COLON
-		PRINT PASV_PORT_BUFF
-		PRINT WCOMMON.LINE_END
-		LD	A,DATA_LINK
-		LD	HL,PASV_HOST_BUFF
-		LD	DE,PASV_PORT_BUFF
-		CALL	TCP.OPEN_LINK
-		JP	C,NET_ERROR_EXIT
-		LD	A,1
-		LD	(DATA_OPEN),A
+		CALL	ESP_PRELUDE
+		CALL	LOGIN_SEQUENCE
 
 		LD	A,(LIST_FLAG)
 		AND	A
-		JR	NZ,.LIST_TRANSFER
-		CALL	OPEN_OUTPUT_FILE
+		JP	NZ,.LIST_PATH
+
+; ===== File download with automatic REST resume =====
+		CALL	OPEN_OUTPUT_FILE		; prompt R/O/C; sets DATA_TOTAL & RESUME_MODE
 		JP	C,FILE_ERROR_EXIT
-		PRINTLN MSG_RETR
+		; Speed base = bytes already on disk (resume offset, or 0 for fresh),
+		; so the rate reflects only what is fetched this run.
+		LD	HL,(DATA_TOTAL)
+		LD	(SESSION_BASE),HL
+		LD	HL,(DATA_TOTAL+2)
+		LD	(SESSION_BASE+2),HL
+		XOR	A
+		LD	(DATA_EXPECTED_SEEN),A
+		LD	(RESUME_ATTEMPTS),A
+		CALL	TPUT.START
+		PRINT	MSG_DOWNLOADING
+		PRINT	OUT_FILE
+		PRINT	WCOMMON.LINE_END
+.DL_ATTEMPT
+		CALL	DO_PASV_OPEN			; PASV + parse + OPEN_LINK (exits on error)
+		; REST when we already hold bytes: a prompt-resume offset, or a prior
+		; short attempt's partial. The server (confirmed) reports the FULL size
+		; in its 150 reply, so DATA_EXPECTED stays the whole file.
+		CALL	DATA_TOTAL_NONZERO
+		JR	NC,.DL_RETR
+		CALL	BUILD_REST_COMMAND
+		CALL	SEND_CONTROL
+		JP	C,NET_ERROR_EXIT
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		LD	A,(REPLY_FIRST)
+		CP	'3'				; 350 Restart marker accepted
+		JP	NZ,REST_REJECTED
+.DL_RETR
+		PRINTLN	MSG_RETR
 		CALL	BUILD_RETR_COMMAND
-		JR	.SEND_TRANSFER_CMD
-.LIST_TRANSFER
-		PRINTLN MSG_LIST
+		CALL	SEND_CONTROL
+		JP	C,NET_ERROR_EXIT
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		CALL	CHECK_LIST_PRELIM_REPLY
+		JP	C,FTP_ERROR_EXIT
+		CALL	PARSE_EXPECTED_SIZE
+		CALL	RECV_DATA_TRANSFER
+		JP	C,NET_ERROR_EXIT
+		CALL	DOWNLOAD_COMPLETE		; Z if DATA_TOTAL >= DATA_EXPECTED
+		JR	Z,.DL_DONE
+		; Short transfer (ESP dropped the tail on the data-link close). Retry
+		; from where we stopped via REST, up to the attempt limit.
+		LD	A,(RESUME_ATTEMPTS)
+		CP	FTP_RESUME_LIMIT
+		JR	NC,.DL_DONE			; give up -> VERIFY reports the mismatch
+		INC	A
+		LD	(RESUME_ATTEMPTS),A
+		; After the peer closed the data link mid-transfer, the ESP control
+		; channel can be left desynced so the next PASV reply never arrives
+		; (observed as a #4 timeout). Reusing the control connection is not
+		; reliable on this firmware; tear down both TCP links and re-login,
+		; exactly like a manual resume run, which is the only path proven to
+		; recover. The output file stays open so we keep appending.
+		PRINTLN	MSG_AUTO_RESUME
+		LD	A,(DATA_OPEN)
+		AND	A
+		JR	Z,.AR_CTRL
+		LD	A,DATA_LINK
+		CALL	TCP.CLOSE_LINK
+.AR_CTRL
+		LD	A,(CONTROL_OPEN)
+		AND	A
+		JR	Z,.AR_RECON
+		LD	A,CONTROL_LINK
+		CALL	TCP.CLOSE_LINK
+.AR_RECON
+		XOR	A
+		LD	(DATA_OPEN),A
+		LD	(CONTROL_OPEN),A
+		LD	(DATA_BYTES_SEEN),A
+		; Let the wedged ESP settle on its OWN (poll AT, no reset). A hardware
+		; reset would drop the Wi-Fi join and make the reconnect CIPSTART fail
+		; (#1); the manual re-run works precisely because it waits a few seconds
+		; with Wi-Fi still up. Only if AT never returns do we hard-reset, then
+		; wait out the Wi-Fi rejoin before logging in again.
+		CALL	WAIT_ESP_READY
+		JR	NC,.AR_LOGIN
+		PRINTLN	MSG_RESETTING_ESP
+		CALL	WIFI.ESP_RESET
+		CALL	WIFI.UART_SET_DEFAULT_DIVISOR
+		CALL	WIFI.UART_INIT
+		CALL	ESP_PRELUDE
+		LD	HL,5000				; extra settle for Wi-Fi reassociation
+		CALL	UTIL.DELAY
+.AR_LOGIN
+		CALL	LOGIN_SEQUENCE
+		JP	.DL_ATTEMPT
+.DL_DONE
+		CALL	CLOSE_OUTPUT_FILE
+		JP	C,FILE_ERROR_EXIT
+		CALL	VERIFY_DATA_SIZE
+		JP	C,NET_ERROR_EXIT
+		CALL	REPORT_SESSION_SPEED
+		LD	A,(FINAL_REPLY_SEEN)
+		AND	A
+		JR	NZ,.DL_FINAL
+		CALL	RECV_CONTROL_REPLY_OPTIONAL
+		JR	C,.FINISH
+.DL_FINAL
+		CALL	CHECK_REPLY_POSITIVE
+		JP	C,FTP_ERROR_EXIT
+		JR	.FINISH
+
+; ===== Directory listing (single shot) =====
+.LIST_PATH
+		CALL	DO_PASV_OPEN
+		PRINTLN	MSG_LIST
 		CALL	BUILD_LIST_COMMAND
-.SEND_TRANSFER_CMD
 		XOR	A
 		LD	(DATA_TOTAL),A
 		LD	(DATA_TOTAL+1),A
@@ -209,56 +225,27 @@ START
 		CALL	CHECK_LIST_PRELIM_REPLY
 		JP	C,FTP_ERROR_EXIT
 		CALL	PARSE_EXPECTED_SIZE
-		LD	A,(LIST_FLAG)
-		AND	A
-		JR	Z,.DOWNLOAD_TRANSFER
-		; After the 125/150 prelim reply, the server begins streaming the
-		; listing on the data link. Pause RX so the "Directory listing:"
-		; PRINTLN below doesn't overlap with incoming bytes — that gap
-		; was where the very first OE was firing on real hardware.
 		CALL	WIFI.UART_RX_PAUSE
-		PRINTLN MSG_LISTING
+		PRINTLN	MSG_LISTING
 		CALL	WIFI.UART_RX_RESUME
-		JR	.RECV_TRANSFER
-.DOWNLOAD_TRANSFER
-		PRINT MSG_DOWNLOADING
-		PRINT OUT_FILE
-		PRINT WCOMMON.LINE_END
-.RECV_TRANSFER
-			CALL	RECV_DATA_TRANSFER
-			JP	C,NET_ERROR_EXIT
-			; For a file download with a known size, auto-resume via FTP REST
-			; when the data link closed short. ESP-AT (active +IPD mode) drops
-			; the ~1.5 KB still queued in its UART output when the data-link FIN
-			; is processed, and that close is unavoidable in FTP, so we refetch
-			; the missing tail rather than fail. The output file stays open and
-			; positioned at end, so resumed bytes append contiguously.
-			LD	A,(LIST_FLAG)
-			AND	A
-			JR	NZ,.TRANSFER_DONE
-			CALL	DOWNLOAD_COMPLETE
-			JR	Z,.TRANSFER_DONE
-			CALL	TRY_FTP_RESUME
-			JP	NC,.RECV_TRANSFER
-.TRANSFER_DONE
-			CALL	CLOSE_OUTPUT_FILE
-			JP	C,FILE_ERROR_EXIT
-			CALL	VERIFY_DATA_SIZE
-			JP	C,NET_ERROR_EXIT
-			LD	A,(FINAL_REPLY_SEEN)
-			AND	A
-			JR	NZ,.CHECK_FINAL_REPLY
+		CALL	RECV_DATA_TRANSFER
+		JP	C,NET_ERROR_EXIT
+		LD	A,(FINAL_REPLY_SEEN)
+		AND	A
+		JR	NZ,.LIST_FINAL
 		CALL	RECV_CONTROL_REPLY_OPTIONAL
-		JR	C,.LIST_DONE
-.CHECK_FINAL_REPLY
+		JR	C,.FINISH
+.LIST_FINAL
 		CALL	CHECK_REPLY_POSITIVE
 		JP	C,FTP_ERROR_EXIT
-.LIST_DONE
 
+.FINISH
 		LD	DE,FTP_QUIT
 		CALL	BUILD_SIMPLE_COMMAND
 		CALL	SEND_CONTROL
-		CALL	RECV_CONTROL_REPLY_IGNORE
+		; QUIT reply (221) is informational; wait only briefly so a slow/absent
+		; goodbye does not stall the finish for the full control timeout.
+		CALL	RECV_CONTROL_REPLY_OPTIONAL
 
 		CALL	CLEANUP_TCP
 		PRINTLN MSG_DONE
@@ -315,6 +302,15 @@ FILE_ERROR_EXIT
 FILE_ABORT_EXIT
 		PRINTLN MSG_ABORTED
 		LD	B,1
+		JP	WCOMMON.EXIT
+
+; Resume requested but the server rejected REST (no 3xx reply). Cannot continue
+; a partial file on this server; the user should re-run and choose Overwrite.
+REST_REJECTED
+		CALL	CLOSE_OUTPUT_FILE_IGNORE
+		CALL	CLEANUP_TCP
+		PRINTLN MSG_NO_REST
+		LD	B,4
 		JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
@@ -840,92 +836,191 @@ DIV_HL_10
 		POP	BC
 		RET
 
-; Z=1 iff the download is complete (DATA_TOTAL >= DATA_EXPECTED), or the size
-; is unknown (then resume is not meaningful). Trashes A,B,DE,HL.
-DOWNLOAD_COMPLETE
-		LD	A,(DATA_EXPECTED_SEEN)
+; Open a fresh PASV data connection: request PASV, parse the endpoint, open the
+; data link. Exits the program on any error. Returns with DATA_OPEN=1.
+; ESP bring-up shared by the initial connect and in-run reconnect: verify the
+; AT link (SEND_CMD_RECOVER hardware-resets a wedged module), echo off, enable
+; UART flow control, and select multi-connection mode. After the peer closes a
+; data link mid-transfer the ESP can stop answering control traffic; running
+; this before re-login is what lets an in-run auto-resume recover the same way
+; a fresh re-run of the utility does.
+; Poll AT until the ESP answers again, WITHOUT a hardware reset (which would
+; drop the Wi-Fi join). After the peer closes a data link mid-transfer the
+; module stops answering control traffic for a few seconds; re-sending AT also
+; helps flush its UART parser. Out: CF=0 if it answered, CF=1 if still silent
+; after the window. Trashes A,BC,DE,HL.
+WAIT_ESP_READY
+		LD	B,12
+.LOOP
+		PUSH	BC
+		LD	HL,CMD_AT
+		LD	DE,WIFI.RS_BUFF
+		LD	BC,1500
+		CALL	WIFI.UART_TX_CMD
 		AND	A
-		JR	Z,.COMPLETE
-		LD	HL,DATA_EXPECTED+3
-		LD	DE,DATA_TOTAL+3
-		LD	B,4
-.CMP
-		LD	A,(DE)				; total byte
-		CP	(HL)				; total - expected (from MSB down)
-		JR	C,.INCOMPLETE			; total < expected
-		JR	NZ,.COMPLETE			; total > expected
-		DEC	DE
-		DEC	HL
-		DJNZ	.CMP
-.COMPLETE
-		XOR	A				; Z=1
+		JR	Z,.READY
+		LD	HL,500
+		CALL	UTIL.DELAY
+		POP	BC
+		DJNZ	.LOOP
+		SCF
 		RET
-.INCOMPLETE
-		OR	0xFF				; NZ
+.READY
+		POP	BC
+		OR	A				; CF=0
 		RET
 
-; Re-fetch the missing tail of a short download via FTP REST: reopen a PASV data
-; link, REST to DATA_TOTAL, RETR again. The output file stays open at end, so
-; resumed bytes append contiguously and DATA_TOTAL keeps accumulating.
-; Out: CF=0 ready to receive more on the data link; CF=1 give up (limit hit,
-; send/reply error, or server rejected REST).
-TRY_FTP_RESUME
-		LD	A,(RESUME_COUNT)
-		CP	FTP_RESUME_LIMIT
-		JR	NC,.GIVEUP
-		INC	A
-		LD	(RESUME_COUNT),A
-		LD	A,(DATA_EXPECTED_SEEN)
+ESP_PRELUDE
+		LD	HL,CMD_AT
+		CALL	SEND_CMD_RECOVER
+		LD	HL,CMD_ECHO_OFF
+		CALL	SEND_CMD
+		CALL	WCOMMON.SETUP_UART_FLOW
 		AND	A
-		JR	Z,.GIVEUP
-		; Consume the previous transfer's final (226) reply if not yet seen,
-		; so the control link is clean before the next REST/RETR.
-		LD	A,(FINAL_REPLY_SEEN)
-		AND	A
-		JR	NZ,.HAVE_FINAL
-		CALL	RECV_CONTROL_REPLY_OPTIONAL
-.HAVE_FINAL
-		LD	A,DATA_LINK			; drop the stale data link
-		CALL	TCP.CLOSE_LINK
-		XOR	A
-		LD	(DATA_OPEN),A
-		PRINTLN	MSG_RESUME
-		CALL	RESET_REPLY_STATE
+		JP	NZ,NET_ERROR_EXIT
+		LD	HL,CMD_CIPMUX_1
+		CALL	SEND_CMD
+		RET
+
+; Open the control connection and complete the FTP login (USER/PASS) plus
+; TYPE I. Returns normally on success; jumps to an error exit on failure.
+; Used both for the initial connect and to re-establish a clean control
+; channel for an in-run auto-resume.
+LOGIN_SEQUENCE
+		PRINT MSG_CONNECTING
+		PRINT HOST_BUFF
+		PRINT MSG_COLON
+		PRINT PORT_BUFF
+		PRINT WCOMMON.LINE_END
+
+		LD	A,CONTROL_LINK
+		LD	HL,HOST_BUFF
+		LD	DE,PORT_BUFF
+		CALL	TCP.OPEN_LINK
+		JP	C,NET_ERROR_EXIT
+		LD	A,1
+		LD	(CONTROL_OPEN),A
+
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		CALL	CHECK_REPLY_POSITIVE
+		JP	C,FTP_ERROR_EXIT
+
+		PRINTLN MSG_LOGIN
+		LD	DE,FTP_USER_PREFIX
+		LD	IX,USER_BUFF
+		CALL	BUILD_FTP_COMMAND
+		CALL	SEND_CONTROL
+		JP	C,NET_ERROR_EXIT
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		CALL	CHECK_USER_REPLY
+		JP	C,FTP_ERROR_EXIT
+
+		LD	A,(REPLY_FIRST)
+		CP	'3'
+		JR	NZ,.NO_PASS
+		LD	DE,FTP_PASS_PREFIX
+		LD	IX,PASS_BUFF
+		CALL	BUILD_FTP_COMMAND
+		CALL	SEND_CONTROL
+		JP	C,NET_ERROR_EXIT
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		CALL	CHECK_REPLY_POSITIVE
+		JP	C,FTP_ERROR_EXIT
+
+.NO_PASS
+		PRINTLN MSG_BINARY
+		LD	DE,FTP_TYPE_I
+		CALL	BUILD_SIMPLE_COMMAND
+		CALL	SEND_CONTROL
+		JP	C,NET_ERROR_EXIT
+		CALL	RECV_CONTROL_REPLY
+		JP	C,NET_ERROR_EXIT
+		CALL	CHECK_REPLY_POSITIVE
+		JP	C,FTP_ERROR_EXIT
+		RET
+
+DO_PASV_OPEN
+		PRINTLN	MSG_PASV
 		LD	DE,FTP_PASV
 		CALL	BUILD_SIMPLE_COMMAND
 		CALL	SEND_CONTROL
-		JR	C,.GIVEUP
+		JP	C,NET_ERROR_EXIT
 		CALL	RECV_CONTROL_REPLY
-		JR	C,.GIVEUP
-		CALL	PARSE_PASV_ENDPOINT		; also rebuilds PASV_HOST/PORT_BUFF
-		JR	C,.GIVEUP
+		JP	C,NET_ERROR_EXIT
+		CALL	PARSE_PASV_ENDPOINT
+		JP	C,FTP_ERROR_EXIT
+		PRINT	MSG_PASV_ENDPOINT
+		PRINT	PASV_HOST_BUFF
+		PRINT	MSG_COLON
+		PRINT	PASV_PORT_BUFF
+		PRINT	WCOMMON.LINE_END
+		PRINT	MSG_OPEN_DATA
+		PRINT	PASV_HOST_BUFF
+		PRINT	MSG_COLON
+		PRINT	PASV_PORT_BUFF
+		PRINT	WCOMMON.LINE_END
 		LD	A,DATA_LINK
 		LD	HL,PASV_HOST_BUFF
 		LD	DE,PASV_PORT_BUFF
 		CALL	TCP.OPEN_LINK
-		JR	C,.GIVEUP
+		JP	C,NET_ERROR_EXIT
 		LD	A,1
 		LD	(DATA_OPEN),A
-		CALL	BUILD_REST_COMMAND
-		CALL	SEND_CONTROL
-		JR	C,.GIVEUP
-		CALL	RECV_CONTROL_REPLY
-		JR	C,.GIVEUP
-		LD	A,(REPLY_FIRST)
-		CP	'3'				; 350 Restart marker accepted
-		JR	NZ,.GIVEUP			; server does not support REST
-		CALL	BUILD_RETR_COMMAND
-		CALL	SEND_CONTROL
-		JR	C,.GIVEUP
-		CALL	RECV_CONTROL_REPLY
-		JR	C,.GIVEUP
-		CALL	CHECK_LIST_PRELIM_REPLY		; expect 1xx/2xx
-		JR	C,.GIVEUP
-		XOR	A				; CF=0: ready to receive
 		RET
-.GIVEUP
+
+; CF=1 iff DATA_TOTAL (32-bit) is non-zero. Trashes A,HL.
+DATA_TOTAL_NONZERO
+		LD	A,(DATA_TOTAL)
+		LD	HL,DATA_TOTAL+1
+		OR	(HL)
+		INC	HL
+		OR	(HL)
+		INC	HL
+		OR	(HL)
+		RET	Z				; all zero -> CF=0
 		SCF
 		RET
+
+; Z=1 iff the download is complete (DATA_TOTAL >= DATA_EXPECTED), or the size is
+; unknown (then treat as done so auto-resume cannot loop forever). Trashes A,B,DE,HL.
+DOWNLOAD_COMPLETE
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		JR	Z,.YES
+		LD	HL,DATA_EXPECTED+3
+		LD	DE,DATA_TOTAL+3
+		LD	B,4
+.CMP
+		LD	A,(DE)
+		CP	(HL)
+		JR	C,.NO				; total < expected
+		JR	NZ,.YES				; total > expected
+		DEC	DE
+		DEC	HL
+		DJNZ	.CMP
+.YES
+		XOR	A
+		RET
+.NO
+		OR	0xFF
+		RET
+
+; Report transfer speed over the bytes fetched this run (DATA_TOTAL-SESSION_BASE).
+REPORT_SESSION_SPEED
+		OR	A
+		LD	HL,(DATA_TOTAL)
+		LD	DE,(SESSION_BASE)
+		SBC	HL,DE
+		PUSH	HL				; session low
+		LD	HL,(DATA_TOTAL+2)
+		LD	DE,(SESSION_BASE+2)
+		SBC	HL,DE				; session high
+		EX	DE,HL				; DE = high
+		POP	HL				; HL = low
+		JP	TPUT.REPORT
 
 SEND_CONTROL
 		LD	HL,CMD_BUFF
@@ -1118,6 +1213,9 @@ PRINT_DEFERRED_CONTROL
 		RET	Z
 		XOR	A
 		LD	(DEFERRED_CONTROL_SEEN),A
+		; End the progress-dots line first so the deferred reply (e.g.
+		; "226 Transfer complete") prints on its own line, not glued to dots.
+		PRINT	WCOMMON.LINE_END
 		PRINTLN	DEFERRED_CONTROL_LINE
 		RET
 
@@ -1471,7 +1569,9 @@ RECV_DATA_TRANSFER
 		LD	A,1
 		LD	(DATA_BYTES_SEEN),A
 		LD	HL,(RECV_DEST)
-		CALL	FEED_CONTROL_BYTES
+		; Defer "226 Transfer complete" until the data loop ends so it prints
+		; after the progress dots, not interleaved mid-transfer.
+		CALL	FEED_CONTROL_BYTES_MAYBE_DEFERRED
 		LD	A,(REPLY_DONE)
 		AND	A
 		JR	Z,.READ
@@ -1632,7 +1732,14 @@ PROCESS_PENDING_CONTROL
 			RET
 
 FEED_CONTROL_BYTES_MAYBE_DEFERRED
+			; SHOULD_DEFER_CONTROL_PRINT (DATA_TOTAL_BELOW_EXPECTED) clobbers
+			; HL/BC, which FEED_CONTROL_BYTES needs as its source pointer/length.
+			; Preserve them so direct callers can pass HL/BC straight through.
+			PUSH	HL
+			PUSH	BC
 			CALL	SHOULD_DEFER_CONTROL_PRINT
+			POP	BC
+			POP	HL
 			JR	NC,.NORMAL
 			LD	A,1
 			LD	(CONTROL_PRINT_SUPPRESS),A
@@ -2020,6 +2127,8 @@ BUILD_PASV_ENDPOINT
 		RET
 
 OPEN_OUTPUT_FILE
+		XOR	A
+		LD	(RESUME_MODE),A
 		PRINT MSG_OUTPUT_FILE
 		PRINT OUT_FILE
 		PRINT WCOMMON.LINE_END
@@ -2027,14 +2136,39 @@ OPEN_OUTPUT_FILE
 		LD	A,FA_READONLY
 		LD	C,DSS_OPEN_FILE
 		RST	DSS
-		JR	C,.CREATE
+		JR	C,.CREATE			; does not exist -> fresh download
 		LD	C,DSS_CLOSE_FILE
 		RST	DSS
 		LD	A,(FORCE_OVERWRITE)
 		AND	A
-		JR	NZ,.DELETE
-		CALL	CONFIRM_OVERWRITE
-		JR	C,.ABORT
+		JR	NZ,.DELETE			; -y forces overwrite
+		CALL	CONFIRM_EXISTING		; A = 'R' / 'O' / 'C'
+		CP	'R'
+		JR	Z,.RESUME
+		CP	'O'
+		JR	Z,.DELETE
+		JR	.ABORT				; cancel
+.RESUME
+		; Reopen read/write, seek to end, seed DATA_TOTAL with the current size.
+		LD	HL,OUT_FILE
+		LD	A,0				; FileMode RW
+		LD	C,DSS_OPEN_FILE
+		RST	DSS
+		JR	C,.CREATE			; cannot reopen -> fresh
+		LD	(OUT_FH),A
+		LD	A,(OUT_FH)
+		LD	B,SEEK_END
+		LD	HL,0
+		LD	IX,0
+		LD	C,DSS_MOVE_FP
+		RST	DSS				; HL:IX = size (HL high, IX low)
+		LD	(DATA_TOTAL),IX
+		LD	(DATA_TOTAL+2),HL
+		LD	A,1
+		LD	(RESUME_MODE),A
+		XOR	A
+		LD	(OUTPUT_ABORTED),A
+		RET
 .DELETE
 		LD	HL,OUT_FILE
 		LD	C,DSS_DELETE
@@ -2055,12 +2189,15 @@ OPEN_OUTPUT_FILE
 		SCF
 		RET
 
-CONFIRM_OVERWRITE
+; Ask about an existing output file. Returns A = 'R' resume / 'O' overwrite /
+; 'C' cancel. Y=overwrite, N/Esc=cancel for familiarity.
+CONFIRM_EXISTING
 		PRINT	MSG_OVERWRITE_PRE
 		PRINT	OUT_FILE
 		PRINT	MSG_OVERWRITE_POST
-		; Drop the Enter that launched the command (and any other stale keys)
-		; so WAITKEY blocks for a fresh Y/N instead of consuming the leftover.
+.ASK
+		; Drop the Enter that launched the command so WAITKEY blocks for a
+		; fresh choice instead of consuming the leftover.
 		LD	C,DSS_KCLEAR
 		RST	DSS
 		LD	C,DSS_WAITKEY
@@ -2075,11 +2212,37 @@ CONFIRM_OVERWRITE
 		LD	C,DSS_PUTCHAR
 		RST	DSS
 		POP	AF
+		CP	'R'
+		JR	Z,.RES
+		CP	'r'
+		JR	Z,.RES
+		CP	'O'
+		JR	Z,.OVR
+		CP	'o'
+		JR	Z,.OVR
 		CP	'Y'
-		RET	Z
+		JR	Z,.OVR
 		CP	'y'
-		RET	Z
-		SCF
+		JR	Z,.OVR
+		CP	'C'
+		JR	Z,.CAN
+		CP	'c'
+		JR	Z,.CAN
+		CP	'N'
+		JR	Z,.CAN
+		CP	'n'
+		JR	Z,.CAN
+		CP	0x1B
+		JR	Z,.CAN
+		JR	.ASK
+.RES
+		LD	A,'R'
+		RET
+.OVR
+		LD	A,'O'
+		RET
+.CAN
+		LD	A,'C'
 		RET
 
 CLOSE_OUTPUT_FILE
@@ -2267,8 +2430,6 @@ MSG_NET_ERROR_NO
 		DB "n!",0
 MSG_FTP_ERROR
 		DB "FTP server returned error: ",0
-MSG_RESUME
-		DB "Data link closed early; resuming via REST...",0
 MSG_UART_OVERRUN
 		DB "UART overrun. Try lower BAUD or check RTS/CTS flow control.",0
 MSG_FILE_ERROR
@@ -2278,9 +2439,13 @@ MSG_ABORTED
 MSG_OVERWRITE_PRE
 			DB "Local file '",0
 MSG_OVERWRITE_POST
-			DB "' exists. Overwrite [Y/N]? ",0
+			DB "' exists. [R]esume / [O]verwrite / [C]ancel? ",0
 MSG_INCOMPLETE
 			DB "Downloaded size does not match server size.",0
+MSG_NO_REST
+			DB "Server rejected REST; resume not supported. Re-run and choose Overwrite.",0
+MSG_AUTO_RESUME
+			DB "Data link closed early; resuming...",0
 
 CMD_AT
 		DB "AT",13,10,0
@@ -2397,8 +2562,12 @@ HOLD_MODE
 HOLD_LEN
 		DW 0
 ; FTP REST-resume state and 32-bit decimal scratch for the REST offset.
-RESUME_COUNT
+RESUME_MODE
 		DB 0
+RESUME_ATTEMPTS
+		DB 0
+SESSION_BASE
+		DS 4,0
 U32_WORK
 		DS 4,0
 U32_DIGITS
@@ -2462,6 +2631,10 @@ PASV_P2
 		INCLUDE "isa.asm"
 		INCLUDE "esp_tcp.asm"
 		INCLUDE "esp_tcp_multi.asm"
+		INCLUDE "tput_lib.asm"
+		; esplib.asm MUST be last: it ends with the RS_BUFF label that anchors
+		; the runtime receive buffer and all BSS. Any include after it would be
+		; overlaid by the ESP receive buffer.
 		INCLUDE "esplib.asm"
 
 		MODULE MAIN

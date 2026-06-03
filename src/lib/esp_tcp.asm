@@ -7,7 +7,7 @@
 	DEFINE	_ESP_TCP
 
 TCP_DEFAULT_TIMEOUT	EQU 5000
-TCP_OPEN_TIMEOUT	EQU 60000
+TCP_OPEN_TIMEOUT	EQU 20000			; connect timeout; was 60000 — too long to wait out a wedged/half-open link
 TCP_CMD_SIZE		EQU 192
 TCP_LINE_SIZE		EQU 64
 TCP_DEBUG_SIZE		EQU 12
@@ -730,25 +730,6 @@ READ_BYTE_RECV_TIMEOUT_OPEN
 	LD	BC,(RECV_TIMEOUT)
 	JP	READ_BYTE_TIMEOUT_OPEN
 
-; ------------------------------------------------------
-; Diagnostics: snapshot the UART flow-control registers into LAST_MCR/LAST_MSR.
-; MCR bit1 (0x02) = our RTS intent (1 = telling ESP "send to me"); MCR bit5
-; (0x20) = AFE auto-flow enable. MSR bit4 (0x10) = CTS level (ESP's RTS to us).
-; Reading MSR also clears its delta bits, so call once at the point of interest.
-; ------------------------------------------------------
-CAPTURE_FLOW_STATE
-	PUSH	HL
-	LD	HL,REG_MCR
-	CALL	WIFI.UART_READ
-	LD	(LAST_MCR),A
-	LD	HL,REG_MSR
-	CALL	WIFI.UART_READ
-	LD	(LAST_MSR),A
-	POP	HL
-	RET
-
-CMD_CIPSTATUS
-	DB	"AT+CIPSTATUS",13,10,0
 
 ; ------------------------------------------------------
 ; Append ASCIIZ from DE to destination at HL.
@@ -812,9 +793,6 @@ IPD_HAVE_REMOTE_LEN DB 0
 IPD_BAD_CHAR	DB 0
 LAST_LSR	DB 0
 LSR_ACCUM	DB 0
-; Diagnostics: flow-control register snapshot captured at a stall.
-LAST_MCR	DB 0
-LAST_MSR	DB 0
 
 ; Periodic cancel-poll counter for byte read loop
 RBT_CANCEL_TICK	DW 0
