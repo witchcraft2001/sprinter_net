@@ -21,6 +21,9 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   file over passive FTP using `RETR`. Without `-o`, the local name is the
   basename of the remote file. If the local file exists, FTP asks before
   overwriting; `-y` overwrites without prompting.
+- `FTP.EXE host[:port] PUT local-file [-o remote-name] [-u user] [-p pass]`
+  uploads one file over passive FTP using `STOR`. Without `-o`, the remote name
+  is the basename of the local file.
 - `FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]` logs in through
   ESP-AT multi-connection mode, enters passive mode and prints a `LIST` or
   `NLST` directory listing.
@@ -128,6 +131,8 @@ Use this order during normal testing:
 9. `TFTP.EXE server PUT FILE -o file` - verify TFTP upload where the
    server permits writes.
 10. `FTP.EXE server -l` - verify FTP login, passive mode and directory listing.
+11. `FTP.EXE server PUT FILE -o file` - verify FTP upload where the server
+   account permits writes.
 
 Bundled batch examples:
 
@@ -203,9 +208,10 @@ Current utility-specific notes:
 - `TFTP.EXE` returns `0` after a successful download or upload, `1` for invalid
   command line, `2` when hardware is not found, `3` on ESP/UDP/TFTP protocol
   errors and `5` for local DSS file errors.
-- `FTP.EXE` returns `0` after a successful download or listing, `1` for invalid
-  command line, `2` when hardware is not found, `3` on ESP/TCP communication
-  errors, `4` on FTP server errors and `5` for local DSS file errors.
+- `FTP.EXE` returns `0` after a successful download, upload or listing, `1` for
+  invalid command line, `2` when hardware is not found, `3` on ESP/TCP
+  communication errors, `4` on FTP server errors and `5` for local DSS file
+  errors.
 
 Current `WGET.EXE` limitations:
 

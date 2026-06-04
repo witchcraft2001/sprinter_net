@@ -1,15 +1,16 @@
-FTP.EXE - FTP passive file download and directory listing
+FTP.EXE - FTP passive file transfer and directory listing
 =========================================================
 
 Purpose
 -------
   Opens an FTP control connection through SprinterESP, logs in, enters passive
-  mode and downloads a remote file with RETR. Directory listing is available
-  explicitly with LIST or NLST flags.
+  mode and downloads a remote file with RETR or uploads a local file with STOR.
+  Directory listing is available explicitly with LIST or NLST flags.
 
 Usage
 -----
   FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]
+  FTP.EXE host[:port] PUT local [-o remote] [-u user] [-p pass]
   FTP.EXE host[:port] [path] -l [-u user] [-p pass]
   FTP.EXE host[:port] [path] -n [-u user] [-p pass]
   FTP.EXE /?
@@ -22,6 +23,7 @@ Examples
   FTP.EXE 192.168.1.36 fbird.zip
   FTP.EXE 192.168.1.36 fbird.zip -o folder\newfile.zip
   FTP.EXE 192.168.1.36 fbird.zip -y
+  FTP.EXE 192.168.1.36 PUT LOCAL.BIN -o upload.bin
   FTP.EXE 192.168.1.36 -l
   FTP.EXE 192.168.1.36 pub -n
   FTP.EXE 192.168.1.36:2121 -l -u test -p secret
@@ -37,20 +39,19 @@ What It Does
   6. Sends USER, PASS if needed, TYPE I and PASV.
   7. Parses the 227 passive endpoint and prints host:port.
   8. Opens the passive data TCP connection as link 1.
-  9. Sends RETR file, LIST path, or NLST path.
-  10. Writes downloaded file data to disk or prints directory listing.
-      If the local output exists, asks before overwriting. Use -y to overwrite
-      without prompting.
+  9. Sends RETR file, STOR file, LIST path, or NLST path.
+  10. Transfers file data or prints directory listing.
+      For downloads, if the local output exists, asks before overwriting. Use
+      -y to overwrite without prompting.
   11. Sends QUIT and closes the control connection.
 
 Current Limits
 --------------
   - file download is implemented with RETR;
+  - file upload is implemented with STOR;
   - directory listing modes are implemented with explicit -l and -n flags;
-  - STOR upload is not implemented yet;
   - FTP.EXE uses the same flag style as the RTL8019AS network kit for the
-    implemented GET/listing modes. PUT upload is reserved until STOR is
-    implemented in this SprinterESP build;
+    implemented GET/PUT/listing modes;
   - password is passed on the command line;
   - use a simple test FTP server first.
 
@@ -60,9 +61,9 @@ NETRESET, NETUP, then retry FTP.EXE.
 
 Exit Codes
 ----------
-  0  FTP login, PASV and file download or directory listing completed.
+  0  FTP login, PASV and file download, upload or directory listing completed.
   1  Invalid command line.
   2  Sprinter-WiFi card was not found.
   3  ESP/TCP communication error.
   4  FTP server returned an unexpected or negative reply.
-  5  Local file create, write, or close failed.
+  5  Local file create, read, write, or close failed.
