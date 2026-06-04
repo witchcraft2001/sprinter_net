@@ -68,7 +68,9 @@ NO_WIFI
 	JP	WCOMMON.EXIT
 
 MSG_START
-	DB "NETRESET for SprinterESP / Sprinter-WiFi",0
+	DB "NETRESET for SprinterESP / Sprinter-WiFi"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 
 MSG_WIFI_FOUND
 	DB "Sprinter-WiFi found in ISA#"

@@ -52,6 +52,7 @@ DIST_CONFIG_FILES=(
 # Extra files copied to the distribution root. Keep this for small required
 # runtime files that are neither docs nor configs.
 DIST_EXTRA_FILES=(
+  VERSION
   examples/CONNECT.BAT
   examples/WGETGUT.BAT
   examples/WGETCERN.BAT

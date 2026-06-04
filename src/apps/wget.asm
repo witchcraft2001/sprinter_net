@@ -2401,7 +2401,9 @@ APPEND_IX_STR
 	JR	APPEND_IX_STR
 
 MSG_START
-	DB "WGET - HTTP downloader for SprinterESP",0
+	DB "WGET - HTTP downloader for SprinterESP"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 MSG_USAGE
 	DB "Usage: WGET.EXE url [-o output] [-y] or WGET.EXE /?",0
 MSG_WIFI_NOT_FOUND

@@ -1433,7 +1433,9 @@ INIT_MEMORY_ERROR
 	RST	DSS
 
 MSG_START
-	DB "TFTP - UDP TFTP client for SprinterESP",0
+	DB "TFTP - UDP TFTP client for SprinterESP"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 MSG_USAGE
 	DB "Usage: TFTP.EXE host GET remote [-o local] [-y] or TFTP.EXE host PUT local [-o remote]",0
 MSG_REMOTE

@@ -306,7 +306,9 @@ COPY_INPUT_TO_DEST
 	RET
 
 MSG_START
-	DB "NETCFG - Sprinter DSS Network Kit configuration",0
+	DB "NETCFG - Sprinter DSS Network Kit configuration"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 MSG_LOADED
 	DB "Loaded NET.CFG.",0
 MSG_NOT_FOUND

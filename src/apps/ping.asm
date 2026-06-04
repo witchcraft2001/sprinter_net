@@ -359,7 +359,9 @@ APPEND_IX_STR
 	JR	APPEND_IX_STR
 
 MSG_START
-	DB "PING - SprinterESP host diagnostic",0
+	DB "PING - SprinterESP host diagnostic"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 MSG_USAGE
 	DB "Usage: PING.EXE host",0
 MSG_WIFI_NOT_FOUND

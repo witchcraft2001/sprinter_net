@@ -146,7 +146,9 @@ PUT_CHAR
 	RET
 
 MSG_START
-	DB "NETPROBE for SprinterESP / Sprinter-WiFi",0
+	DB "NETPROBE for SprinterESP / Sprinter-WiFi"
+	PACKAGE_VERSION_SUFFIX
+	DB 0
 
 MSG_WIFI_FOUND
 	DB "Sprinter-WiFi found in ISA#"

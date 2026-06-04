@@ -8,6 +8,8 @@
 	IFNDEF	_MACRO
 	DEFINE	_MACRO
 
+	INCLUDE "version.inc"
+
 	; Transmit data|command via UART and check response
 	MACRO	SEND_CMD	data
 	LD		HL, data
