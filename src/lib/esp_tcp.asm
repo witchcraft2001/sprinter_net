@@ -19,8 +19,10 @@ TCP_ACTIVE_IPD_MAX	EQU 1500
 RX_SPIN_BUDGET		EQU 200
 ; Short timeout for peeking whether another back-to-back +IPD frame is coming
 ; within one RECEIVE call. Bounds the end-of-stream wait on an idle keep-alive
-; socket without giving up on a still-active burst.
-TCP_CONT_TIMEOUT	EQU 800
+; socket without giving up on a still-active burst. This wait is paid once per
+; filled receive buffer when no next +IPD is ready; 800 ms dominated 115200
+; downloads. FTP uses the same burst strategy with 120 ms.
+TCP_CONT_TIMEOUT	EQU 120
 
 	MODULE TCP
 

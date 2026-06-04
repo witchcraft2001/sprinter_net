@@ -106,8 +106,10 @@ Important keys:
 - `DNS1`, `DNS2` - DNS servers.
 - `TZ`, `NTP` - used by `NTP.EXE`.
 - `BAUD` - UART speed used after `NETUP.EXE` configures ESP with
-  `AT+UART_CUR`. Supported values: `115200`, `57600`, `38400`, `19200`,
-  `9600`. Use `57600` or `38400` if `115200` loses bytes on your setup.
+  `AT+UART_CUR`. Supported values: `230400`, `115200`, `57600`, `38400`,
+  `19200`, `9600`. `230400` is valid for the TL16C550C/14.7456 MHz UART
+  clock, but should be treated as a fast hardware-test mode until verified on
+  your card. Use `57600` or `38400` if `115200` loses bytes on your setup.
 
 Do not distribute a real `NET.CFG` with private Wi-Fi credentials.
 

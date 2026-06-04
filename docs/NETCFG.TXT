@@ -29,7 +29,7 @@ Important fields
   DNS1/DNS2  DNS servers.
   TZ/NTP     Reserved for future time tools.
   BAUD       UART speed after NETUP configures ESP. Supported values:
-             115200, 57600, 38400, 19200, 9600.
+             230400, 115200, 57600, 38400, 19200, 9600.
 
 Exit status
   0  Success.

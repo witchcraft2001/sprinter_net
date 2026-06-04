@@ -32,6 +32,8 @@ NTP=pool.ntp.org
 AUTOJOIN=1
 #
 # BAUD: UART speed used after NETUP configures ESP with AT+UART_CUR.
-# Supported values: 115200, 57600, 38400, 19200, 9600.
+# Supported values: 230400, 115200, 57600, 38400, 19200, 9600.
+# 230400 is valid for the TL16C550C/14.7456 MHz UART clock, but should be
+# treated as a fast hardware-test mode until verified on your card.
 # Use 57600 or 38400 if 115200 loses bytes on your setup.
 BAUD=115200
