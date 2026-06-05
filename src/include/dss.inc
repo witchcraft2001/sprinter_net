@@ -40,6 +40,11 @@ DSS_GETMEM			EQU 0x3D
 DSS_FREEMEM			EQU	0x3E
 DSS_SETMEM			EQU DSS_SETWIN			; Backward-compatible alias.
 DSS_EXIT            EQU 0x41
+; Environment variables (PAGE 2 @ 0xE400), persist across program runs in a
+; session. Names are auto-uppercased. Sub-function in B.
+DSS_ENVIRON			EQU 0x46
+ENV_GET				EQU 0x01				; HL="NAME",0  DE=value buf; A=0xFF found / 0 not
+ENV_SET				EQU 0x02				; HL="NAME=VALUE",0  ("NAME=",0 deletes)
 ; Blocking key read is function 0x30 (per DSS function map). The previous value
 ; 0x48 is not a defined DSS function, so RST DSS returned immediately and any
 ; "press a key"/overwrite prompt self-cancelled without waiting for input.

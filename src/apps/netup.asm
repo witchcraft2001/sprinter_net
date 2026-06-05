@@ -112,6 +112,9 @@ START
 	PRINTLN MSG_IP_INFO
 	CALL	PRINT_IP_INFO_OPTIONAL
 
+	PRINTLN MSG_PUBLISH_ENV
+	CALL	PUBLISH_NET_ENV
+
 	PRINTLN MSG_DONE
 	LD	B,0
 	JP	WCOMMON.EXIT
@@ -585,6 +588,216 @@ BUILD_CIPDNS_CMD
 	LD	DE,CMD_QUOTE_CRLF
 	JP	APPEND_STR
 
+; ======================================================
+; Publish connection parameters to DSS environment variables (NET_*), like the
+; rtl8019as NETCFG -i feature, so other programs can read them via DSS ENVIRON
+; (#46) after NETUP. Best-effort: any failure is ignored. An empty value writes
+; "NAME=" which DELETES the variable.
+;   NET      = WIFI            network-type marker
+;   NET_IP   = station IP      (AT+CIFSR STAIP)
+;   NET_MAC  = station MAC      (AT+CIFSR STAMAC)
+;   NET_GW   = gateway          (AT+CIPSTA gateway)
+;   NET_MASK = netmask          (AT+CIPSTA netmask)
+;   NET_DHCP = 1/0              (NET.CFG)
+;   NET_BAUD = UART speed       (NET.CFG)
+;   NET_SSID = SSID             (NET.CFG)
+;   NET_NTP  = NTP server       (NET.CFG)
+;   NET_TZ   = timezone         (NET.CFG)
+; ======================================================
+PUBLISH_NET_ENV
+	LD	HL,N_NET
+	LD	IX,LIT_WIFI
+	CALL	SETENV_NAME_VAL
+
+	; IP + MAC from AT+CIFSR (response in WIFI.RS_BUFF).
+	LD	HL,CMD_CIFSR
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	LD	HL,PAT_STAIP
+	LD	DE,NET_IP_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	LD	HL,PAT_STAMAC
+	LD	DE,NET_MAC_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+
+	; Gateway + netmask from AT+CIPSTA_CUR? (legacy AT+CIPSTA? fallback).
+	LD	HL,CMD_CIPSTA_CUR_QUERY
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	JR	Z,.HAVE_STA
+	LD	HL,CMD_CIPSTA_QUERY
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+.HAVE_STA
+	LD	HL,PAT_GATEWAY
+	LD	DE,NET_GW_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	LD	HL,PAT_NETMASK
+	LD	DE,NET_MASK_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+
+	; Runtime values (empty buffer -> variable deleted).
+	LD	HL,N_NET_IP
+	LD	IX,NET_IP_BUF
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_MAC
+	LD	IX,NET_MAC_BUF
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_GW
+	LD	IX,NET_GW_BUF
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_MASK
+	LD	IX,NET_MASK_BUF
+	CALL	SETENV_NAME_VAL
+
+	; NET_IP_SRC = STATIC or DHCP (rtl8019as convention; CFG_DHCP is '0'/'1').
+	LD	A,(NETCFG.CFG_DHCP)
+	CP	'0'
+	JR	Z,.SRC_STATIC
+	LD	IX,V_DHCP
+	JR	.SRC_SET
+.SRC_STATIC
+	LD	IX,V_STATIC
+.SRC_SET
+	LD	HL,N_NET_IP_SRC
+	CALL	SETENV_NAME_VAL
+
+	; Config-derived values.
+	LD	HL,N_NET_DNS1
+	LD	IX,NETCFG.CFG_DNS1
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_DNS2
+	LD	IX,NETCFG.CFG_DNS2
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_BAUD
+	LD	IX,NETCFG.CFG_BAUD
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_SSID
+	LD	IX,NETCFG.CFG_SSID
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_NTP
+	LD	IX,NETCFG.CFG_NTP
+	CALL	SETENV_NAME_VAL
+	LD	HL,N_NET_TZ
+	LD	IX,NETCFG.CFG_TZ
+	CALL	SETENV_NAME_VAL
+	RET
+
+; ------------------------------------------------------
+; SETENV_NAME_VAL: set env var NAME (HL ASCIIZ) = value (IX ASCIIZ).
+; Builds "NAME=VALUE",0 in ENV_BUF, then DSS ENVIRON ENV_SET. Empty value ->
+; "NAME=",0 which deletes the variable. Trashes A,BC,DE,HL,IX.
+; ------------------------------------------------------
+SETENV_NAME_VAL
+	PUSH	HL				; name ptr
+	LD	HL,ENV_BUF
+	POP	DE				; DE = name source
+	CALL	APPEND_STR			; copy name; HL -> after name
+	LD	A,'='
+	LD	(HL),A
+	INC	HL
+	CALL	APPEND_IX_STR			; copy value; HL -> after value
+	LD	(HL),0
+	LD	HL,ENV_BUF
+	LD	B,ENV_SET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	RET
+
+; ------------------------------------------------------
+; EXTRACT_QUOTED_FIELD: find the ASCIIZ keyword at HL inside WIFI.RS_BUFF, then
+; copy the first double-quoted token after it on the same line into DE (ASCIIZ).
+; Handles separators between keyword and value (e.g. STAIP,"x" or gateway:"x").
+; No match -> dest set empty. Out: CF=0 found, CF=1 not. Trashes A,BC,DE,HL.
+; ------------------------------------------------------
+EXTRACT_QUOTED_FIELD
+	LD	(EXT_PAT),HL
+	LD	(EXT_DEST),DE
+	LD	DE,WIFI.RS_BUFF
+.SCAN
+	LD	A,(DE)
+	AND	A
+	JR	Z,.NOTFOUND
+	LD	HL,(EXT_PAT)
+	PUSH	DE
+.CMP
+	LD	A,(HL)
+	AND	A
+	JR	Z,.MATCHED			; whole keyword matched
+	LD	B,A
+	LD	A,(DE)
+	CP	B
+	JR	NZ,.MISMATCH
+	INC	HL
+	INC	DE
+	JR	.CMP
+.MISMATCH
+	POP	DE
+	INC	DE
+	JR	.SCAN
+.MATCHED
+	POP	AF				; drop saved scan position
+.FINDQ
+	LD	A,(DE)
+	AND	A
+	JR	Z,.NOTFOUND
+	CP	13
+	JR	Z,.NOTFOUND
+	CP	10
+	JR	Z,.NOTFOUND
+	CP	'"'
+	JR	Z,.GOTQ
+	INC	DE
+	JR	.FINDQ
+.GOTQ
+	INC	DE				; past opening quote
+	LD	HL,(EXT_DEST)
+.COPY
+	LD	A,(DE)
+	AND	A
+	JR	Z,.COPYEND
+	CP	'"'
+	JR	Z,.COPYEND
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	JR	.COPY
+.COPYEND
+	LD	(HL),0
+	OR	A				; CF=0
+	RET
+.NOTFOUND
+	LD	HL,(EXT_DEST)
+	LD	(HL),0
+	SCF
+	RET
+
+; Variable names match the rtl8019as package (NET_IP_SRC/IP/MASK/GW/MAC/DNS1/
+; DNS2/NTP/TZ) so programs read the same vars on either card. NET=WIFI is this
+; package's network-type marker (rtl8019as uses NET_RTL_HW for its hardware);
+; NET_BAUD and NET_SSID are Wi-Fi-specific additions with no rtl8019as analogue.
+NET_ENV_NAMES
+N_NET		DB "NET",0
+N_NET_IP_SRC	DB "NET_IP_SRC",0
+N_NET_IP	DB "NET_IP",0
+N_NET_MASK	DB "NET_MASK",0
+N_NET_GW	DB "NET_GW",0
+N_NET_MAC	DB "NET_MAC",0
+N_NET_DNS1	DB "NET_DNS1",0
+N_NET_DNS2	DB "NET_DNS2",0
+N_NET_NTP	DB "NET_NTP",0
+N_NET_TZ	DB "NET_TZ",0
+N_NET_BAUD	DB "NET_BAUD",0
+N_NET_SSID	DB "NET_SSID",0
+LIT_WIFI	DB "WIFI",0
+V_STATIC	DB "STATIC",0
+V_DHCP		DB "DHCP",0
+PAT_STAIP	DB "STAIP",0
+PAT_STAMAC	DB "STAMAC",0
+PAT_GATEWAY	DB "gateway",0
+PAT_NETMASK	DB "netmask",0
+
 ; ------------------------------------------------------
 ; Append ASCIIZ from DE to buffer at HL.
 ; ------------------------------------------------------
@@ -681,6 +894,8 @@ MSG_JOINING
 	DB "Connecting to SSID: ",0
 MSG_IP_INFO
 	DB "IP information:",0
+MSG_PUBLISH_ENV
+	DB "Publishing NET_* environment variables.",0
 MSG_DONE
 	DB "NETUP done.",0
 MSG_COMM_ERROR
@@ -760,7 +975,14 @@ CMD_QUOTE_CRLF
 	MODULE MAIN
 
 CMD_BUFF	EQU NETCFG.NETCFG_BSS_END
-NETUP_BSS_END	EQU CMD_BUFF + 256
+ENV_BUF		EQU CMD_BUFF + 256		; "NAME=VALUE",0 scratch for ENV_SET
+NET_IP_BUF	EQU ENV_BUF + 96		; parsed station IP (ASCIIZ)
+NET_MAC_BUF	EQU NET_IP_BUF + 24		; parsed station MAC
+NET_GW_BUF	EQU NET_MAC_BUF + 24		; parsed gateway
+NET_MASK_BUF	EQU NET_GW_BUF + 24		; parsed netmask
+EXT_PAT		EQU NET_MASK_BUF + 24		; EXTRACT_QUOTED_FIELD: keyword ptr
+EXT_DEST	EQU EXT_PAT + 2			; EXTRACT_QUOTED_FIELD: dest ptr
+NETUP_BSS_END	EQU EXT_DEST + 2
 
 	ENDMODULE
 

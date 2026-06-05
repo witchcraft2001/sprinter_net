@@ -47,6 +47,33 @@ Behavior
   speed, NETUP resets ESP back to 115200 and reports a fatal communication
   error instead of leaving the UART link half-switched.
 
+Environment variables
+  After a successful bring-up, NETUP publishes the connection parameters to DSS
+  environment variables (function ENVIRON #46), so other programs can read them
+  for the rest of the session without re-querying the ESP. This mirrors the
+  rtl8019as package. The variables are:
+
+  Names match the rtl8019as package so programs read the same variables on
+  either card. NET=WIFI is this package's network-type marker; NET_BAUD and
+  NET_SSID are Wi-Fi-specific additions.
+
+    NET         Network type marker. Always WIFI for this package.
+    NET_IP_SRC  STATIC or DHCP        (from NET.CFG).
+    NET_IP      Station IP address   (from AT+CIFSR).
+    NET_MASK    Network mask         (from AT+CIPSTA).
+    NET_GW      Gateway address      (from AT+CIPSTA).
+    NET_MAC     Station MAC address  (from AT+CIFSR).
+    NET_DNS1    Primary DNS          (from NET.CFG).
+    NET_DNS2    Secondary DNS        (from NET.CFG).
+    NET_NTP     NTP server           (from NET.CFG).
+    NET_TZ      Timezone             (from NET.CFG).
+    NET_BAUD    UART speed           (from NET.CFG).
+    NET_SSID    Wi-Fi SSID           (from NET.CFG).
+
+  A parameter that is unavailable (e.g. the ESP did not report it, or the
+  NET.CFG field is empty) is written empty, which deletes that variable.
+  Publishing is best-effort and never fails the bring-up.
+
 Exit status
   0  Network bring-up completed.
   2  Sprinter-WiFi hardware was not found.
