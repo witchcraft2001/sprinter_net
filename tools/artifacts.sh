@@ -28,6 +28,7 @@ BUILD_APPS=(
 # Text/documentation files copied to the distribution root.
 DIST_DOC_FILES=(
   README.md
+  docs/HOWTO.TXT
   docs/USAGE.md
   docs/NETCFG.TXT
   docs/NETUP.TXT

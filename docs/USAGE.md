@@ -51,7 +51,7 @@ The package is distributed as a ZIP archive or may be preinstalled with the OS.
 The recommended standard location is:
 
 ```text
-C:\NET
+C:\WIFI
 ```
 
 Keep all package programs, documentation and the runtime `NET.CFG` together in
@@ -63,7 +63,7 @@ the utilities:
 
 ```text
 C:
-CD \NET
+CD \WIFI
 ```
 
 Future tools should use the same install convention and look for shared network
@@ -71,8 +71,8 @@ configuration in the common network kit location.
 
 ## First Run
 
-1. Unpack the ZIP package to `C:\NET`, or use the OS-preinstalled copy.
-2. Add `C:\NET` to `PATH`, or change to `C:\NET` before running the tools.
+1. Unpack the ZIP package to `C:\WIFI`, or use the OS-preinstalled copy.
+2. Add `C:\WIFI` to `PATH`, or change to `C:\WIFI` before running the tools.
 3. Run `NETCFG.EXE /W`.
 4. Enter `SSID` and `PASS`.
 5. Keep `DHCP=1` for normal home/router networks.
@@ -97,7 +97,7 @@ Runtime settings are stored in `NET.CFG`. The recommended location is the
 network kit install directory, normally:
 
 ```text
-C:\NET\NET.CFG
+C:\WIFI\NET.CFG
 ```
 
 Important keys:

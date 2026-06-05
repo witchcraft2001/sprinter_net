@@ -25,7 +25,9 @@ https://zxgit.org/romych/SprinterESP
 
 Current status: project foundation, shared config, Wi-Fi bring-up and initial
 TCP client core are in place. Implementation plan is tracked in `specs.md`.
-User-facing setup notes are in `docs/USAGE.md`.
+
+New here? Start with `docs/HOWTO.TXT` (one-screen quick start: configure,
+connect, test). Full reference is in `docs/USAGE.md`.
 
 ## Package Contents
 
@@ -47,7 +49,7 @@ User-facing setup notes are in `docs/USAGE.md`.
 Use `config/NET.CFG.sample` as the template for runtime network configuration.
 Do not commit real Wi-Fi credentials.
 
-Recommended DSS install directory is `C:\NET`. Add that directory to `PATH`, or
+Recommended DSS install directory is `C:\WIFI`. Add that directory to `PATH`, or
 change to it before running the tools. The runtime `NET.CFG` should live with
 the installed network kit files.
 

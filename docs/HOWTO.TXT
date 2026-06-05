@@ -1,0 +1,67 @@
+Sprinter Wi-Fi Network Kit - Quick Start (HOWTO)
+================================================
+
+What you need
+  - Sprinter DSS with the SprinterESP / Sprinter-Wi-Fi card (ESP8266, ESP-AT).
+  - The name and password of your Wi-Fi network.
+
+1. Install
+  Unpack the package to C:\WIFI (or use the preinstalled copy). Then either add
+  C:\WIFI to PATH, or just switch to it before running the tools:
+
+      C:
+      CD \WIFI
+
+2. Configure Wi-Fi  (do this once)
+  Run the interactive editor and fill in your network:
+
+      NETCFG /W
+
+  Set:
+      SSID = your Wi-Fi name
+      PASS = your Wi-Fi password
+      DHCP = 1            (leave 1 for a normal home router)
+      BAUD = 115200       (use 57600 or 38400 if 115200 loses bytes)
+  Save. Settings are stored in C:\WIFI\NET.CFG.
+
+3. Bring the connection up
+      NETUP
+
+  On success it prints the assigned IP (for example 192.168.1.138) and
+  "NETUP done", and publishes NET_* environment variables (NET=WIFI, NET_IP,
+  NET_GW, ...) for other programs.
+
+4. Check that it works
+      PING 8.8.8.8
+      WGET http://example.com -o INDEX.HTM -y
+
+  A successful PING prints a reply time; WGET saves the page to INDEX.HTM.
+
+One-shot batch
+  CONNECT.BAT runs NETRESET, NETUP and PING 8.8.8.8 in sequence.
+
+Everyday commands (run after NETUP)
+  PING host                 reachability test
+  WGET url [-o file] [-y]   download an http:// file (no HTTPS)
+  FTP  host file [-u user -p pass]   download over FTP
+  TFTP host GET file -o FILE -y      download over TFTP
+  NTP                       set the DSS clock from the network
+  NTP server is taken from NET.CFG (NTP=, TZ=).
+
+If something is stuck
+  Run, in this order:
+      NETRESET      reset the ESP module
+      NETPROBE      low-level AT check
+      NETUP         reconnect
+  WTERM opens a manual ESP-AT terminal for hand-typed commands.
+
+Tips
+  - Run NETUP once per session; the other tools reuse that connection.
+  - If a tool right after NETUP reports "busy", the ESP stack is still coming
+    up - just run it again (PING already retries automatically).
+  - Only http:// is supported, not https://.
+
+More detail
+  README.TXT   - overview, full command list, batch examples.
+  USAGE.TXT    - full reference, config keys, workflow, exit codes.
+  <TOOL>.TXT   - one page per tool (NETUP.TXT, WGET.TXT, FTP.TXT, ...).
