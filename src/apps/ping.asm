@@ -6,6 +6,8 @@
 EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 2000
 PING_TIMEOUT		EQU 8000
+PING_BUSY_RETRIES	EQU 8			; AT+PING retries while the ESP answers "busy"
+PING_BUSY_DELAY		EQU 400			; ms between busy retries
 HOST_SIZE		EQU 96
 CMD_SIZE		EQU 128
 
@@ -62,6 +64,13 @@ START
 	PRINT WCOMMON.LINE_END
 
 	CALL	BUILD_PING_CMD
+	; Right after NETUP's join the ESP IP stack may still be coming up, so it
+	; answers a network command (AT+PING) with "busy p..." (which reads as a
+	; timeout) even though plain AT works. Retry on busy for a short while; a
+	; manual run works only because the human pause already covers this window.
+	LD	A,PING_BUSY_RETRIES
+	LD	(PING_RETRY),A
+.PING_TRY
 	LD	HL,CMD_BUFF
 	LD	DE,WIFI.RS_BUFF
 	LD	BC,PING_TIMEOUT
@@ -69,6 +78,18 @@ START
 	AND	A
 	JR	Z,.PING_OK
 	LD	(PING_STATUS),A
+	CALL	RESP_HAS_BUSY			; CF=1 if ESP replied "busy"
+	JR	NC,.PING_NZ			; not busy -> normal error handling
+	LD	A,(PING_RETRY)
+	OR	A
+	JR	Z,.PING_NZ			; out of retries -> report
+	DEC	A
+	LD	(PING_RETRY),A
+	LD	HL,PING_BUSY_DELAY
+	CALL	UTIL.DELAY
+	JR	.PING_TRY
+.PING_NZ
+	LD	A,(PING_STATUS)
 	CALL	PRINT_PING_RESULT
 	JR	NC,.SUCCESS
 
@@ -397,10 +418,49 @@ CMD_QUOTE_CRLF
 	DB 34,13,10,0
 RESP_PING_PREFIX
 	DB "+PING:",0
+LIT_BUSY
+	DB "busy",0
 PING_DIGITS
 	DB 0
 PING_STATUS
 	DB 0
+PING_RETRY
+	DB 0
+
+; ------------------------------------------------------
+; RESP_HAS_BUSY: scan WIFI.RS_BUFF for the substring "busy" (ESP "busy p..."
+; indicator). Out: CF=1 if found, CF=0 if not. Trashes A,B,DE,HL.
+; ------------------------------------------------------
+RESP_HAS_BUSY
+	LD	HL,WIFI.RS_BUFF
+.SCAN
+	LD	A,(HL)
+	AND	A
+	JR	Z,.NO
+	PUSH	HL
+	LD	DE,LIT_BUSY
+.CMP
+	LD	A,(DE)
+	AND	A
+	JR	Z,.YES				; whole "busy" matched
+	LD	B,A
+	LD	A,(HL)
+	CP	B
+	JR	NZ,.NEXT
+	INC	HL
+	INC	DE
+	JR	.CMP
+.NEXT
+	POP	HL
+	INC	HL
+	JR	.SCAN
+.YES
+	POP	HL
+	SCF
+	RET
+.NO
+	OR	A
+	RET
 
 	ENDMODULE
 
