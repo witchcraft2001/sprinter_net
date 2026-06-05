@@ -6,6 +6,8 @@
 EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 2000
 JOIN_TIMEOUT		EQU 30000
+UART_SWITCH_SETTLE	EQU 300
+UART_VERIFY_RETRIES	EQU 6		; AT attempts after a baud switch before giving up
 
 	DEVICE NOSLOT64K
 
@@ -63,7 +65,10 @@ START
 	CALL	WIFI.UART_FIND
 	JP	C,NO_WIFI
 
-	CALL	INIT_UART_CONFIGURED
+	; ESP reset/default power-up UART is 115200. Start there even when
+	; NET.CFG requests a different BAUD; APPLY_UART_SETTING will command the
+	; ESP to switch first, then switch the local 16550 and verify.
+	CALL	INIT_UART_DEFAULT
 	PRINTLN MSG_UART_READY
 
 	CALL	SEND_AT_STARTUP
@@ -183,6 +188,13 @@ INIT_UART_CONFIGURED
 	CALL	NETCFG.APPLY_UART_BAUD
 	JP	WIFI.UART_INIT
 
+INIT_UART_CONFIGURED_NO_FLOW
+	CALL	NETCFG.APPLY_UART_BAUD
+	CALL	WIFI.UART_INIT
+	LD	E,MCR_RTS
+	LD	HL,REG_MCR
+	JP	WIFI.UART_WRITE
+
 INIT_UART_DEFAULT
 	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
 	JP	WIFI.UART_INIT
@@ -216,74 +228,111 @@ APPLY_UART_SETTING
 	RET
 
 .CUSTOM_BAUD
-	CALL	BUILD_UART_CMD
-	LD	HL,CMD_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	LD	(UART_SET_RESULT),A
-
-	; ESP-AT may switch UART speed before/while sending the final OK.
-	; Always switch local 16550 to the configured speed and verify with AT.
-	CALL	INIT_UART_CONFIGURED
-	LD	HL,CMD_AT
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
+	; Enable FULL hardware flow control (flow=3) when switching baud. This is
+	; what gives the host's 16550 auto-flow a working CTS (so AT commands go
+	; out) AND lets the ESP pause its TX under load — essential at higher bauds
+	; (e.g. 230400) where the Z80 otherwise can't drain the RX FIFO and overruns.
+	; The earlier flow=3 failures were the BUILD_UART_CMD bug (malformed command)
+	; + a single too-soon verify, both fixed; the post-switch verify now retries.
+	; Speed-only (flow=0) remains a fallback for a card that genuinely can't do
+	; RTS/CTS, but that mode risks overruns at high baud.
+	CALL	TRY_UART_WITH_FLOW
 	AND	A
-	RET	Z
+	JR	Z,.FLOW_OK
+
+	PRINTLN	MSG_UART_RETRY_NOFLOW
+	CALL	RECOVER_UART_DEFAULT
+	CALL	TRY_UART_NO_FLOW
+	AND	A
+	JR	Z,.SPEED_ONLY_OK
 
 	LD	(UART_VERIFY_RESULT),A
-	CALL	INIT_UART_DEFAULT
-	CALL	WIFI.ESP_RESET
-	CALL	INIT_UART_DEFAULT
-	CALL	IS_DEFAULT_BAUD
-	JR	NC,.WARN_DEFAULT_BAUD
-
-	PRINTLN	MSG_UART_NO_FLOW
-	CALL	BUILD_UART_CMD_NO_FLOW
-	LD	HL,CMD_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	LD	(UART_SET_RESULT),A
-	CALL	INIT_UART_CONFIGURED
-	LD	HL,CMD_AT
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	JR	Z,.WARN_NO_FLOW
-
-	LD	(UART_VERIFY_RESULT),A
-	CALL	INIT_UART_DEFAULT
-	CALL	WIFI.ESP_RESET
-	CALL	INIT_UART_DEFAULT
+	CALL	RECOVER_UART_DEFAULT
 	LD	A,(UART_SET_RESULT)
 	AND	A
 	JR	NZ,.HAVE_ERROR
 	LD	A,(UART_VERIFY_RESULT)
 .HAVE_ERROR
-	PUSH	AF
-	CALL	IS_DEFAULT_BAUD
-	JR	NC,.WARN
-	POP	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
 	LD	B,3
 	JP	WCOMMON.EXIT
-.WARN_DEFAULT_BAUD
-	LD	A,(UART_SET_RESULT)
+.FLOW_OK
+	PRINTLN	MSG_UART_FLOW_OK
+	RET
+.SPEED_ONLY_OK
+	PRINTLN	MSG_UART_SPEED_ONLY
+	RET
+
+TRY_UART_WITH_FLOW
+	XOR	A
+	LD	(UART_NO_FLOW_VERIFY),A
+	CALL	BUILD_UART_CMD
+	JR	TRY_UART_COMMAND
+
+TRY_UART_NO_FLOW
+	LD	A,1
+	LD	(UART_NO_FLOW_VERIFY),A
+	CALL	BUILD_UART_CMD_NO_FLOW
+
+TRY_UART_COMMAND
+	LD	HL,CMD_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	LD	(UART_SET_RESULT),A
+	; ERROR/FAIL means ESP did not accept the command and did not switch baud.
+	; Do not switch the local 16550 in that case; try the next command form.
+	CP	RES_ERROR
+	JR	Z,.NO_SWITCH
+	CP	RES_FAIL
+	JR	Z,.NO_SWITCH
+
+	; OK or timeout can both mean ESP accepted the command and changed baud
+	; before the final line was received. Switch local UART and verify with AT.
+	LD	A,(UART_NO_FLOW_VERIFY)
 	AND	A
-	JR	NZ,.WARN_PUSH
+	JR	NZ,.INIT_NO_FLOW
+	CALL	INIT_UART_CONFIGURED
+	JR	.VERIFY
+.INIT_NO_FLOW
+	CALL	INIT_UART_CONFIGURED_NO_FLOW
+.VERIFY
+	; The ESP sends OK at the OLD baud, then reconfigures its UART to the new
+	; speed; that reconfigure is not instantaneous. A single AT 300 ms later
+	; can hit the ESP mid-switch and fail (in a terminal the human pause hides
+	; this). Retry the AT a few times, settling between attempts, before giving
+	; up and recovering to the default baud.
+	LD	A,UART_VERIFY_RETRIES
+	LD	(UART_VERIFY_LEFT),A
+.VLOOP
+	LD	HL,UART_SWITCH_SETTLE
+	CALL	UTIL.DELAY
+	CALL	WIFI.UART_EMPTY_RS
+	LD	HL,CMD_AT
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	RET	Z
+	LD	(UART_VERIFY_RESULT),A
+	LD	A,(UART_VERIFY_LEFT)
+	DEC	A
+	LD	(UART_VERIFY_LEFT),A
+	JR	NZ,.VLOOP
+	CALL	RECOVER_UART_DEFAULT
 	LD	A,(UART_VERIFY_RESULT)
-	JR	.WARN_PUSH
-.WARN_NO_FLOW
-	LD	A,(UART_VERIFY_RESULT)
-.WARN_PUSH
-	PUSH	AF
-.WARN
-	POP	AF
-	ADD	A,'0'
-	LD	(MSG_WARN_NO),A
-	PRINTLN	MSG_OPTIONAL_WARN
+	RET
+.NO_SWITCH
+	LD	(UART_VERIFY_RESULT),A
+	RET
+
+RECOVER_UART_DEFAULT
+	CALL	INIT_UART_DEFAULT
+	CALL	WIFI.ESP_RESET
+	CALL	INIT_UART_DEFAULT
+	LD	HL,CMD_AT
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
 	RET
 
 ; CF=0 when NET.CFG BAUD is 115200.
@@ -430,9 +479,15 @@ BUILD_UART_CMD
 	LD	HL,CMD_BUFF
 	LD	DE,CMD_UART_PREFIX
 	CALL	APPEND_STR
+	; GET_UART_BAUD_TEXT returns HL = baud text and CLOBBERS HL (our CMD_BUFF
+	; write position). Save the write position across the call, then load the
+	; baud text into IX; otherwise the baud + suffix get written to the wrong
+	; address and the command sent is just "AT+UART_CUR=" -> ESP ERROR.
+	PUSH	HL
 	CALL	NETCFG.GET_UART_BAUD_TEXT
 	PUSH	HL
 	POP	IX
+	POP	HL
 	CALL	APPEND_IX_STR
 	LD	DE,CMD_UART_SUFFIX
 	JP	APPEND_STR
@@ -441,9 +496,11 @@ BUILD_UART_CMD_NO_FLOW
 	LD	HL,CMD_BUFF
 	LD	DE,CMD_UART_PREFIX
 	CALL	APPEND_STR
+	PUSH	HL
 	CALL	NETCFG.GET_UART_BAUD_TEXT
 	PUSH	HL
 	POP	IX
+	POP	HL
 	CALL	APPEND_IX_STR
 	LD	DE,CMD_UART_SUFFIX_NO_FLOW
 	JP	APPEND_STR
@@ -602,8 +659,12 @@ MSG_UART_CONFIG
 	DB "ESP UART config:",0
 MSG_UART_DEFAULT
 	DB "Using default ESP UART speed.",0
-MSG_UART_NO_FLOW
-	DB "RTS/CTS setup failed, trying speed only.",0
+MSG_UART_RETRY_NOFLOW
+	DB "RTS/CTS setup failed, retrying speed-only.",0
+MSG_UART_FLOW_OK
+	DB "UART speed set with RTS/CTS flow control.",0
+MSG_UART_SPEED_ONLY
+	DB "UART speed set WITHOUT flow control (overruns possible at high baud).",0
 MSG_STATION
 	DB "Setting station mode.",0
 MSG_NO_SLEEP
@@ -634,6 +695,10 @@ MSG_WARN_NO
 UART_SET_RESULT
 	DB 0
 UART_VERIFY_RESULT
+	DB 0
+UART_NO_FLOW_VERIFY
+	DB 0
+UART_VERIFY_LEFT
 	DB 0
 
 CMD_AT
