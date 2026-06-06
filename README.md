@@ -46,8 +46,9 @@ connect, test). Full reference is in `docs/USAGE.md`.
 
 ## Configuration
 
-Use `config/NET.CFG.sample` as the template for runtime network configuration.
-Do not commit real Wi-Fi credentials.
+Use `config/NETSMPL.CFG` as the template for runtime network configuration
+(copy it to `NET.CFG`, or just run `NETCFG.EXE /W`). Do not commit real Wi-Fi
+credentials.
 
 Recommended DSS install directory is `C:\WIFI`. Add that directory to `PATH`, or
 change to it before running the tools. The runtime `NET.CFG` should live with
@@ -64,19 +65,19 @@ TCPTEST.EXE host port path
                  test an HTTP path on a custom host and port
 UDPTEST.EXE host port [message [local_port]]
                  send one UDP datagram and wait for one reply
-TFTP.EXE host[:port] GET remote [-o local] [-y]
-                 download one file over TFTP
+TFTP.EXE host[:port] GET remote [-o local] [-y|-f]
+                 download one file over TFTP (-y/-f overwrite; no resume)
 TFTP.EXE host[:port] PUT local [-o remote]
                  upload one file over TFTP
-FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]
-                 download one file over passive FTP
+FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y|-f] [-r]
+                 download one file over passive FTP (-y/-f overwrite, -r resume)
 FTP.EXE host[:port] PUT local [-o remote] [-u user] [-p pass]
                  upload one file over passive FTP
 FTP.EXE host[:port] [path] -l|-n [-u user] [-p pass]
                  login, enter passive mode and print a LIST/NLST listing
 PING.EXE host    test host reachability using ESP-AT AT+PING
-WGET.EXE url [-o output] [-y]
-                 download an HTTP/1.0 URL to a local file
+WGET.EXE url [-o output] [-y|-f] [-r]
+                 download an http:// URL to a local file (-y/-f overwrite, -r resume)
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 ```
 

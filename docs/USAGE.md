@@ -12,15 +12,16 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   HTTP response. Use it after `NETUP`.
 - `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
   waits for one reply. Use it before testing TFTP.
-- `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y]` downloads one
-  file over TFTP. Existing output files require confirmation unless `-y` is
-  used.
+- `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y|-f]` downloads one
+  file over TFTP. Existing output files require confirmation unless `-y` (or
+  its alias `-f`) is used. TFTP has no resume.
 - `TFTP.EXE host[:port] PUT local-file [-o remote-name]` uploads one file over
   TFTP.
-- `FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]` downloads one
-  file over passive FTP using `RETR`. Without `-o`, the local name is the
-  basename of the remote file. If the local file exists, FTP asks before
-  overwriting; `-y` overwrites without prompting.
+- `FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y|-f] [-r]`
+  downloads one file over passive FTP using `RETR`. Without `-o`, the local name
+  is the basename of the remote file. If the local file exists, FTP asks
+  `[R]esume / [O]verwrite / [C]ancel`; `-y` (or `-f`) overwrites without
+  prompting and `-r` resumes (appends, FTP `REST`) without prompting.
 - `FTP.EXE host[:port] PUT local-file [-o remote-name] [-u user] [-p pass]`
   uploads one file over passive FTP using `STOR`. Without `-o`, the remote name
   is the basename of the local file.
@@ -28,9 +29,11 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   ESP-AT multi-connection mode, enters passive mode and prints a `LIST` or
   `NLST` directory listing.
 - `PING.EXE host` checks host reachability using ESP-AT `AT+PING`.
-- `WGET.EXE url [-o output] [-y]` downloads an HTTP/1.0 resource to a local DSS
-  file. Without `-o`, the output name is derived from the URL path. Existing
-  output files require confirmation unless `-y` is used.
+- `WGET.EXE url [-o output] [-y|-f] [-r]` downloads an http:// resource to a
+  local DSS file. Without `-o`, the output name is derived from the URL path. If
+  the file exists, WGET asks `[R]esume / [O]verwrite / [C]ancel`; `-y` (or `-f`)
+  overwrites without prompting and `-r` resumes (appends, HTTP Range) without
+  prompting.
 - `NTP.EXE` sets DSS time using ESP-AT SNTP and the `TZ`/`NTP` values from
   `NET.CFG`.
 - `NETPROBE.EXE` checks low-level UART and ESP-AT firmware response. It is a

@@ -362,7 +362,7 @@ REST_REJECTED
 
 ; ------------------------------------------------------
 ; Parse:
-;   FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y]
+;   FTP.EXE host[:port] file [-o output] [-u user] [-p pass] [-y|-f overwrite] [-r resume]
 ;   FTP.EXE host[:port] PUT local [-o remote] [-u user] [-p pass]
 ;   FTP.EXE host[:port] [path] -l [-u user] [-p pass]
 ;   FTP.EXE host[:port] [path] -n [-u user] [-p pass]
@@ -468,6 +468,12 @@ PARSE_CMD_LINE
 		JP	NC,.YES
 		PUSH	HL
 		PUSH	BC
+		CALL	IS_ARG_RESUME
+		POP	BC
+		POP	HL
+		JP	NC,.RESUME_ARG
+		PUSH	HL
+		PUSH	BC
 		CALL	IS_ARG_HELP
 		POP	BC
 		POP	HL
@@ -475,10 +481,18 @@ PARSE_CMD_LINE
 		LD	A,(PATH_BUFF)
 		AND	A
 		JP	NZ,.ERR
+		; COPY_ASCIIZ_LIMIT clobbers HL/BC, which here still hold the cmdline
+		; cursor and remaining-length. Without preserving them, the NEXT token
+		; after this positional (e.g. a trailing -y/-f/-r flag) is read from
+		; garbage and silently lost.
+		PUSH	HL
+		PUSH	BC
 		LD	HL,ARG_BUFF
 		LD	DE,PATH_BUFF
 		LD	C,PATH_SIZE-1
 		CALL	COPY_ASCIIZ_LIMIT
+		POP	BC
+		POP	HL
 		JP	NC,.NEXT_ARG
 		JP	.ERR
 .LIST
@@ -539,6 +553,10 @@ PARSE_CMD_LINE
 .YES
 		LD	A,1
 		LD	(FORCE_OVERWRITE),A
+		JP	.NEXT_ARG
+.RESUME_ARG
+		LD	A,1
+		LD	(FORCE_RESUME),A
 		JP	.NEXT_ARG
 .DONE
 		LD	A,(HOST_BUFF)
@@ -644,12 +662,31 @@ IS_ARG_OUTPUT
 		LD	DE,ARG_BUFF
 		JP	UTIL.STRCMP_CI
 
+; Overwrite flag: -y / /y, plus -f / /f as a clearer "force" alias.
 IS_ARG_YES
 		LD	HL,SWITCH_YES_DASH
 		LD	DE,ARG_BUFF
 		CALL	UTIL.STRCMP_CI
 		RET	NC
 		LD	HL,SWITCH_YES_SLASH
+		LD	DE,ARG_BUFF
+		CALL	UTIL.STRCMP_CI
+		RET	NC
+		LD	HL,SWITCH_FORCE_DASH
+		LD	DE,ARG_BUFF
+		CALL	UTIL.STRCMP_CI
+		RET	NC
+		LD	HL,SWITCH_FORCE_SLASH
+		LD	DE,ARG_BUFF
+		JP	UTIL.STRCMP_CI
+
+; Resume flag: -r / /r (force append to an existing file, no prompt).
+IS_ARG_RESUME
+		LD	HL,SWITCH_RESUME_DASH
+		LD	DE,ARG_BUFF
+		CALL	UTIL.STRCMP_CI
+		RET	NC
+		LD	HL,SWITCH_RESUME_SLASH
 		LD	DE,ARG_BUFF
 		JP	UTIL.STRCMP_CI
 
@@ -2296,7 +2333,10 @@ OPEN_OUTPUT_FILE
 		RST	DSS
 		LD	A,(FORCE_OVERWRITE)
 		AND	A
-		JR	NZ,.DELETE			; -y forces overwrite
+		JR	NZ,.DELETE			; -y/-f forces overwrite
+		LD	A,(FORCE_RESUME)
+		AND	A
+		JR	NZ,.RESUME			; -r forces resume (append)
 		CALL	CONFIRM_EXISTING		; A = 'R' / 'O' / 'C'
 		CP	'R'
 		JR	Z,.RESUME
@@ -2540,8 +2580,8 @@ MSG_START
 		PACKAGE_VERSION_SUFFIX
 		DB 0
 MSG_USAGE
-		DB "Usage: FTP.EXE host[:port] file|PUT local [-o name] [-u user] [-p pass] [-y]"
-		DB " or FTP.EXE host[:port] [path] -l|-n",0
+		DB "Usage: FTP.EXE host[:port] file|PUT local [-o name] [-u user] [-p pass] [-y|-f] [-r]"
+		DB 13,10,"  -y,-f overwrite   -r resume (append)   -l|-n list",0
 MSG_WIFI_FOUND
 		DB "Sprinter-WiFi found in ISA#"
 MSG_SLOT_NO
@@ -2679,6 +2719,14 @@ SWITCH_YES_DASH
 		DB "-y",0
 SWITCH_YES_SLASH
 		DB "/y",0
+SWITCH_FORCE_DASH
+		DB "-f",0
+SWITCH_FORCE_SLASH
+		DB "/f",0
+SWITCH_RESUME_DASH
+		DB "-r",0
+SWITCH_RESUME_SLASH
+		DB "/r",0
 SWITCH_HELP_Q_SLASH
 		DB "/?",0
 SWITCH_HELP_Q_DASH
@@ -2715,6 +2763,8 @@ FINAL_REPLY_SEEN
 OUT_FH
 		DB NO_HANDLE
 FORCE_OVERWRITE
+		DB 0
+FORCE_RESUME
 		DB 0
 OUTPUT_ABORTED
 		DB 0

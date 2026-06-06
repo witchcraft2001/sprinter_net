@@ -57,10 +57,9 @@ for rel_path in "${DIST_CONFIG_FILES[@]}"; do
   base="$(basename "$rel_path")"
   upper_base="$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')"
 
-  case "$upper_base" in
-    NET.CFG.SAMPLE) image_name="NETCFG.TXT" ;;
-    *) image_name="$upper_base" ;;
-  esac
+  # config/NETSMPL.CFG is already an 8.3 name; just uppercase it. (The former
+  # NET.CFG.sample needed remapping AND collided with docs/NETCFG.TXT.)
+  image_name="$upper_base"
 
   copy_to_image_root "$src" "$image_name"
 done

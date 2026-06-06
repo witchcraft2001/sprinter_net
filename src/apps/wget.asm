@@ -268,7 +268,7 @@ CANCEL_EXIT
 
 ; ------------------------------------------------------
 ; Parse command line:
-;   WGET.EXE url [-o output] [-y]
+;   WGET.EXE url [-o output] [-y|-f overwrite] [-r resume]
 ;   WGET.EXE url FILE              ; legacy compatible alias for -o FILE
 ; ------------------------------------------------------
 PARSE_CMD_LINE
@@ -278,11 +278,11 @@ PARSE_CMD_LINE
 	LD	HL,CMDLINE_ADDR
 	LD	A,(HL)
 	AND	A
-	JR	Z,.ERR
+	JP	Z,.ERR
 	LD	B,A
 	INC	HL
 	CALL	SKIP_SPACES
-	JR	C,.ERR
+	JP	C,.ERR
 	LD	DE,URL_BUFF
 	LD	C,URL_SIZE-1
 	CALL	COPY_ARG
@@ -315,6 +315,12 @@ PARSE_CMD_LINE
 	JR	NC,.YES
 	PUSH	HL
 	PUSH	BC
+	CALL	IS_OPT_RESUME
+	POP	BC
+	POP	HL
+	JR	NC,.RESUME_OPT
+	PUSH	HL
+	PUSH	BC
 	CALL	IS_HELP_TOKEN_TMP
 	POP	BC
 	POP	HL
@@ -322,10 +328,17 @@ PARSE_CMD_LINE
 	LD	A,(OUT_FILE)
 	AND	A
 	JR	NZ,.ERR
+	; COPY_ASCIIZ_LIMIT clobbers HL/BC, which still hold the cmdline cursor and
+	; remaining-length. Preserve them so a flag after a positional output name
+	; (e.g. `WGET url OUT -y`) is not read from garbage and lost.
+	PUSH	HL
+	PUSH	BC
 	LD	HL,HOST_BUFF
 	LD	DE,OUT_FILE
 	LD	C,FILE_SIZE-1
 	CALL	COPY_ASCIIZ_LIMIT
+	POP	BC
+	POP	HL
 	JR	NC,.NEXT_OPT
 	JR	.ERR
 .OUTPUT
@@ -339,6 +352,10 @@ PARSE_CMD_LINE
 .YES
 	LD	A,1
 	LD	(FORCE_OVERWRITE),A
+	JR	.NEXT_OPT
+.RESUME_OPT
+	LD	A,1
+	LD	(FORCE_RESUME),A
 	JR	.NEXT_OPT
 .HELP
 	LD	A,1
@@ -379,12 +396,31 @@ IS_OPT_OUTPUT
 	LD	DE,HOST_BUFF
 	JP	UTIL.STRCMP_CI
 
+; Overwrite flag: -y / /y, plus -f / /f as a clearer "force" alias.
 IS_OPT_YES
 	LD	HL,SWITCH_YES_DASH
 	LD	DE,HOST_BUFF
 	CALL	UTIL.STRCMP_CI
 	RET	NC
 	LD	HL,SWITCH_YES_SLASH
+	LD	DE,HOST_BUFF
+	CALL	UTIL.STRCMP_CI
+	RET	NC
+	LD	HL,SWITCH_FORCE_DASH
+	LD	DE,HOST_BUFF
+	CALL	UTIL.STRCMP_CI
+	RET	NC
+	LD	HL,SWITCH_FORCE_SLASH
+	LD	DE,HOST_BUFF
+	JP	UTIL.STRCMP_CI
+
+; Resume flag: -r / /r (force append to an existing file, no prompt).
+IS_OPT_RESUME
+	LD	HL,SWITCH_RESUME_DASH
+	LD	DE,HOST_BUFF
+	CALL	UTIL.STRCMP_CI
+	RET	NC
+	LD	HL,SWITCH_RESUME_SLASH
 	LD	DE,HOST_BUFF
 	JP	UTIL.STRCMP_CI
 
@@ -676,7 +712,10 @@ OPEN_OUTPUT_FILE
 	RST	DSS				; close the existence-test handle
 	LD	A,(FORCE_OVERWRITE)
 	AND	A
-	JR	NZ,.DELETE			; -y forces overwrite
+	JR	NZ,.DELETE			; -y/-f forces overwrite
+	LD	A,(FORCE_RESUME)
+	AND	A
+	JR	NZ,.RESUME			; -r forces resume (append)
 	CALL	CONFIRM_EXISTING		; A = 'R' resume / 'O' overwrite / 'C' cancel
 	CP	'R'
 	JR	Z,.RESUME
@@ -2452,7 +2491,8 @@ MSG_START
 	PACKAGE_VERSION_SUFFIX
 	DB 0
 MSG_USAGE
-	DB "Usage: WGET.EXE url [-o output] [-y] or WGET.EXE /?",0
+	DB "Usage: WGET.EXE url [-o output] [-y|-f] [-r]",13,10
+	DB "  -y,-f overwrite existing file   -r resume (append)   /? help",0
 MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
@@ -2579,6 +2619,14 @@ SWITCH_YES_DASH
 	DB "-y",0
 SWITCH_YES_SLASH
 	DB "/y",0
+SWITCH_FORCE_DASH
+	DB "-f",0
+SWITCH_FORCE_SLASH
+	DB "/f",0
+SWITCH_RESUME_DASH
+	DB "-r",0
+SWITCH_RESUME_SLASH
+	DB "/r",0
 SWITCH_HELP_Q_SLASH
 	DB "/?",0
 SWITCH_HELP_Q_DASH
@@ -2613,6 +2661,7 @@ ARG_LEN		DB 0
 OUT_FH		DB NO_HANDLE
 HELP_REQUESTED	DB 0
 FORCE_OVERWRITE	DB 0
+FORCE_RESUME	DB 0
 OUTPUT_ABORTED	DB 0
 GOT_RESPONSE	DB 0
 HEADER_DONE	DB 0

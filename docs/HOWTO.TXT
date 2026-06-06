@@ -42,11 +42,17 @@ One-shot batch
 
 Everyday commands (run after NETUP)
   PING host                 reachability test
-  WGET url [-o file] [-y]   download an http:// file (no HTTPS)
+  WGET url [-o file]        download an http:// file (no HTTPS)
   FTP  host file [-u user -p pass]   download over FTP
-  TFTP host GET file -o FILE -y      download over TFTP
+  TFTP host GET file -o FILE          download over TFTP
   NTP                       set the DSS clock from the network
   NTP server is taken from NET.CFG (NTP=, TZ=).
+
+  Overwrite/resume of an existing local file (WGET, FTP, TFTP):
+    if the file exists, the tool asks [R]esume / [O]verwrite / [C]ancel.
+    -y or -f   overwrite without asking
+    -r         resume/append without asking (WGET, FTP; TFTP has no resume)
+  Handy in batch files, e.g.:  WGET url -o FILE.BIN -y
 
 If something is stuck
   Run, in this order:

@@ -252,7 +252,7 @@ CANCEL_EXIT
 
 ; ------------------------------------------------------
 ; Parse command line:
-;   TFTP.EXE host[:port] GET remote-file [-o local-name] [-y]
+;   TFTP.EXE host[:port] GET remote-file [-o local-name] [-y|-f overwrite]
 ;   TFTP.EXE host[:port] PUT local-file  [-o remote-name]
 ; ------------------------------------------------------
 PARSE_CMD_LINE
@@ -366,6 +366,11 @@ PARSE_CMD_LINE
 	LD	C,URL_SIZE-1
 	CALL	COPY_ARG
 	JR	C,.ERR
+	; COPY_ASCIIZ_LIMIT below clobbers HL/BC, which still hold the cmdline
+	; cursor; preserve them so a flag after `-o <name>` (e.g. trailing -y/-f)
+	; is not read from garbage and lost.
+	PUSH	HL
+	PUSH	BC
 	LD	A,(TRANSFER_MODE)
 	AND	A
 	JR	NZ,.PUT_REMOTE
@@ -373,6 +378,8 @@ PARSE_CMD_LINE
 	LD	DE,OUT_FILE
 	LD	C,LOCAL_FILE_SIZE-1
 	CALL	COPY_ASCIIZ_LIMIT
+	POP	BC
+	POP	HL
 	JR	NC,.OPTIONS
 	JR	.ERR
 .PUT_REMOTE
@@ -380,6 +387,8 @@ PARSE_CMD_LINE
 	LD	DE,REMOTE_FILE
 	LD	C,REMOTE_FILE_SIZE-1
 	CALL	COPY_ASCIIZ_LIMIT
+	POP	BC
+	POP	HL
 	JR	NC,.OPTIONS
 	JR	.ERR
 .YES
@@ -447,12 +456,22 @@ IS_ARG2_OUTPUT
 	LD	DE,ARG2_BUFF
 	JP	UTIL.STRCMP_CI
 
+; Overwrite flag: -y / /y, plus -f / /f as a clearer "force" alias.
+; (TFTP is a lockstep protocol with no resume, so there is no -r here.)
 IS_ARG2_YES
 	LD	HL,SWITCH_YES_DASH
 	LD	DE,ARG2_BUFF
 	CALL	UTIL.STRCMP_CI
 	RET	NC
 	LD	HL,SWITCH_YES_SLASH
+	LD	DE,ARG2_BUFF
+	CALL	UTIL.STRCMP_CI
+	RET	NC
+	LD	HL,SWITCH_FORCE_DASH
+	LD	DE,ARG2_BUFF
+	CALL	UTIL.STRCMP_CI
+	RET	NC
+	LD	HL,SWITCH_FORCE_SLASH
 	LD	DE,ARG2_BUFF
 	JP	UTIL.STRCMP_CI
 
@@ -1437,7 +1456,8 @@ MSG_START
 	PACKAGE_VERSION_SUFFIX
 	DB 0
 MSG_USAGE
-	DB "Usage: TFTP.EXE host GET remote [-o local] [-y] or TFTP.EXE host PUT local [-o remote]",0
+	DB "Usage: TFTP.EXE host GET remote [-o local] [-y|-f] or TFTP.EXE host PUT local [-o remote]",13,10
+	DB "  -y or -f  overwrite existing local file without asking (no resume in TFTP)",0
 MSG_REMOTE
 	DB "Remote file: ",0
 MSG_OUTPUT
@@ -1522,6 +1542,10 @@ SWITCH_YES_DASH
 	DB "-y",0
 SWITCH_YES_SLASH
 	DB "/y",0
+SWITCH_FORCE_DASH
+	DB "-f",0
+SWITCH_FORCE_SLASH
+	DB "/f",0
 SWITCH_HELP_Q_SLASH
 	DB "/?",0
 SWITCH_HELP_Q_DASH

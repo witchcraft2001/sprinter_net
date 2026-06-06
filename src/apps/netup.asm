@@ -609,6 +609,14 @@ PUBLISH_NET_ENV
 	LD	IX,LIT_WIFI
 	CALL	SETENV_NAME_VAL
 
+	; NET_ESP_HW = "<slot>/#<base>" - ISA slot + UART I/O base, same "S/#HHH"
+	; form as the rtl8019as NET_RTL_HW variable. Slot is the raw ISA_SLOT (0/1)
+	; used by ISA_OPEN; base is the card's COM3 I/O port.
+	CALL	BUILD_ESP_HW
+	LD	HL,N_NET_ESP_HW
+	LD	IX,ESP_HW_BUF
+	CALL	SETENV_NAME_VAL
+
 	; IP + MAC from AT+CIFSR (response in WIFI.RS_BUFF).
 	LD	HL,CMD_CIFSR
 	LD	BC,DEFAULT_TIMEOUT
@@ -773,12 +781,36 @@ EXTRACT_QUOTED_FIELD
 	SCF
 	RET
 
+; ------------------------------------------------------
+; BUILD_ESP_HW: format "<slot>/#<base>" into ESP_HW_BUF (e.g. "1/#3E8").
+; Slot is the raw ISA_SLOT (0/1); base is the fixed COM3 UART I/O port.
+; ------------------------------------------------------
+BUILD_ESP_HW
+	LD	A,(ISA.ISA_SLOT)
+	ADD	A,'0'
+	LD	(ESP_HW_BUF),A
+	LD	HL,ESP_HW_BASE
+	LD	DE,ESP_HW_BUF+1
+.LP
+	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,.LP
+	RET
+
+	ASSERT PORT_UART == 0x03E8		; keep ESP_HW_BASE digits in sync
+ESP_HW_BASE	DB "/#3E8",0
+
 ; Variable names match the rtl8019as package (NET_IP_SRC/IP/MASK/GW/MAC/DNS1/
 ; DNS2/NTP/TZ) so programs read the same vars on either card. NET=WIFI is this
-; package's network-type marker (rtl8019as uses NET_RTL_HW for its hardware);
-; NET_BAUD and NET_SSID are Wi-Fi-specific additions with no rtl8019as analogue.
+; package's network-type marker, and NET_ESP_HW is the slot/I/O-base in the
+; same "S/#HHH" form as rtl8019as NET_RTL_HW. NET_BAUD and NET_SSID are
+; Wi-Fi-specific additions with no rtl8019as analogue.
 NET_ENV_NAMES
 N_NET		DB "NET",0
+N_NET_ESP_HW	DB "NET_ESP_HW",0
 N_NET_IP_SRC	DB "NET_IP_SRC",0
 N_NET_IP	DB "NET_IP",0
 N_NET_MASK	DB "NET_MASK",0
@@ -982,7 +1014,8 @@ NET_GW_BUF	EQU NET_MAC_BUF + 24		; parsed gateway
 NET_MASK_BUF	EQU NET_GW_BUF + 24		; parsed netmask
 EXT_PAT		EQU NET_MASK_BUF + 24		; EXTRACT_QUOTED_FIELD: keyword ptr
 EXT_DEST	EQU EXT_PAT + 2			; EXTRACT_QUOTED_FIELD: dest ptr
-NETUP_BSS_END	EQU EXT_DEST + 2
+ESP_HW_BUF	EQU EXT_DEST + 2		; "<slot>/#<base>" (NET_ESP_HW)
+NETUP_BSS_END	EQU ESP_HW_BUF + 16
 
 	ENDMODULE
 

@@ -58,6 +58,9 @@ Environment variables
   NET_SSID are Wi-Fi-specific additions.
 
     NET         Network type marker. Always WIFI for this package.
+    NET_ESP_HW  ESP card location: ISA slot + UART I/O base, "S/#HHH" form
+                (e.g. 1/#3E8), same format as the rtl8019as NET_RTL_HW
+                variable (ESP = the card; WIFI is only the link type).
     NET_IP_SRC  STATIC or DHCP        (from NET.CFG).
     NET_IP      Station IP address   (from AT+CIFSR).
     NET_MASK    Network mask         (from AT+CIPSTA).

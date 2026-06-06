@@ -47,7 +47,7 @@ DIST_DOC_FILES=(
 
 # Configuration examples copied to the distribution root.
 DIST_CONFIG_FILES=(
-  config/NET.CFG.sample
+  config/NETSMPL.CFG
 )
 
 # Extra files copied to the distribution root. Keep this for small required

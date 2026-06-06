@@ -53,10 +53,8 @@ for rel_path in "${DIST_DOC_FILES[@]}"; do
 done
 
 for rel_path in "${DIST_CONFIG_FILES[@]}"; do
-  case "$rel_path" in
-    config/NET.CFG.sample) copy_optional_file "$rel_path" "NET.CFG.sample" ;;
-    *) copy_optional_file "$rel_path" ;;
-  esac
+  # config/NETSMPL.CFG already has an 8.3-valid basename, so copy it verbatim.
+  copy_optional_file "$rel_path"
 done
 
 for rel_path in "${DIST_EXTRA_FILES[@]}"; do
