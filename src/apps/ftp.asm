@@ -2588,8 +2588,13 @@ MSG_START
 		PACKAGE_VERSION_SUFFIX
 		DB 0
 MSG_USAGE
-		DB "Usage: FTP.EXE host[:port] file|PUT local [-o name] [-u user] [-p pass] [-y|-f] [-r]"
-		DB 13,10,"  -y,-f overwrite   -r resume (append)   -l|-n list",0
+		DB "Usage: FTP host[:port] [file | PUT local | path] [opts]",13,10
+		DB "  -o name   out (get) / remote (put) name",13,10
+		DB "  -u user -p pass  login",13,10
+		DB "  -y, -f    overwrite",13,10
+		DB "  -r        resume (append)",13,10
+		DB "  -l, -n    list (LIST / NLST)",13,10
+		DB "  /?        help",0
 MSG_WIFI_FOUND
 		DB "Sprinter-WiFi found in ISA#"
 MSG_SLOT_NO

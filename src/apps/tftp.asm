@@ -1474,8 +1474,11 @@ MSG_START
 	PACKAGE_VERSION_SUFFIX
 	DB 0
 MSG_USAGE
-	DB "Usage: TFTP.EXE host GET remote [-o local] [-y|-f] or TFTP.EXE host PUT local [-o remote]",13,10
-	DB "  -y or -f  overwrite existing local file without asking (no resume in TFTP)",0
+	DB "Usage: TFTP.EXE host[:port] GET remote [-o local] [-y|-f]",13,10
+	DB "       TFTP.EXE host[:port] PUT local [-o remote]",13,10
+	DB "  -o name   local name (get) / remote name (put)",13,10
+	DB "  -y, -f    overwrite an existing local file (no resume in TFTP)",13,10
+	DB "  /?        show this help",0
 MSG_REMOTE
 	DB "Remote file: ",0
 MSG_OUTPUT

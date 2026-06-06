@@ -74,7 +74,7 @@ BAUD_RATE 		EQU 115200                    			; Default ESP8266 UART speed
 XIN_FREQ 		EQU 14745600                  			; TL16C550 oscillator frequency
 DEFAULT_DIVISOR	EQU XIN_FREQ / (BAUD_RATE * 16)  		; 8 for 115200
 
-RS_BUFF_SIZE 	EQU	256								; AT-command response buffer (bulk +IPD data uses the separate WIN2 RECV_BUFFER). Anchors the BSS chain; sized to keep wget/ftp BSS well below the 0x8000 stack so the transfer call chain (nested receive + DSS_WRITE) keeps >=~500 B headroom after the shared REQUIRE_NET_UP code/buffer. AT responses are far smaller than 384.
+RS_BUFF_SIZE 	EQU	192								; AT-command response buffer (bulk +IPD data uses the separate WIN2 RECV_BUFFER). Anchors the BSS chain; sized to keep wget/ftp BSS well below the 0x8000 stack so the transfer call chain (nested receive + DSS_WRITE) keeps >=~500 B headroom after the shared REQUIRE_NET_UP code/buffer. AT responses are far smaller than 384.
 MAX_BUFF_SIZE 	EQU	16384
 
 LSTR_SIZE 		EQU	20									; Size of buffer for last response line

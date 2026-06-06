@@ -2501,7 +2501,10 @@ MSG_START
 	DB 0
 MSG_USAGE
 	DB "Usage: WGET.EXE url [-o output] [-y|-f] [-r]",13,10
-	DB "  -y,-f overwrite existing file   -r resume (append)   /? help",0
+	DB "  -o name   output file (default: name from URL)",13,10
+	DB "  -y, -f    overwrite an existing file",13,10
+	DB "  -r        resume (append to an existing file)",13,10
+	DB "  /?        show this help",0
 MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
@@ -2515,7 +2518,7 @@ MSG_COLON
 MSG_OUTPUT
 	DB "Output file: ",0
 MSG_DOWNLOADING
-	DB "Downloading body...",0
+	DB "Downloading body...",13,10,0
 MSG_SOURCE
 	DB "Source URL: ",0
 MSG_SCHEME_ADDED
