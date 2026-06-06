@@ -33,6 +33,9 @@ EXE_HEADER
 @STACK_TOP
 
 START
+	; DSS passes the command-line buffer pointer in IX at entry; capture it
+	; before any CALL clobbers IX (load-#80 = 0x8080 is the default, not assumed).
+	LD	(CMDLINE_PTR),IX
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN MSG_START
 
@@ -118,7 +121,7 @@ DISPLAY_CONFIG
 ; Out: CF=1 - write mode requested.
 ; ------------------------------------------------------
 CHECK_WRITE_MODE
-	LD	HL,0x8080
+	LD	HL,(CMDLINE_PTR)
 	LD	A,(HL)
 	AND	A
 	RET	Z
@@ -355,6 +358,7 @@ MSG_PROMPT_BAUD	DB "BAUD",0
 
 INPUT_BUFF_SIZE	EQU 80
 INPUT_REMAIN	DB 0
+CMDLINE_PTR	DW 0			; arg buffer ptr captured from IX at entry
 
 	ENDMODULE
 

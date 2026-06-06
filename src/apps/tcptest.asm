@@ -40,6 +40,9 @@ EXE_HEADER
 @STACK_TOP
 
 START
+	; DSS passes the command-line buffer pointer in IX at entry; capture it
+	; before any CALL clobbers IX (load-#80 = 0x8080 is the default, not assumed).
+	LD	(CMDLINE_PTR),IX
 	CALL	ISA.ISA_RESET
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN MSG_START
@@ -143,7 +146,7 @@ INIT_DEFAULT_ARGS
 	JP	COPY_ASCIIZ_DE
 
 PARSE_CMD_LINE
-	LD	HL,0x8080
+	LD	HL,(CMDLINE_PTR)
 	LD	A,(HL)
 	AND	A
 	RET	Z
@@ -461,6 +464,8 @@ REQ_END
 
 ARG_LEN
 	DB 0
+CMDLINE_PTR
+	DW 0			; arg buffer ptr captured from IX at entry
 PORT_IS_DEFAULT
 	DB 0
 RECV_BLOCKS

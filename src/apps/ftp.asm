@@ -43,9 +43,9 @@ OUT_SIZE		EQU 80
 		MODULE MAIN
 
 		; Load at 0x4100 so code and small BSS live below the #8000 stack.
-		; Cmdline lives at load_addr-0x80 = 0x4080.
+		; The cmdline buffer pointer is taken from IX at entry (see START);
+		; load_addr-0x80 = 0x4080 is the documented default but not assumed.
 LOAD_ADDR	EQU 0x4100
-CMDLINE_ADDR	EQU LOAD_ADDR - 0x80
 STACK_TOP	EQU 0x8000
 WIN2_BASE	EQU 0x8000
 
@@ -68,6 +68,11 @@ EXE_HEADER
 		ORG LOAD_ADDR
 
 START
+		; DSS passes the command-line buffer pointer in IX at entry
+		; ([IX+0]=length, [IX+1..]=text). Capture it first, before any CALL
+		; clobbers IX, instead of assuming the load-#80 address. CMDLINE_PTR is
+		; a code-segment var, so CLEAR_BSS (WIN2) does not wipe it.
+		LD	(CMDLINE_PTR),IX
 		CALL	INIT_RUNTIME_PAGE
 		JP	C,INIT_MEMORY_ERROR
 		CALL	CLEAR_BSS
@@ -389,7 +394,7 @@ PARSE_CMD_LINE
 		LD	DE,PASS_BUFF
 		CALL	COPY_ASCIIZ_DE
 
-		LD	HL,CMDLINE_ADDR
+		LD	HL,(CMDLINE_PTR)
 		LD	A,(HL)
 		AND	A
 		JP	Z,.ERR
@@ -2762,6 +2767,8 @@ FINAL_REPLY_SEEN
 		DB 0
 OUT_FH
 		DB NO_HANDLE
+CMDLINE_PTR
+		DW 0				; arg buffer ptr captured from IX at entry
 FORCE_OVERWRITE
 		DB 0
 FORCE_RESUME

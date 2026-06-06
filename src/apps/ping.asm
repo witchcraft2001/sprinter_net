@@ -38,6 +38,9 @@ EXE_HEADER
 @STACK_TOP
 
 START
+	; DSS passes the command-line buffer pointer in IX at entry; capture it
+	; before any CALL clobbers IX (load-#80 = 0x8080 is the default, not assumed).
+	LD	(CMDLINE_PTR),IX
 	CALL	ISA.ISA_RESET
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN MSG_START
@@ -135,7 +138,7 @@ USAGE
 ; Out: CF=0 - host parsed, CF=1 - missing/invalid argument.
 ; ------------------------------------------------------
 PARSE_HOST
-	LD	HL,0x8080
+	LD	HL,(CMDLINE_PTR)
 	LD	A,(HL)
 	AND	A
 	JR	Z,.NO_ARG
@@ -426,6 +429,8 @@ PING_STATUS
 	DB 0
 PING_RETRY
 	DB 0
+CMDLINE_PTR
+	DW 0			; arg buffer ptr captured from IX at entry
 
 ; ------------------------------------------------------
 ; RESP_HAS_BUSY: scan WIFI.RS_BUFF for the substring "busy" (ESP "busy p..."
