@@ -90,6 +90,7 @@ START
 
 	CALL	WIFI.UART_FIND
 	JP	C,NO_WIFI
+	CALL	WCOMMON.REQUIRE_NET_UP
 
 	CALL	NETCFG.LOAD
 	CALL	NETCFG.APPLY_UART_BAUD
@@ -206,6 +207,18 @@ PRINT_HL_DEC
 	LD	DE,NUM_PRINT_BUFF
 	CALL	UTIL.UTOA
 	PRINT	NUM_PRINT_BUFF
+	RET
+
+; In-place download progress: "<KB>KB / ?". KB = EXPECTED_BLOCK/2 (block*512/1024).
+; The total is "?" because TFTP does not negotiate tsize here. Leading 0x0A
+; resets the X column (this console) so each block overwrites the same line.
+PRINT_PROGRESS_KB
+	PRINT	MSG_CR_ONLY		; 0x0A -> column 0
+	LD	HL,(EXPECTED_BLOCK)
+	SRL	H
+	RR	L			; HL = blocks / 2 = KB
+	CALL	PRINT_HL_DEC
+	PRINT	MSG_KB_UNK		; "KB / ?"
 	RET
 
 PRINT_A_HEX
@@ -1178,7 +1191,7 @@ CHECK_FINAL_BLOCK
 	LD	(TRANSFER_DONE),A
 	RET
 .MORE
-	PRINT MSG_PROGRESS
+	CALL	PRINT_PROGRESS_KB
 	RET
 
 INC_EXPECTED_BLOCK
@@ -1483,6 +1496,10 @@ MSG_RETRY
 	DB "Timeout, retrying.",0
 MSG_PROGRESS
 	DB ".",0
+MSG_CR_ONLY
+	DB 13,0			; reset X to column 0 (this console: 0x0D=CR, 0x0A=LF)
+MSG_KB_UNK
+	DB "KB / ?",0
 MSG_DONE
 	DB "TFTP done.",0
 MSG_WIFI_NOT_FOUND

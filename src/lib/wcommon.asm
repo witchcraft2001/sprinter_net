@@ -345,6 +345,58 @@ SET_DHCP_MODE
 	;;ENDIF
 
 ; ------------------------------------------------------
+; Require that NETUP has brought the network up: env NET must equal "WIFI" and
+; NET_ESP_HW must be set (both published by NETUP). On failure print a hint and
+; exit with B=4 (config error). Network-dependent tools call this before any
+; ESP/TCP operation. Reads env via DSS ENVIRON (#46/#01).
+; ------------------------------------------------------
+REQUIRE_NET_UP
+	LD	HL,N_NET_KEY
+	LD	DE,ENV_VAL_BUF
+	LD	B,ENV_GET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	OR	A
+	JR	Z,.FAIL				; NET not set
+	LD	HL,ENV_VAL_BUF
+	LD	DE,V_WIFI
+	CALL	.STRMATCH
+	JR	NZ,.FAIL			; NET != WIFI
+	LD	HL,N_ESP_HW_KEY
+	LD	DE,ENV_VAL_BUF
+	LD	B,ENV_GET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	OR	A
+	JR	Z,.FAIL				; NET_ESP_HW not set
+	LD	A,(ENV_VAL_BUF)
+	OR	A
+	JR	Z,.FAIL				; NET_ESP_HW empty
+	RET
+.FAIL
+	PRINTLN MSG_NET_NOT_UP
+	LD	B,4
+	JP	EXIT
+; Compare ASCIIZ at HL and DE. Out: Z if equal. Trashes A,C,HL,DE.
+.STRMATCH
+	LD	A,(DE)
+	LD	C,A
+	LD	A,(HL)
+	CP	C
+	RET	NZ
+	OR	A
+	RET	Z
+	INC	HL
+	INC	DE
+	JR	.STRMATCH
+
+N_NET_KEY	DB "NET",0
+N_ESP_HW_KEY	DB "NET_ESP_HW",0
+V_WIFI		DB "WIFI",0
+MSG_NET_NOT_UP	DB "Network is not up - run NETUP first.",0
+ENV_VAL_BUF	DS 32,0
+
+; ------------------------------------------------------
 ; Messages
 ; ------------------------------------------------------
 	;;IFUSED FIND_SWF

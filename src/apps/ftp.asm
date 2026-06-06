@@ -90,6 +90,7 @@ START
 
 		CALL	WIFI.UART_FIND
 		JP	C,NO_WIFI
+		CALL	WCOMMON.REQUIRE_NET_UP
 		LD	A,(ISA.ISA_SLOT)
 		ADD	A,'1'
 		LD	(MSG_SLOT_NO),A
@@ -2015,8 +2016,9 @@ WRITE_DATA_BUFFER
 		POP	BC
 		RET	C
 		CALL	ADD_DATA_TOTAL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		LD	HL,DATA_TOTAL
+		LD	DE,DATA_EXPECTED
+		CALL	TPUT.PROGRESS
 		XOR	A
 		RET
 .HOLD
@@ -2026,8 +2028,9 @@ WRITE_DATA_BUFFER
 		ADD	HL,BC
 		LD	(HOLD_LEN),HL
 		CALL	ADD_DATA_TOTAL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		; No progress render in retain-tail mode: TPUT.PROGRESS would drop RTS
+		; for the render, and this last-margin window must keep RTS asserted so
+		; the ESP delivers every +IPD before the FIN (tail-drop avoidance).
 		XOR	A
 		RET
 
