@@ -128,6 +128,13 @@ START
 	CALL	SEND_CMD
 
 	CALL	TPUT.START			; start the transfer timer
+	; Remember the starting offset (resume-prompt seed, or 0) so the final
+	; speed covers all bytes fetched THIS run across every fragment/redirect,
+	; not just the last fragment.
+	LD	HL,(TOTAL_BYTES)
+	LD	(SESSION_BASE),HL
+	LD	HL,(TOTAL_BYTES+2)
+	LD	(SESSION_BASE+2),HL
 
 .REQUEST_LOOP
 	PRINT MSG_CONNECTING
@@ -194,10 +201,17 @@ START
 
 	PRINT WCOMMON.LINE_END
 	CALL	PRINT_DOWNLOADED_BYTES
-	; Report speed over the bytes received THIS session (BODY_BYTES), which for
-	; a resumed (Range) download is just the refetched tail, not the whole file.
-	LD	HL,(BODY_BYTES)
-	LD	DE,(BODY_BYTES+2)
+	; Report speed over ALL bytes fetched this run (TOTAL_BYTES - SESSION_BASE),
+	; summed across every fragment/redirect, not just the last fragment.
+	LD	HL,(TOTAL_BYTES)
+	LD	DE,(SESSION_BASE)
+	OR	A
+	SBC	HL,DE			; HL = low16 of (TOTAL - base)
+	EX	DE,HL			; DE = low16
+	LD	HL,(TOTAL_BYTES+2)
+	LD	BC,(SESSION_BASE+2)
+	SBC	HL,BC			; HL = high16 (borrow chained)
+	EX	DE,HL			; HL = low16, DE = high16
 	CALL	TPUT.REPORT
 	PRINTLN MSG_DONE
 	LD	B,0
@@ -2689,6 +2703,7 @@ CONTENT_LENGTH	DD 0
 CONTENT_LENGTH_SEEN DB 0
 BODY_BYTES	DD 0
 TOTAL_BYTES	DD 0
+SESSION_BASE	DD 0			; TOTAL_BYTES at run start (resume seed / 0)
 HTTP_INCOMPLETE DB 0
 RANGE_ACTIVE	DB 0
 RESUME_COUNT	DB 0
