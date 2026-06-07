@@ -10,8 +10,15 @@ FTP_DATA_TIMEOUT	EQU 20000
 FTP_FINAL_TIMEOUT	EQU 800				; short wait for post-transfer 226 / QUIT 221 replies (the busy-poll receive inflates this, so keep it small)
 FTP_BURST_TIMEOUT	EQU 120
 FTP_ACTIVE_IPD_MAX	EQU 3000
-FTP_PUT_CHUNK		EQU 536
-FTP_PUT_READ_SIZE	EQU FTP_PUT_CHUNK * 8
+; Bytes handed to one AT+CIPSEND. The ESP does its own TCP segmentation, so this
+; is NOT the TCP MSS - it only sets how many bytes ship per CIPSEND handshake
+; (prompt + payload + SEND OK). Small chunks throttle upload throughput because
+; each one pays the full round-trip. 2048 is the documented per-send maximum for
+; ESP8266 ESP-AT; the 16550 CTS auto-flow (MCR_AFE) backpressures the UART so a
+; large chunk cannot overrun the ESP. (Was 536, inherited from the rtl8019a TCP
+; stack where it WAS the MSS - meaningless here, ~4x more handshakes.)
+FTP_PUT_CHUNK		EQU 2048
+FTP_PUT_READ_SIZE	EQU FTP_PUT_CHUNK * 8	; == RECV_SIZE (16384): one disk read fills the buffer
 CONTROL_LINK		EQU 0
 DATA_LINK		EQU 1
 HOST_SIZE		EQU 96
@@ -1844,8 +1851,9 @@ SEND_DATA_TRANSFER
 		OR	A
 		SBC	HL,BC
 		LD	(DATA_ACCUM_LEN),HL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		LD	HL,DATA_TOTAL
+		LD	DE,DATA_EXPECTED
+		CALL	TPUT.PROGRESS
 		JR	.SEND
 .DONE
 		PRINT	WCOMMON.LINE_END
@@ -2342,6 +2350,24 @@ OPEN_INPUT_FILE
 		RST	DSS
 		RET	C
 		LD	(OUT_FH),A
+		; Capture the file size into DATA_EXPECTED so SEND_DATA_TRANSFER can
+		; render KB/KB upload progress (same as download). Seek to end for the
+		; size, then rewind to the start before the first read.
+		LD	B,SEEK_END
+		LD	HL,0
+		LD	IX,0
+		LD	C,DSS_MOVE_FP
+		RST	DSS				; HL:IX = size (HL high, IX low)
+		LD	(DATA_EXPECTED),IX
+		LD	(DATA_EXPECTED+2),HL
+		LD	A,1
+		LD	(DATA_EXPECTED_SEEN),A
+		LD	A,(OUT_FH)
+		LD	B,0				; whence 0 = SEEK_SET -> rewind
+		LD	HL,0
+		LD	IX,0
+		LD	C,DSS_MOVE_FP
+		RST	DSS
 		XOR	A
 		LD	(OUTPUT_ABORTED),A
 		RET
