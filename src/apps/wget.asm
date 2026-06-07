@@ -1990,6 +1990,8 @@ PRINT_RECV_DEBUG
 	PRINT	MSG_DBG_RECV
 	LD	A,(DEBUG_RECV_RESULT)
 	CALL	PRINT_A_DEC
+	LD	A,(DEBUG_RECV_RESULT)
+	CALL	PRINT_RESULT_REASON
 	PRINT	MSG_DBG_GOT
 	LD	HL,(DEBUG_RECV_BYTES)
 	CALL	PRINT_HL_DEC
@@ -2016,6 +2018,36 @@ PRINT_RECV_DEBUG
 	CALL	PRINT_U32_AT_HL
 	PRINT	WCOMMON.LINE_END
 	RET
+
+; Print " (<plain-language reason>)" for the RES_* code in A so testers can read
+; the diagnostic without the esplib code table. Trashes A,HL,DE.
+PRINT_RESULT_REASON
+	PUSH	AF
+	PRINT	MSG_REASON_OPEN			; " ("
+	POP	AF
+	CP	RES_REASON_COUNT
+	JR	C,.KNOWN
+	LD	HL,MSG_REASON_UNKNOWN
+	JR	.PRINT
+.KNOWN
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL				; code * 2 (word table)
+	LD	DE,RESULT_REASON_TABLE
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+.PRINT
+	PRINT_HL
+	PRINT	MSG_REASON_CLOSE		; ")"
+	RET
+
+RES_REASON_COUNT	EQU 9
+RESULT_REASON_TABLE
+	DW MSG_R_OK, MSG_R_ERROR, MSG_R_FAIL, MSG_R_TXTO, MSG_R_RXTO
+	DW MSG_R_CONN, MSG_R_NOTCONN, MSG_R_ENABLED, MSG_R_DISABLED
 
 PRINT_A_DEC
 	LD	L,A
@@ -2563,6 +2595,32 @@ MSG_DBG_LSR_ACC
 	DB " lsr_acc=0x",0
 MSG_DBG_TOTAL
 	DB " total=",0
+; Plain-language names for the RES_* result codes (esplib.asm), shown in
+; parentheses after "result=N" so testers don't have to ask what 4/6 mean.
+MSG_REASON_OPEN
+	DB " (",0
+MSG_REASON_CLOSE
+	DB ")",0
+MSG_REASON_UNKNOWN
+	DB "unknown",0
+MSG_R_OK
+	DB "ok",0
+MSG_R_ERROR
+	DB "ESP error",0
+MSG_R_FAIL
+	DB "failed",0
+MSG_R_TXTO
+	DB "send timeout",0
+MSG_R_RXTO
+	DB "receive timeout - no data",0
+MSG_R_CONN
+	DB "connected",0
+MSG_R_NOTCONN
+	DB "connection closed by server",0
+MSG_R_ENABLED
+	DB "enabled",0
+MSG_R_DISABLED
+	DB "disabled",0
 MSG_NO_RESPONSE
 	DB "No HTTP response received.",0
 MSG_NO_BODY
