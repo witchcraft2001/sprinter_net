@@ -10,8 +10,15 @@ FTP_DATA_TIMEOUT	EQU 20000
 FTP_FINAL_TIMEOUT	EQU 800				; short wait for post-transfer 226 / QUIT 221 replies (the busy-poll receive inflates this, so keep it small)
 FTP_BURST_TIMEOUT	EQU 120
 FTP_ACTIVE_IPD_MAX	EQU 3000
-FTP_PUT_CHUNK		EQU 536
-FTP_PUT_READ_SIZE	EQU FTP_PUT_CHUNK * 8
+; Bytes handed to one AT+CIPSEND. The ESP does its own TCP segmentation, so this
+; is NOT the TCP MSS - it only sets how many bytes ship per CIPSEND handshake
+; (prompt + payload + SEND OK). Small chunks throttle upload throughput because
+; each one pays the full round-trip. 2048 is the documented per-send maximum for
+; ESP8266 ESP-AT; the 16550 CTS auto-flow (MCR_AFE) backpressures the UART so a
+; large chunk cannot overrun the ESP. (Was 536, inherited from the rtl8019a TCP
+; stack where it WAS the MSS - meaningless here, ~4x more handshakes.)
+FTP_PUT_CHUNK		EQU 2048
+FTP_PUT_READ_SIZE	EQU FTP_PUT_CHUNK * 8	; == RECV_SIZE (16384): one disk read fills the buffer
 CONTROL_LINK		EQU 0
 DATA_LINK		EQU 1
 HOST_SIZE		EQU 96
@@ -48,6 +55,7 @@ OUT_SIZE		EQU 80
 LOAD_ADDR	EQU 0x4100
 STACK_TOP	EQU 0x8000
 WIN2_BASE	EQU 0x8000
+OVERLAY_RUN	EQU 0x8000	; cold overlay page runs here when mapped into WIN2
 
 		; Full 512-byte DSS EXE header.
 		ORG LOAD_ADDR - 0x0200
@@ -90,6 +98,7 @@ START
 
 		CALL	WIFI.UART_FIND
 		JP	C,NO_WIFI
+		CALL	WCOMMON.REQUIRE_NET_UP
 		LD	A,(ISA.ISA_SLOT)
 		ADD	A,'1'
 		LD	(MSG_SLOT_NO),A
@@ -305,12 +314,14 @@ START
 		JP	WCOMMON.EXIT
 
 USAGE
-		PRINTLN MSG_USAGE
+		LD	HL,OVL_SHOW_HELP	; help text lives in the WIN2 cold overlay
+		CALL	CALL_OVERLAY
 		LD	B,1
 		JP	WCOMMON.EXIT
 
 SHOW_HELP
-		PRINTLN MSG_USAGE
+		LD	HL,OVL_SHOW_HELP
+		CALL	CALL_OVERLAY
 		LD	B,0
 		JP	WCOMMON.EXIT
 
@@ -323,11 +334,35 @@ NET_ERROR_EXIT
 		PUSH	AF
 		CALL	CLEANUP_TCP
 		POP	AF
+		PUSH	AF
 		ADD	A,'0'
 		LD	(MSG_NET_ERROR_NO),A
 		PRINTLN MSG_NET_ERROR
+		POP	AF
+		CALL	PRINT_NET_REASON		; plain-language hint for the RES_* code
 		LD	B,3
 		JP	WCOMMON.EXIT
+
+; Print a human-readable explanation line for the RES_* network error code in A
+; (esplib.asm). "#3" alone means nothing to a tester; this says what to check.
+; Unknown/benign codes print nothing. Trashes A,HL,DE.
+PRINT_NET_REASON
+		CP	NET_REASON_COUNT
+		RET	NC
+		LD	L,A
+		LD	H,0
+		ADD	HL,HL				; code * 2 (word table)
+		LD	DE,NET_REASON_TABLE
+		ADD	HL,DE
+		LD	E,(HL)
+		INC	HL
+		LD	D,(HL)
+		LD	A,D
+		OR	E				; null entry -> no extra line
+		RET	Z
+		EX	DE,HL
+		PRINTLN_HL
+		RET
 
 FTP_ERROR_EXIT
 		CALL	CLEANUP_TCP
@@ -1199,8 +1234,17 @@ RECV_CONTROL_REPLY_TIMEOUT
 			; RECV_DATA_TRANSFER.
 			LD	A,1
 			LD	(DATA_BYTES_SEEN),A
+			; Size still unknown (150 not parsed): suppress the progress
+			; render so it doesn't print "?KB" and glue the 150 reply onto
+			; the dots. Cleared right after; RECV_DATA_TRANSFER renders real
+			; progress once PARSE_EXPECTED_SIZE has run.
+			LD	(PROGRESS_SUPPRESS),A
 			LD	HL,RECV_BUFFER
 			CALL	HANDLE_DATA_BUFFER
+			PUSH	AF			; HANDLE_DATA_BUFFER CF = file error
+			XOR	A
+			LD	(PROGRESS_SUPPRESS),A
+			POP	AF
 			JR	NC,.DATA_HANDLED
 			CALL	WIFI.UART_RX_RESUME
 			JP	FILE_ERROR_EXIT
@@ -1831,8 +1875,9 @@ SEND_DATA_TRANSFER
 		OR	A
 		SBC	HL,BC
 		LD	(DATA_ACCUM_LEN),HL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		LD	HL,DATA_TOTAL
+		LD	DE,DATA_EXPECTED
+		CALL	TPUT.PROGRESS
 		JR	.SEND
 .DONE
 		PRINT	WCOMMON.LINE_END
@@ -2015,8 +2060,17 @@ WRITE_DATA_BUFFER
 		POP	BC
 		RET	C
 		CALL	ADD_DATA_TOTAL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		; Early data handled during the control-reply wait: size unknown, so
+		; skip the render (would show "?KB" and the 150 reply would glue onto
+		; it). Bytes are still written/counted; progress resumes once the size
+		; is known in RECV_DATA_TRANSFER.
+		LD	A,(PROGRESS_SUPPRESS)
+		AND	A
+		JR	NZ,.NO_PROGRESS
+		LD	HL,DATA_TOTAL
+		LD	DE,DATA_EXPECTED
+		CALL	TPUT.PROGRESS
+.NO_PROGRESS
 		XOR	A
 		RET
 .HOLD
@@ -2026,8 +2080,9 @@ WRITE_DATA_BUFFER
 		ADD	HL,BC
 		LD	(HOLD_LEN),HL
 		CALL	ADD_DATA_TOTAL
-		LD	A,'.'
-		CALL	PUT_CHAR
+		; No progress render in retain-tail mode: TPUT.PROGRESS would drop RTS
+		; for the render, and this last-margin window must keep RTS asserted so
+		; the ESP delivers every +IPD before the FIN (tail-drop avoidance).
 		XOR	A
 		RET
 
@@ -2319,6 +2374,24 @@ OPEN_INPUT_FILE
 		RST	DSS
 		RET	C
 		LD	(OUT_FH),A
+		; Capture the file size into DATA_EXPECTED so SEND_DATA_TRANSFER can
+		; render KB/KB upload progress (same as download). Seek to end for the
+		; size, then rewind to the start before the first read.
+		LD	B,SEEK_END
+		LD	HL,0
+		LD	IX,0
+		LD	C,DSS_MOVE_FP
+		RST	DSS				; HL:IX = size (HL high, IX low)
+		LD	(DATA_EXPECTED),IX
+		LD	(DATA_EXPECTED+2),HL
+		LD	A,1
+		LD	(DATA_EXPECTED_SEEN),A
+		LD	A,(OUT_FH)
+		LD	B,0				; whence 0 = SEEK_SET -> rewind
+		LD	HL,0
+		LD	IX,0
+		LD	C,DSS_MOVE_FP
+		RST	DSS
 		XOR	A
 		LD	(OUTPUT_ABORTED),A
 		RET
@@ -2566,14 +2639,55 @@ CLEAR_BSS
 		RET
 
 INIT_RUNTIME_PAGE
-		LD	B,1
+		; Two pages from one block: logical 0 -> WIN2 (RECV_BUFFER, hot path),
+		; logical 1 -> the cold overlay. Map the overlay page in first and copy
+		; the overlay image (loaded in WIN1 right past the code) into it, then
+		; map the buffer page for the hot path. GETMEM returns block id in A.
+		LD	B,2
 		LD	C,DSS_GETMEM
 		RST	DSS
 		RET	C
+		LD	(RUNTIME_BLOCK),A
+		LD	B,1
+		LD	C,DSS_SETWIN2
+		RST	DSS			; WIN2 = overlay page
+		LD	HL,OVERLAY_SRC
+		LD	DE,OVERLAY_RUN
+		LD	BC,OVERLAY_SIZE
+		LDIR				; load the cold overlay into its page
+		LD	A,(RUNTIME_BLOCK)
 		LD	B,0
 		LD	C,DSS_SETWIN2
-		RST	DSS
+		RST	DSS			; WIN2 = RECV_BUFFER page (hot default)
+		OR	A			; CF=0
 		RET
+
+; ------------------------------------------------------
+; Run a cold routine from the WIN2 overlay page.
+;   In: HL = overlay routine address (OVERLAY_RUN-based).
+; Saves the current WIN2 page (RECV_BUFFER), maps the overlay, calls the
+; routine (which returns with RET), then restores WIN2 to the buffer page.
+; The overlay routine must NOT touch RECV_BUFFER and must copy out any data
+; the caller still needs after return (WIN2 reverts to the buffer page).
+; ------------------------------------------------------
+CALL_OVERLAY
+		IN	A,(PAGE2)		; save current WIN2 MMU page (buffer)
+		PUSH	AF
+		PUSH	HL
+		LD	A,(RUNTIME_BLOCK)
+		LD	B,1
+		LD	C,DSS_SETWIN2		; WIN2 = overlay page
+		RST	DSS
+		POP	HL
+		LD	DE,.DONE
+		PUSH	DE			; return address for the overlay routine
+		JP	(HL)
+.DONE
+		POP	AF
+		OUT	(PAGE2),A		; restore WIN2 = buffer page
+		RET
+
+RUNTIME_BLOCK	DB 0
 
 INIT_MEMORY_ERROR
 		LD	B,3
@@ -2581,12 +2695,11 @@ INIT_MEMORY_ERROR
 		RST	DSS
 
 MSG_START
-		DB "FTP - passive FTP client for SprinterESP"
-		PACKAGE_VERSION_SUFFIX
+		DB "FTP "
+		PACKAGE_VERSION_TAG
+		DB " - passive FTP client for SprinterESP"
 		DB 0
-MSG_USAGE
-		DB "Usage: FTP.EXE host[:port] file|PUT local [-o name] [-u user] [-p pass] [-y|-f] [-r]"
-		DB 13,10,"  -y,-f overwrite   -r resume (append)   -l|-n list",0
+		; MSG_USAGE moved to the WIN2 cold overlay (see OVL_MSG_USAGE below).
 MSG_WIFI_FOUND
 		DB "Sprinter-WiFi found in ISA#"
 MSG_SLOT_NO
@@ -2637,6 +2750,28 @@ MSG_NET_ERROR
 		DB "Network/ESP error #"
 MSG_NET_ERROR_NO
 		DB "n!",0
+; Plain-language hints for the RES_* codes, printed under "Network/ESP error #N".
+; Indexed by code; a 0 entry means "no hint for this code".
+NET_REASON_COUNT	EQU 7
+NET_REASON_TABLE
+		DW 0			; 0 RES_OK (not an error)
+		DW MSG_NETR_ERR		; 1 RES_ERROR
+		DW MSG_NETR_FAIL	; 2 RES_FAIL
+		DW MSG_NETR_TXTO	; 3 RES_TX_TIMEOUT
+		DW MSG_NETR_RXTO	; 4 RES_RS_TIMEOUT
+		DW 0			; 5 RES_CONNECTED
+		DW MSG_NETR_NOCONN	; 6 RES_NOT_CONN
+MSG_NETR_ERR
+		DB "Could not open the connection: host down or refused, wrong",13,10
+		DB "address/DNS, or Wi-Fi not up (run NETUP).",0
+MSG_NETR_FAIL
+		DB "The network operation failed.",0
+MSG_NETR_TXTO
+		DB "Sprinter-WiFi (ESP) did not respond - check the card and cabling.",0
+MSG_NETR_RXTO
+		DB "No reply from the server - it may be down or too slow (timeout).",0
+MSG_NETR_NOCONN
+		DB "The connection was closed before the transfer finished.",0
 MSG_FTP_ERROR
 		DB "FTP server returned error: ",0
 MSG_UART_OVERRUN
@@ -2819,6 +2954,12 @@ PENDING_CONTROL_SEEN
 		DB 0
 CONTROL_PRINT_SUPPRESS
 		DB 0
+; Set while RECV_CONTROL_REPLY writes early data-link bytes (file bytes that
+; beat the 150 reply). The transfer size is not yet known, so a progress render
+; here would show a bogus "?KB" total and, lacking a trailing newline, glue the
+; 150 reply onto it. WRITE_DATA_BUFFER skips TPUT.PROGRESS when this is set.
+PROGRESS_SUPPRESS
+		DB 0
 DEFERRED_CONTROL_SEEN
 		DB 0
 CONTROL_TIMEOUT
@@ -2865,6 +3006,31 @@ PASV_P2
 		INCLUDE "esplib.asm"
 
 		MODULE MAIN
+
+; ------------------------------------------------------
+; Cold WIN2 overlay image. Emitted here (DSS loads it into WIN1 just past the
+; code) but assembled to RUN at OVERLAY_RUN (0x8000). INIT_RUNTIME_PAGE copies
+; it into the overlay page before CLEAR_BSS, after which this WIN1 area is
+; reused as BSS. Only rarely-used (cold) code/data belongs here so WIN1 stays
+; free for the hot path; the receive/flush path never maps the overlay.
+; ------------------------------------------------------
+OVERLAY_SRC
+		DISP	OVERLAY_RUN
+OVL_BASE
+OVL_SHOW_HELP
+		PRINTLN OVL_MSG_USAGE
+		RET
+OVL_MSG_USAGE
+		DB "Usage: FTP host[:port] [file | PUT local | path] [opts]",13,10
+		DB "  -o name   out (get) / remote (put) name",13,10
+		DB "  -u user -p pass  login",13,10
+		DB "  -y, -f    overwrite",13,10
+		DB "  -r        resume (append)",13,10
+		DB "  -l, -n    list (LIST / NLST)",13,10
+		DB "  /?        help",0
+OVL_END
+		ENT
+OVERLAY_SIZE	EQU OVL_END - OVL_BASE
 
 		ASSERT	$ < STACK_TOP - 0x0100
 

@@ -50,6 +50,10 @@ Rules for future additions:
 - New user documentation: add the relative path to `DIST_DOC_FILES`. Markdown is
   copied unchanged to the zip and renamed to an 8.3 `.TXT` name in the floppy
   image.
+- New Cyrillic (Russian) documentation: keep the source UTF-8 in the repo and
+  add its relative path to `DIST_DOC_CP866_FILES` instead of `DIST_DOC_FILES`.
+  `package.sh`/`image.sh` convert it with `iconv -f UTF-8 -t CP866` so it ships
+  in the DSS console code page; do not list the same file in both arrays.
 - New sample configuration: add the relative path to `DIST_CONFIG_FILES`. Never
   add a real credential-bearing `NET.CFG`; ship only templates such as
   `config/NET.CFG.sample`.

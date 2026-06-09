@@ -6,8 +6,8 @@ What you need
   - The name and password of your Wi-Fi network.
 
 1. Install
-  Unpack the package to C:\WIFI (or use the preinstalled copy). Then either add
-  C:\WIFI to PATH, or just switch to it before running the tools:
+  Unpack the package to C:\WIFI (or use the preinstalled copy). Then add C:\WIFI
+  to PATH and switch to it before running the tools:
 
       C:
       CD \WIFI

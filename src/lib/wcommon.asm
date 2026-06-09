@@ -170,14 +170,27 @@ CHECK_CANCEL_IN_ISA
 	SCF
 	RET
 .NO_KEY
+	; Optional idle callback (e.g. a clock tick), run here while ISA is CLOSED so
+	; the callback may use DSS/BIOS safely. Zero by default -> no-op for apps that
+	; don't set it. The callback must return with a plain RET and may clobber
+	; registers (we restore them below).
+	LD	HL,(IDLE_CB)
+	LD	A,H
+	OR	L
+	CALL	NZ,.CALL_CB
 	CALL	@ISA.ISA_OPEN
 	POP	HL,DE,BC,AF
 	AND	A
 	RET
+.CALL_CB
+	JP	(HL)			; call IDLE_CB (it RETs to the CALL NZ site)
 
 ; Cancellation flag. Set by CHECK_CANCEL when Esc/Ctrl+Z detected.
 ; Top-level error handlers in apps check this and redirect to CANCEL_EXIT.
 CANCELLED	DB 0
+; Idle callback pointer, invoked from CHECK_CANCEL_IN_ISA while ISA is closed
+; (so it can call DSS/BIOS). Apps set it to a routine; 0 = none.
+IDLE_CB		DW 0
 
 ; ------------------------------------------------------
 ; Store old video mode and set 80x32 without clearing the console.
@@ -343,6 +356,58 @@ SET_DHCP_MODE
 	POP		DE,BC
 	RET
 	;;ENDIF
+
+; ------------------------------------------------------
+; Require that NETUP has brought the network up: env NET must equal "WIFI" and
+; NET_ESP_HW must be set (both published by NETUP). On failure print a hint and
+; exit with B=4 (config error). Network-dependent tools call this before any
+; ESP/TCP operation. Reads env via DSS ENVIRON (#46/#01).
+; ------------------------------------------------------
+REQUIRE_NET_UP
+	LD	HL,N_NET_KEY
+	LD	DE,ENV_VAL_BUF
+	LD	B,ENV_GET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	OR	A
+	JR	Z,.FAIL				; NET not set
+	LD	HL,ENV_VAL_BUF
+	LD	DE,V_WIFI
+	CALL	.STRMATCH
+	JR	NZ,.FAIL			; NET != WIFI
+	LD	HL,N_ESP_HW_KEY
+	LD	DE,ENV_VAL_BUF
+	LD	B,ENV_GET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	OR	A
+	JR	Z,.FAIL				; NET_ESP_HW not set
+	LD	A,(ENV_VAL_BUF)
+	OR	A
+	JR	Z,.FAIL				; NET_ESP_HW empty
+	RET
+.FAIL
+	PRINTLN MSG_NET_NOT_UP
+	LD	B,4
+	JP	EXIT
+; Compare ASCIIZ at HL and DE. Out: Z if equal. Trashes A,C,HL,DE.
+.STRMATCH
+	LD	A,(DE)
+	LD	C,A
+	LD	A,(HL)
+	CP	C
+	RET	NZ
+	OR	A
+	RET	Z
+	INC	HL
+	INC	DE
+	JR	.STRMATCH
+
+N_NET_KEY	DB "NET",0
+N_ESP_HW_KEY	DB "NET_ESP_HW",0
+V_WIFI		DB "WIFI",0
+MSG_NET_NOT_UP	DB "Network is not up - run NETUP first.",0
+ENV_VAL_BUF	DS 32,0
 
 ; ------------------------------------------------------
 ; Messages

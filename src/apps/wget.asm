@@ -103,6 +103,7 @@ START
 
 	CALL	WIFI.UART_FIND
 	JP	C,NO_WIFI
+	CALL	WCOMMON.REQUIRE_NET_UP
 
 	CALL	NETCFG.LOAD
 	CALL	NETCFG.APPLY_UART_BAUD
@@ -127,6 +128,13 @@ START
 	CALL	SEND_CMD
 
 	CALL	TPUT.START			; start the transfer timer
+	; Remember the starting offset (resume-prompt seed, or 0) so the final
+	; speed covers all bytes fetched THIS run across every fragment/redirect,
+	; not just the last fragment.
+	LD	HL,(TOTAL_BYTES)
+	LD	(SESSION_BASE),HL
+	LD	HL,(TOTAL_BYTES+2)
+	LD	(SESSION_BASE+2),HL
 
 .REQUEST_LOOP
 	PRINT MSG_CONNECTING
@@ -193,10 +201,17 @@ START
 
 	PRINT WCOMMON.LINE_END
 	CALL	PRINT_DOWNLOADED_BYTES
-	; Report speed over the bytes received THIS session (BODY_BYTES), which for
-	; a resumed (Range) download is just the refetched tail, not the whole file.
-	LD	HL,(BODY_BYTES)
-	LD	DE,(BODY_BYTES+2)
+	; Report speed over ALL bytes fetched this run (TOTAL_BYTES - SESSION_BASE),
+	; summed across every fragment/redirect, not just the last fragment.
+	LD	HL,(TOTAL_BYTES)
+	LD	DE,(SESSION_BASE)
+	OR	A
+	SBC	HL,DE			; HL = low16 of (TOTAL - base)
+	EX	DE,HL			; DE = low16
+	LD	HL,(TOTAL_BYTES+2)
+	LD	BC,(SESSION_BASE+2)
+	SBC	HL,BC			; HL = high16 (borrow chained)
+	EX	DE,HL			; HL = low16, DE = high16
 	CALL	TPUT.REPORT
 	PRINTLN MSG_DONE
 	LD	B,0
@@ -233,11 +248,35 @@ TCP_ERROR_EXIT
 	CALL	NZ,TCP.CLOSE
 	CALL	CLOSE_OUTPUT_FILE
 	POP	AF
+	PUSH	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_NET_ERROR
+	POP	AF
+	CALL	PRINT_NET_REASON		; plain-language hint for the RES_* code
 	LD	B,3
 	JP	WCOMMON.EXIT
+
+; Print a human-readable explanation line for the RES_* network error code in A
+; (esplib.asm), so "#3" is not the only thing a tester sees. Unknown/benign
+; codes print nothing. Trashes A,HL,DE.
+PRINT_NET_REASON
+	CP	NET_REASON_COUNT
+	RET	NC
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL				; code * 2 (word table)
+	LD	DE,NET_REASON_TABLE
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	A,D
+	OR	E				; null entry -> no extra line
+	RET	Z
+	EX	DE,HL
+	PRINTLN_HL
+	RET
 
 FILE_ERROR_EXIT
 	LD	A,(OUTPUT_ABORTED)
@@ -1725,8 +1764,9 @@ WRITE_BODY
 	POP	BC
 	RET	C
 	CALL	ADD_BODY_BYTES
-	LD	A,'.'
-	CALL	PUT_CHAR
+	LD	HL,BODY_BYTES
+	LD	DE,CONTENT_LENGTH
+	CALL	TPUT.PROGRESS
 	LD	A,1
 	LD	(HAVE_BODY),A
 	RET
@@ -1740,8 +1780,9 @@ WRITE_BODY
 	ADD	HL,BC
 	LD	(HOLD_LEN),HL
 	CALL	ADD_BODY_BYTES
-	LD	A,'.'
-	CALL	PUT_CHAR
+	LD	HL,BODY_BYTES
+	LD	DE,CONTENT_LENGTH
+	CALL	TPUT.PROGRESS
 	LD	A,1
 	LD	(HAVE_BODY),A
 	RET
@@ -1973,6 +2014,8 @@ PRINT_RECV_DEBUG
 	PRINT	MSG_DBG_RECV
 	LD	A,(DEBUG_RECV_RESULT)
 	CALL	PRINT_A_DEC
+	LD	A,(DEBUG_RECV_RESULT)
+	CALL	PRINT_RESULT_REASON
 	PRINT	MSG_DBG_GOT
 	LD	HL,(DEBUG_RECV_BYTES)
 	CALL	PRINT_HL_DEC
@@ -1999,6 +2042,36 @@ PRINT_RECV_DEBUG
 	CALL	PRINT_U32_AT_HL
 	PRINT	WCOMMON.LINE_END
 	RET
+
+; Print " (<plain-language reason>)" for the RES_* code in A so testers can read
+; the diagnostic without the esplib code table. Trashes A,HL,DE.
+PRINT_RESULT_REASON
+	PUSH	AF
+	PRINT	MSG_REASON_OPEN			; " ("
+	POP	AF
+	CP	RES_REASON_COUNT
+	JR	C,.KNOWN
+	LD	HL,MSG_REASON_UNKNOWN
+	JR	.PRINT
+.KNOWN
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL				; code * 2 (word table)
+	LD	DE,RESULT_REASON_TABLE
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+.PRINT
+	PRINT_HL
+	PRINT	MSG_REASON_CLOSE		; ")"
+	RET
+
+RES_REASON_COUNT	EQU 9
+RESULT_REASON_TABLE
+	DW MSG_R_OK, MSG_R_ERROR, MSG_R_FAIL, MSG_R_TXTO, MSG_R_RXTO
+	DW MSG_R_CONN, MSG_R_NOTCONN, MSG_R_ENABLED, MSG_R_DISABLED
 
 PRINT_A_DEC
 	LD	L,A
@@ -2493,12 +2566,16 @@ APPEND_IX_STR
 	JR	APPEND_IX_STR
 
 MSG_START
-	DB "WGET - HTTP downloader for SprinterESP"
-	PACKAGE_VERSION_SUFFIX
+	DB "WGET "
+	PACKAGE_VERSION_TAG
+	DB " - HTTP downloader for SprinterESP"
 	DB 0
 MSG_USAGE
 	DB "Usage: WGET.EXE url [-o output] [-y|-f] [-r]",13,10
-	DB "  -y,-f overwrite existing file   -r resume (append)   /? help",0
+	DB "  -o name   output file (default: name from URL)",13,10
+	DB "  -y, -f    overwrite an existing file",13,10
+	DB "  -r        resume (append to an existing file)",13,10
+	DB "  /?        show this help",0
 MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
@@ -2512,7 +2589,7 @@ MSG_COLON
 MSG_OUTPUT
 	DB "Output file: ",0
 MSG_DOWNLOADING
-	DB "Downloading body...",0
+	DB "Downloading body...",13,10,0
 MSG_SOURCE
 	DB "Source URL: ",0
 MSG_SCHEME_ADDED
@@ -2543,6 +2620,32 @@ MSG_DBG_LSR_ACC
 	DB " lsr_acc=0x",0
 MSG_DBG_TOTAL
 	DB " total=",0
+; Plain-language names for the RES_* result codes (esplib.asm), shown in
+; parentheses after "result=N" so testers don't have to ask what 4/6 mean.
+MSG_REASON_OPEN
+	DB " (",0
+MSG_REASON_CLOSE
+	DB ")",0
+MSG_REASON_UNKNOWN
+	DB "unknown",0
+MSG_R_OK
+	DB "ok",0
+MSG_R_ERROR
+	DB "ESP error",0
+MSG_R_FAIL
+	DB "failed",0
+MSG_R_TXTO
+	DB "send timeout",0
+MSG_R_RXTO
+	DB "receive timeout - no data",0
+MSG_R_CONN
+	DB "connected",0
+MSG_R_NOTCONN
+	DB "connection closed by server",0
+MSG_R_ENABLED
+	DB "enabled",0
+MSG_R_DISABLED
+	DB "disabled",0
 MSG_NO_RESPONSE
 	DB "No HTTP response received.",0
 MSG_NO_BODY
@@ -2553,6 +2656,28 @@ MSG_NET_ERROR
 	DB "Network/ESP error #"
 MSG_ERROR_NO
 	DB "n!",0
+; Plain-language hints for the RES_* codes, printed under "Network/ESP error #N".
+; Indexed by code; a 0 entry means "no hint for this code".
+NET_REASON_COUNT	EQU 7
+NET_REASON_TABLE
+	DW 0			; 0 RES_OK (not an error)
+	DW MSG_NETR_ERR		; 1 RES_ERROR
+	DW MSG_NETR_FAIL	; 2 RES_FAIL
+	DW MSG_NETR_TXTO	; 3 RES_TX_TIMEOUT
+	DW MSG_NETR_RXTO	; 4 RES_RS_TIMEOUT
+	DW 0			; 5 RES_CONNECTED
+	DW MSG_NETR_NOCONN	; 6 RES_NOT_CONN
+MSG_NETR_ERR
+	DB "Could not open the connection: host down or refused, wrong",13,10
+	DB "address/DNS, or Wi-Fi not up (run NETUP).",0
+MSG_NETR_FAIL
+	DB "The network operation failed.",0
+MSG_NETR_TXTO
+	DB "Sprinter-WiFi (ESP) did not respond - check the card and cabling.",0
+MSG_NETR_RXTO
+	DB "No reply from the server - it may be down or too slow (timeout).",0
+MSG_NETR_NOCONN
+	DB "The connection was closed before the transfer finished.",0
 MSG_FILE_ERROR
 	DB "File error: ",0
 MSG_ABORTED
@@ -2683,6 +2808,7 @@ CONTENT_LENGTH	DD 0
 CONTENT_LENGTH_SEEN DB 0
 BODY_BYTES	DD 0
 TOTAL_BYTES	DD 0
+SESSION_BASE	DD 0			; TOTAL_BYTES at run start (resume seed / 0)
 HTTP_INCOMPLETE DB 0
 RANGE_ACTIVE	DB 0
 RESUME_COUNT	DB 0

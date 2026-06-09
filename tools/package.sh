@@ -11,6 +11,11 @@ if ! command -v zip >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ "${#DIST_DOC_CP866_FILES[@]}" -gt 0 ] && ! command -v iconv >/dev/null 2>&1; then
+  echo "Error: iconv is required to encode CP866 docs but was not found" >&2
+  exit 1
+fi
+
 "$script_dir/build.sh"
 
 package_root="$repo_root/build/package/$DIST_NAME"
@@ -50,6 +55,17 @@ done
 
 for rel_path in "${DIST_DOC_FILES[@]}"; do
   copy_optional_file "$rel_path"
+done
+
+# CP866-encoded docs: convert UTF-8 source -> CP866 in place of a verbatim copy.
+for rel_path in "${DIST_DOC_CP866_FILES[@]}"; do
+  src="$repo_root/$rel_path"
+  if [ ! -f "$src" ]; then
+    echo "Warning: $rel_path not found, skipping" >&2
+    continue
+  fi
+  mkdir -p "$package_root/$(dirname "$rel_path")"
+  iconv -f UTF-8 -t CP866 "$src" > "$package_root/$rel_path"
 done
 
 for rel_path in "${DIST_CONFIG_FILES[@]}"; do

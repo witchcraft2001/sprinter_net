@@ -90,6 +90,7 @@ START
 
 	CALL	WIFI.UART_FIND
 	JP	C,NO_WIFI
+	CALL	WCOMMON.REQUIRE_NET_UP
 
 	CALL	NETCFG.LOAD
 	CALL	NETCFG.APPLY_UART_BAUD
@@ -176,11 +177,35 @@ UDP_ERROR_EXIT
 	LD	(UDP_IS_OPEN),A
 	CALL	CLOSE_FILES_IGNORE
 	POP	AF
+	PUSH	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_NET_ERROR
+	POP	AF
+	CALL	PRINT_NET_REASON		; plain-language hint for the RES_* code
 	LD	B,3
 	JP	WCOMMON.EXIT
+
+; Print a human-readable explanation line for the RES_* network error code in A
+; (esplib.asm), so "#3" is not the only thing a tester sees. Unknown/benign
+; codes print nothing. Trashes A,HL,DE.
+PRINT_NET_REASON
+	CP	NET_REASON_COUNT
+	RET	NC
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL				; code * 2 (word table)
+	LD	DE,NET_REASON_TABLE
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	A,D
+	OR	E				; null entry -> no extra line
+	RET	Z
+	EX	DE,HL
+	PRINTLN_HL
+	RET
 
 PRINT_UDP_DEBUG
 	PRINT	MSG_DEBUG
@@ -206,6 +231,18 @@ PRINT_HL_DEC
 	LD	DE,NUM_PRINT_BUFF
 	CALL	UTIL.UTOA
 	PRINT	NUM_PRINT_BUFF
+	RET
+
+; In-place download progress: "<KB>KB / ?". KB = EXPECTED_BLOCK/2 (block*512/1024).
+; The total is "?" because TFTP does not negotiate tsize here. Leading 0x0A
+; resets the X column (this console) so each block overwrites the same line.
+PRINT_PROGRESS_KB
+	PRINT	MSG_CR_ONLY		; 0x0A -> column 0
+	LD	HL,(EXPECTED_BLOCK)
+	SRL	H
+	RR	L			; HL = blocks / 2 = KB
+	CALL	PRINT_HL_DEC
+	PRINT	MSG_KB_UNK		; "KB / ?"
 	RET
 
 PRINT_A_HEX
@@ -1178,7 +1215,7 @@ CHECK_FINAL_BLOCK
 	LD	(TRANSFER_DONE),A
 	RET
 .MORE
-	PRINT MSG_PROGRESS
+	CALL	PRINT_PROGRESS_KB
 	RET
 
 INC_EXPECTED_BLOCK
@@ -1457,12 +1494,16 @@ INIT_MEMORY_ERROR
 	RST	DSS
 
 MSG_START
-	DB "TFTP - UDP TFTP client for SprinterESP"
-	PACKAGE_VERSION_SUFFIX
+	DB "TFTP "
+	PACKAGE_VERSION_TAG
+	DB " - UDP TFTP client for SprinterESP"
 	DB 0
 MSG_USAGE
-	DB "Usage: TFTP.EXE host GET remote [-o local] [-y|-f] or TFTP.EXE host PUT local [-o remote]",13,10
-	DB "  -y or -f  overwrite existing local file without asking (no resume in TFTP)",0
+	DB "Usage: TFTP.EXE host[:port] GET remote [-o local] [-y|-f]",13,10
+	DB "       TFTP.EXE host[:port] PUT local [-o remote]",13,10
+	DB "  -o name   local name (get) / remote name (put)",13,10
+	DB "  -y, -f    overwrite an existing local file (no resume in TFTP)",13,10
+	DB "  /?        show this help",0
 MSG_REMOTE
 	DB "Remote file: ",0
 MSG_OUTPUT
@@ -1483,6 +1524,10 @@ MSG_RETRY
 	DB "Timeout, retrying.",0
 MSG_PROGRESS
 	DB ".",0
+MSG_CR_ONLY
+	DB 13,0			; reset X to column 0 (this console: 0x0D=CR, 0x0A=LF)
+MSG_KB_UNK
+	DB "KB / ?",0
 MSG_DONE
 	DB "TFTP done.",0
 MSG_WIFI_NOT_FOUND
@@ -1499,6 +1544,29 @@ MSG_NET_ERROR
 	DB "Network/ESP error #"
 MSG_ERROR_NO
 	DB "n!",0
+; Plain-language hints for the RES_* codes, printed under "Network/ESP error #N".
+; Indexed by code; a 0 entry means "no hint for this code". TFTP is UDP, so the
+; wording avoids TCP "connection refused".
+NET_REASON_COUNT	EQU 7
+NET_REASON_TABLE
+	DW 0			; 0 RES_OK (not an error)
+	DW MSG_NETR_ERR		; 1 RES_ERROR
+	DW MSG_NETR_FAIL	; 2 RES_FAIL
+	DW MSG_NETR_TXTO	; 3 RES_TX_TIMEOUT
+	DW MSG_NETR_RXTO	; 4 RES_RS_TIMEOUT
+	DW 0			; 5 RES_CONNECTED
+	DW MSG_NETR_NOCONN	; 6 RES_NOT_CONN
+MSG_NETR_ERR
+	DB "Could not set up the transfer: wrong address/DNS, host",13,10
+	DB "unreachable, or Wi-Fi not up (run NETUP).",0
+MSG_NETR_FAIL
+	DB "The network operation failed.",0
+MSG_NETR_TXTO
+	DB "Sprinter-WiFi (ESP) did not respond - check the card and cabling.",0
+MSG_NETR_RXTO
+	DB "No reply from the server - it may be down or too slow (timeout).",0
+MSG_NETR_NOCONN
+	DB "The transfer was interrupted before it finished.",0
 MSG_PROTO_ERROR
 	DB "Unexpected TFTP packet.",0
 MSG_OVERRUN

@@ -321,6 +321,81 @@ DIV32_BY_DE
 	DJNZ	.LP
 	RET
 
+; ------------------------------------------------------
+; PROGRESS: in-place download progress line "<dlKB>KB / <totalKB>KB".
+; Emits 0x0D first so repeated calls overwrite the same line (on this console
+; 0x0D resets the X column, 0x0A is the line feed). No trailing newline; the
+; caller prints a real newline (LINE_END) once the transfer is done.
+; In: HL = ptr to downloaded byte count (4-byte LE),
+;     DE = ptr to total byte count   (4-byte LE; all-zero -> shown as "?").
+; Trashes everything.
+; ------------------------------------------------------
+PROGRESS
+	; Rendering (two 32-bit divides + ~15 chars) is far slower than the old single
+	; dot and, run every chunk, would stall the UART read long enough to overrun
+	; the 16-byte RX FIFO. So pause ESP TX (drop RTS) around the render: the ESP
+	; holds off while we are not reading, and resumes after. UART_RX_PAUSE/RESUME
+	; preserve HL/DE. MUST return CF=0 — callers propagate CF as success/fail.
+	CALL	@WIFI.UART_RX_PAUSE
+	CALL	.RENDER
+	CALL	@WIFI.UART_RX_RESUME
+	OR	A			; CF=0 (success)
+	RET
+.RENDER
+	PUSH	DE			; total ptr
+	LD	A,0x0D			; reset X to column 0 (this console: 0x0D=CR, 0x0A=LF)
+	LD	C,DSS_PUTCHAR
+	RST	DSS
+	CALL	.KB_AT_HL		; downloaded KB
+	LD	HL,S_PROG_MID		; "KB / "
+	CALL	.PUTS
+	POP	HL			; total ptr
+	LD	A,(HL)
+	INC	HL
+	OR	(HL)
+	INC	HL
+	OR	(HL)
+	INC	HL
+	OR	(HL)
+	DEC	HL
+	DEC	HL
+	DEC	HL
+	JR	NZ,.HAVE_TOTAL
+	LD	A,'?'			; total unknown
+	LD	C,DSS_PUTCHAR
+	RST	DSS
+	JR	.TAIL
+.HAVE_TOTAL
+	CALL	.KB_AT_HL		; total KB
+.TAIL
+	LD	HL,S_PROG_KB		; "KB"
+	JP	.PUTS
+
+; Print the 4-byte LE value at (HL) divided by 1024 (i.e. in KB).
+.KB_AT_HL
+	LD	DE,SCRATCH
+	LD	BC,4
+	LDIR
+	LD	DE,1024
+	CALL	DIV32_BY_DE
+	LD	HL,(SCRATCH)
+	LD	DE,(SCRATCH+2)
+	JP	PRINT_DEC_32
+
+.PUTS
+	LD	A,(HL)
+	AND	A
+	RET	Z
+	PUSH	HL
+	LD	C,DSS_PUTCHAR
+	RST	DSS
+	POP	HL
+	INC	HL
+	JR	.PUTS
+
+S_PROG_MID	DB "KB / ",0
+S_PROG_KB	DB "KB",0
+
 S_PREFIX	DB "  ",0
 S_BYTES_IN	DB " bytes in ",0
 S_SEC		DB " sec",0

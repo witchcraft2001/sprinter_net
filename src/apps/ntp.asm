@@ -53,6 +53,7 @@ START
 
 	CALL	WIFI.UART_FIND
 	JP	C,NO_WIFI
+	CALL	WCOMMON.REQUIRE_NET_UP
 
 	CALL	NETCFG.LOAD
 	CALL	NETCFG.APPLY_UART_BAUD
@@ -717,8 +718,9 @@ PUT_CHAR
 ; Strings
 ; ------------------------------------------------------
 MSG_START
-	DB "NTP - set DSS time over UDP NTP"
-	PACKAGE_VERSION_SUFFIX
+	DB "NTP "
+	PACKAGE_VERSION_TAG
+	DB " - set DSS time over UDP NTP"
 	DB 0
 MSG_UART_READY
 	DB "UART initialized.",0
