@@ -170,14 +170,27 @@ CHECK_CANCEL_IN_ISA
 	SCF
 	RET
 .NO_KEY
+	; Optional idle callback (e.g. a clock tick), run here while ISA is CLOSED so
+	; the callback may use DSS/BIOS safely. Zero by default -> no-op for apps that
+	; don't set it. The callback must return with a plain RET and may clobber
+	; registers (we restore them below).
+	LD	HL,(IDLE_CB)
+	LD	A,H
+	OR	L
+	CALL	NZ,.CALL_CB
 	CALL	@ISA.ISA_OPEN
 	POP	HL,DE,BC,AF
 	AND	A
 	RET
+.CALL_CB
+	JP	(HL)			; call IDLE_CB (it RETs to the CALL NZ site)
 
 ; Cancellation flag. Set by CHECK_CANCEL when Esc/Ctrl+Z detected.
 ; Top-level error handlers in apps check this and redirect to CANCEL_EXIT.
 CANCELLED	DB 0
+; Idle callback pointer, invoked from CHECK_CANCEL_IN_ISA while ISA is closed
+; (so it can call DSS/BIOS). Apps set it to a routine; 0 = none.
+IDLE_CB		DW 0
 
 ; ------------------------------------------------------
 ; Store old video mode and set 80x32 without clearing the console.

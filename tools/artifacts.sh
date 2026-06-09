@@ -45,6 +45,14 @@ DIST_DOC_FILES=(
   LICENSE
 )
 
+# Documentation files stored as UTF-8 in the repo but that MUST ship in the
+# distribution (zip and floppy image) encoded as CP866, the code page the DSS
+# console uses for Cyrillic. package.sh / image.sh convert these with iconv
+# instead of copying them verbatim. Do NOT also list them in DIST_DOC_FILES.
+DIST_DOC_CP866_FILES=(
+  docs/HOWTO_RU.TXT
+)
+
 # Configuration examples copied to the distribution root.
 DIST_CONFIG_FILES=(
   config/NETSMPL.CFG

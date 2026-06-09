@@ -334,11 +334,35 @@ NET_ERROR_EXIT
 		PUSH	AF
 		CALL	CLEANUP_TCP
 		POP	AF
+		PUSH	AF
 		ADD	A,'0'
 		LD	(MSG_NET_ERROR_NO),A
 		PRINTLN MSG_NET_ERROR
+		POP	AF
+		CALL	PRINT_NET_REASON		; plain-language hint for the RES_* code
 		LD	B,3
 		JP	WCOMMON.EXIT
+
+; Print a human-readable explanation line for the RES_* network error code in A
+; (esplib.asm). "#3" alone means nothing to a tester; this says what to check.
+; Unknown/benign codes print nothing. Trashes A,HL,DE.
+PRINT_NET_REASON
+		CP	NET_REASON_COUNT
+		RET	NC
+		LD	L,A
+		LD	H,0
+		ADD	HL,HL				; code * 2 (word table)
+		LD	DE,NET_REASON_TABLE
+		ADD	HL,DE
+		LD	E,(HL)
+		INC	HL
+		LD	D,(HL)
+		LD	A,D
+		OR	E				; null entry -> no extra line
+		RET	Z
+		EX	DE,HL
+		PRINTLN_HL
+		RET
 
 FTP_ERROR_EXIT
 		CALL	CLEANUP_TCP
@@ -2671,8 +2695,9 @@ INIT_MEMORY_ERROR
 		RST	DSS
 
 MSG_START
-		DB "FTP - passive FTP client for SprinterESP"
-		PACKAGE_VERSION_SUFFIX
+		DB "FTP "
+		PACKAGE_VERSION_TAG
+		DB " - passive FTP client for SprinterESP"
 		DB 0
 		; MSG_USAGE moved to the WIN2 cold overlay (see OVL_MSG_USAGE below).
 MSG_WIFI_FOUND
@@ -2725,6 +2750,28 @@ MSG_NET_ERROR
 		DB "Network/ESP error #"
 MSG_NET_ERROR_NO
 		DB "n!",0
+; Plain-language hints for the RES_* codes, printed under "Network/ESP error #N".
+; Indexed by code; a 0 entry means "no hint for this code".
+NET_REASON_COUNT	EQU 7
+NET_REASON_TABLE
+		DW 0			; 0 RES_OK (not an error)
+		DW MSG_NETR_ERR		; 1 RES_ERROR
+		DW MSG_NETR_FAIL	; 2 RES_FAIL
+		DW MSG_NETR_TXTO	; 3 RES_TX_TIMEOUT
+		DW MSG_NETR_RXTO	; 4 RES_RS_TIMEOUT
+		DW 0			; 5 RES_CONNECTED
+		DW MSG_NETR_NOCONN	; 6 RES_NOT_CONN
+MSG_NETR_ERR
+		DB "Could not open the connection: host down or refused, wrong",13,10
+		DB "address/DNS, or Wi-Fi not up (run NETUP).",0
+MSG_NETR_FAIL
+		DB "The network operation failed.",0
+MSG_NETR_TXTO
+		DB "Sprinter-WiFi (ESP) did not respond - check the card and cabling.",0
+MSG_NETR_RXTO
+		DB "No reply from the server - it may be down or too slow (timeout).",0
+MSG_NETR_NOCONN
+		DB "The connection was closed before the transfer finished.",0
 MSG_FTP_ERROR
 		DB "FTP server returned error: ",0
 MSG_UART_OVERRUN

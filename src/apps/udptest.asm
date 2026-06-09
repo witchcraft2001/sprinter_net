@@ -483,8 +483,9 @@ PUT_CHAR
 	RET
 
 MSG_START
-	DB "UDPTEST - ESP-AT UDP smoke test"
-	PACKAGE_VERSION_SUFFIX
+	DB "UDPTEST "
+	PACKAGE_VERSION_TAG
+	DB " - ESP-AT UDP smoke test"
 	DB 0
 MSG_USAGE
 	DB "Usage: UDPTEST.EXE host port [message [local_port]]",0

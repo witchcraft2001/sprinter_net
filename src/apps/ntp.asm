@@ -718,8 +718,9 @@ PUT_CHAR
 ; Strings
 ; ------------------------------------------------------
 MSG_START
-	DB "NTP - set DSS time over UDP NTP"
-	PACKAGE_VERSION_SUFFIX
+	DB "NTP "
+	PACKAGE_VERSION_TAG
+	DB " - set DSS time over UDP NTP"
 	DB 0
 MSG_UART_READY
 	DB "UART initialized.",0

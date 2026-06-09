@@ -883,8 +883,9 @@ PUT_CHAR
 	RET
 
 MSG_START
-	DB "NETUP - bring SprinterESP network up"
-	PACKAGE_VERSION_SUFFIX
+	DB "NETUP "
+	PACKAGE_VERSION_TAG
+	DB " - bring SprinterESP network up"
 	DB 0
 MSG_NO_CFG
 	DB "NET.CFG not found. Run NETCFG /W first.",0
