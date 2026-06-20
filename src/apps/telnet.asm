@@ -70,6 +70,14 @@ STATUS_ROW		EQU SCREEN_ROWS - 1		; bottom row = persistent status
 STATUS_ATTR		EQU 0x17			; white ink (7) on blue paper (1)
 DEF_ATTR		EQU 0x07			; default white on black
 MAX_PARAMS		EQU 8				; CSI parameters captured per sequence
+; Status-row field columns: spinner, HH:MM:SS clock, state word, idle counter,
+; then the static host:port.
+SC_SPIN			EQU 1
+SC_CLOCK		EQU 3				; HH:MM:SS  (8 cols)
+SC_STATE		EQU 13				; ONLINE/IDLE/CLOSED (6 cols)
+SC_IDLELBL		EQU 20				; "idle:"  (5 cols)
+SC_IDLENUM		EQU 25				; NNN + 's'
+SC_HOST			EQU 31
 
 ; DSS text-screen functions (RST #10, C=func). Estex-DSS API numbers; the few
 ; already in dss.inc (CLEAR #56, PUTCHAR #5B) are reused from there.
@@ -161,6 +169,12 @@ MAIN_LOOP
 	CALL	HANDLE_KEY
 	JR	C,QUIT				; Alt+X requested
 	JR	NZ,.DRAIN_KEYS			; a key was handled - drain the rest of the buffer
+	; A failed send (CIPSEND to a dead socket) flags the link down.
+	LD	A,(LINK_DOWN)
+	OR	A
+	JP	NZ,REMOTE_CLOSED
+
+	CALL	STATUS_TICK			; keep the status row alive (spinner/clock/idle)
 
 	; Poll for incoming TCP data.
 	LD	HL,RECV_BUFFER
@@ -174,6 +188,8 @@ MAIN_LOOP
 	LD	A,B
 	OR	C
 	JR	Z,MAIN_LOOP
+	XOR	A
+	LD	(IDLE_SECS),A			; data arrived -> reset the idle timer
 	CALL	WIFI.UART_RX_PAUSE
 	LD	HL,RECV_BUFFER
 	CALL	PROCESS_RX
@@ -186,10 +202,13 @@ MAIN_LOOP
 	; CF=1: either a plain poll timeout (no data) or the link closed. A holds
 	; the TCP.RECEIVE result code.
 	CP	RES_NOT_CONN
-	JR	Z,REMOTE_CLOSED
+	JP	Z,REMOTE_CLOSED
 	JR	MAIN_LOOP
 
 REMOTE_CLOSED
+	LD	A,1
+	LD	(LINK_DOWN),A
+	CALL	REDRAW_DYNAMIC			; show CLOSED in the status row
 	PRINT	WCOMMON.LINE_END
 	PRINTLN	MSG_CLOSED
 	LD	B,0
@@ -257,9 +276,11 @@ HANDLE_KEY
 	LD	HL,TX_BUF
 	LD	BC,1
 	CALL	TCP.SEND_BUFFER
+	CALL	NOTE_TX_RESULT
 	JR	.HANDLED
 .SPECIAL
 	CALL	SEND_SPECIAL_KEY		; D = scancode; sends an ANSI seq if known
+	CALL	NOTE_TX_RESULT
 	JR	.HANDLED
 .SEND_CRLF
 	LD	A,CR
@@ -269,6 +290,7 @@ HANDLE_KEY
 	LD	HL,TX_BUF
 	LD	BC,2
 	CALL	TCP.SEND_BUFFER
+	CALL	NOTE_TX_RESULT
 .HANDLED
 	OR	1				; ZF=0 (key handled), CF=0
 	RET
@@ -1234,6 +1256,9 @@ INIT_SCREEN
 	JP	CLEAR_RECT
 
 ; DRAW_STATUS: paint the bottom status row (host:port + key hints).
+; DRAW_STATUS: paint the static parts of the status row (idle label, host:port)
+; then the first dynamic snapshot. Dynamic fields (spinner/clock/state/idle) are
+; refreshed by STATUS_TICK / REDRAW_DYNAMIC.
 DRAW_STATUS
 	LD	D,STATUS_ROW
 	LD	E,0
@@ -1244,15 +1269,158 @@ DRAW_STATUS
 	LD	C,DSS_CLEAR
 	RST	DSS
 	LD	D,STATUS_ROW
-	LD	E,1
+	LD	E,SC_IDLELBL
+	LD	HL,LBL_IDLE
+	CALL	PUTS_STATUS
+	LD	D,STATUS_ROW
+	LD	E,SC_HOST
 	LD	HL,HOST_BUFF
 	CALL	PUTS_STATUS
 	LD	A,':'
 	CALL	PUTC_STATUS
 	LD	HL,PORT_BUFF
 	CALL	PUTS_STATUS
-	LD	HL,MSG_STAT_HINT
-	JP	PUTS_STATUS
+	JP	REDRAW_DYNAMIC
+
+; ------------------------------------------------------
+; STATUS_TICK: called once per main-loop pass. Every 8 passes it advances the
+; spinner (proves the program is alive, independent of the RTC) and samples the
+; clock; on a new second it bumps the idle counter and repaints the dynamic
+; status fields. Self-throttling, so it is cheap to call every iteration.
+; ------------------------------------------------------
+STATUS_TICK
+	PUSH	BC,DE,HL,IX
+	LD	A,(SPIN_TICK)
+	INC	A
+	LD	(SPIN_TICK),A
+	AND	7
+	JR	NZ,.done
+	CALL	ADVANCE_SPINNER
+	LD	C,DSS_SYSTIME			; H=hour, L=min, B=sec
+	RST	DSS
+	LD	A,H
+	LD	(T_HOUR),A
+	LD	A,L
+	LD	(T_MIN),A
+	LD	A,B
+	LD	(T_SEC),A			; A = seconds
+	LD	HL,LAST_SEC
+	CP	(HL)
+	JR	Z,.done				; same second -> nothing to repaint
+	LD	(HL),A
+	LD	A,(IDLE_SECS)			; count idle seconds (cap 255)
+	CP	255
+	JR	NC,.redraw
+	INC	A
+	LD	(IDLE_SECS),A
+.redraw
+	CALL	REDRAW_DYNAMIC
+.done
+	POP	IX,HL,DE,BC
+	RET
+
+; ADVANCE_SPINNER: rotate the spinner glyph at SC_SPIN.
+ADVANCE_SPINNER
+	LD	A,(SPIN_IDX)
+	INC	A
+	AND	3
+	LD	(SPIN_IDX),A
+	LD	E,A
+	LD	D,0
+	LD	HL,SPIN_CHARS
+	ADD	HL,DE
+	LD	A,(HL)
+	LD	D,STATUS_ROW
+	LD	E,SC_SPIN
+	JP	PUTC_STATUS
+
+; REDRAW_DYNAMIC: repaint clock (HH:MM:SS), state word and idle count.
+REDRAW_DYNAMIC
+	LD	D,STATUS_ROW
+	LD	E,SC_CLOCK
+	LD	A,(T_HOUR)
+	CALL	STAT_PUT2
+	LD	A,':'
+	CALL	PUTC_STATUS
+	LD	A,(T_MIN)
+	CALL	STAT_PUT2
+	LD	A,':'
+	CALL	PUTC_STATUS
+	LD	A,(T_SEC)
+	CALL	STAT_PUT2
+	LD	D,STATUS_ROW
+	LD	E,SC_STATE
+	CALL	STATE_PTR
+	CALL	PUTS_STATUS
+	LD	D,STATUS_ROW
+	LD	E,SC_IDLENUM
+	LD	A,(IDLE_SECS)
+	CALL	STAT_PUT3
+	LD	A,'s'
+	JP	PUTC_STATUS
+
+; STATE_PTR: HL -> the current link-state string.
+STATE_PTR
+	LD	A,(LINK_DOWN)
+	OR	A
+	JR	NZ,.closed
+	LD	A,(IDLE_SECS)
+	CP	5
+	JR	NC,.idle
+	LD	HL,ST_ONLINE
+	RET
+.idle
+	LD	HL,ST_IDLE
+	RET
+.closed
+	LD	HL,ST_CLOSED
+	RET
+
+; STAT_PUT2: A = 0..99 -> two decimal digits at (D,E); E advances by 2.
+STAT_PUT2
+	LD	B,'0'-1
+.t
+	INC	B
+	SUB	10
+	JR	NC,.t
+	ADD	A,10				; A = units value, B = tens digit char
+	PUSH	AF
+	LD	A,B
+	CALL	PUTC_STATUS
+	POP	AF
+	ADD	A,'0'
+	JP	PUTC_STATUS
+
+; STAT_PUT3: A = 0..255 -> three decimal digits at (D,E); E advances by 3.
+STAT_PUT3
+	LD	B,'0'-1
+.h
+	INC	B
+	SUB	100
+	JR	NC,.h
+	ADD	A,100				; A = remainder 0..99, B = hundreds digit char
+	PUSH	AF
+	LD	A,B
+	CALL	PUTC_STATUS
+	POP	AF
+	JP	STAT_PUT2
+
+; NOTE_TX_RESULT: CF from a TCP send. A clean send clears the failure run; two
+; consecutive failures (CIPSEND to a dead socket) mark the link down.
+NOTE_TX_RESULT
+	JR	C,.fail
+	XOR	A
+	LD	(SEND_FAILS),A
+	RET
+.fail
+	LD	A,(SEND_FAILS)
+	INC	A
+	LD	(SEND_FAILS),A
+	CP	2
+	RET	C
+	LD	A,1
+	LD	(LINK_DOWN),A
+	RET
 
 ; PUTS_STATUS: write ASCIIZ at HL onto the status row. In: D=row, E=col; E advances.
 PUTS_STATUS
@@ -1485,8 +1653,16 @@ MSG_NO_CONNECT_HINT
 	DB "resolve (DNS). Check the address/port and your connection.",0
 MSG_DONE
 	DB "TELNET done.",0
-MSG_STAT_HINT
-	DB "   Alt+X quit   Esc->BBS",0
+LBL_IDLE
+	DB "idle:",0
+ST_ONLINE
+	DB "ONLINE",0
+ST_IDLE
+	DB "IDLE  ",0
+ST_CLOSED
+	DB "CLOSED",0
+SPIN_CHARS
+	DB '|','/','-',92			; 92 = '\'
 MSG_COMM_ERROR
 	DB "ESP communication error #"
 MSG_ERROR_NO
@@ -1532,6 +1708,17 @@ CSI_IDX		DB 0			; index of the current/last CSI parameter
 CSI_PRIV	DB 0			; non-zero if a private (?,>,=,<) CSI
 CSI_ANY		DB 0			; non-zero if any digit/';' was seen
 CSI_PARAMS	DS MAX_PARAMS,0		; parsed CSI parameters
+
+; --- Status row / link health ---
+T_HOUR		DB 0
+T_MIN		DB 0
+T_SEC		DB 0
+LAST_SEC	DB 0xFF			; last second drawn (force first repaint)
+IDLE_SECS	DB 0			; seconds since last received data (cap 255)
+SPIN_TICK	DB 0			; main-loop counter for spinner pacing
+SPIN_IDX	DB 0			; spinner glyph index 0..3
+LINK_DOWN	DB 0			; 1 once a disconnect is detected
+SEND_FAILS	DB 0			; consecutive TCP send failures
 
 	ENDMODULE
 
