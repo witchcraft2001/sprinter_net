@@ -8,6 +8,8 @@ DEFAULT_TIMEOUT		EQU 2000
 PING_TIMEOUT		EQU 8000
 PING_BUSY_RETRIES	EQU 8			; AT+PING retries while the ESP answers "busy"
 PING_BUSY_DELAY		EQU 400			; ms between busy retries
+PING_WARMUP_RETRIES	EQU 3			; AT+PING retries while the route is still warming up ("+timeout")
+PING_WARMUP_DELAY	EQU 600			; ms between warmup retries
 HOST_SIZE		EQU 96
 CMD_SIZE		EQU 128
 
@@ -74,22 +76,41 @@ START
 	; manual run works only because the human pause already covers this window.
 	LD	A,PING_BUSY_RETRIES
 	LD	(PING_RETRY),A
+	LD	A,PING_WARMUP_RETRIES
+	LD	(PING_WRETRY),A
 .PING_TRY
 	LD	HL,CMD_BUFF
 	LD	DE,WIFI.RS_BUFF
 	LD	BC,PING_TIMEOUT
 	CALL	WIFI.UART_TX_CMD
 	AND	A
-	JR	Z,.PING_OK
+	JP	Z,.PING_OK
 	LD	(PING_STATUS),A
-	CALL	RESP_HAS_BUSY			; CF=1 if ESP replied "busy"
-	JR	NC,.PING_NZ			; not busy -> normal error handling
+	; "busy p..." -> the ESP IP stack is still coming up; quick retry.
+	LD	HL,LIT_BUSY
+	CALL	RESP_CONTAINS			; CF=1 if ESP replied "busy"
+	JR	NC,.CHK_WARMUP
 	LD	A,(PING_RETRY)
 	OR	A
-	JR	Z,.PING_NZ			; out of retries -> report
+	JR	Z,.PING_NZ			; out of busy retries -> report
 	DEC	A
 	LD	(PING_RETRY),A
 	LD	HL,PING_BUSY_DELAY
+	CALL	UTIL.DELAY
+	JR	.PING_TRY
+.CHK_WARMUP
+	; Right after NETUP the route/ARP may not be ready yet, so the first pings
+	; come back "+timeout" (or no reply at all). Retry a few times before
+	; declaring the host unreachable - a manual run avoids this via the human
+	; pause. A genuinely down host still fails once the retries are spent.
+	CALL	RESP_IS_PING_TIMEOUT		; CF=1 if "+timeout" or silent timeout
+	JR	NC,.PING_NZ
+	LD	A,(PING_WRETRY)
+	OR	A
+	JR	Z,.PING_NZ			; out of warmup retries -> report
+	DEC	A
+	LD	(PING_WRETRY),A
+	LD	HL,PING_WARMUP_DELAY
 	CALL	UTIL.DELAY
 	JR	.PING_TRY
 .PING_NZ
@@ -97,6 +118,10 @@ START
 	CALL	PRINT_PING_RESULT
 	JR	NC,.SUCCESS
 
+	; A genuine ping timeout (host unreachable) is not the same as an ESP that
+	; does not support AT+PING - report it accordingly.
+	CALL	RESP_IS_PING_TIMEOUT
+	JR	C,.TIMED_OUT
 	LD	A,(PING_STATUS)
 	CP	RES_ERROR
 	JR	Z,.UNSUPPORTED
@@ -105,6 +130,11 @@ START
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+
+.TIMED_OUT
+	PRINTLN MSG_PING_TIMEOUT
 	LD	B,3
 	JP	WCOMMON.EXIT
 
@@ -404,6 +434,9 @@ MSG_MS
 	DB " ms",0
 MSG_NO_PING_RESULT
 	DB "No +PING result in ESP response:",0
+MSG_PING_TIMEOUT
+	DB "Host did not respond (timed out). It may be down, blocking",13,10
+	DB "ping, or the network is still coming up - try again.",0
 MSG_PING_UNSUPPORTED
 	DB "ESP-AT PING failed or is not supported by firmware/emulator.",0
 MSG_DONE
@@ -425,47 +458,70 @@ RESP_PING_PREFIX
 	DB "+PING:",0
 LIT_BUSY
 	DB "busy",0
+LIT_TIMEOUT
+	DB "timeout",0			; ESP AT+PING failure indicator ("+timeout")
 PING_DIGITS
 	DB 0
 PING_STATUS
 	DB 0
 PING_RETRY
 	DB 0
+PING_WRETRY
+	DB 0
 CMDLINE_PTR
 	DW 0			; arg buffer ptr captured from IX at entry
 
 ; ------------------------------------------------------
-; RESP_HAS_BUSY: scan WIFI.RS_BUFF for the substring "busy" (ESP "busy p..."
-; indicator). Out: CF=1 if found, CF=0 if not. Trashes A,B,DE,HL.
+; RESP_IS_PING_TIMEOUT: CF=1 if the AT+PING response means "timed out" - either
+; the ESP wrote "+timeout"/"timeout" into RS_BUFF, or it stayed silent so the
+; UART layer returned RES_RS_TIMEOUT (PING_STATUS). Trashes A,B,DE,HL.
 ; ------------------------------------------------------
-RESP_HAS_BUSY
-	LD	HL,WIFI.RS_BUFF
+RESP_IS_PING_TIMEOUT
+	LD	A,(PING_STATUS)
+	CP	RES_RS_TIMEOUT
+	JR	Z,.YES				; no reply at all -> a timeout
+	LD	HL,LIT_TIMEOUT
+	JP	RESP_CONTAINS			; CF per scan
+.YES
+	SCF
+	RET
+
+; ------------------------------------------------------
+; RESP_CONTAINS: scan WIFI.RS_BUFF for the ASCIIZ needle at HL (e.g. "busy",
+; "timeout"). Out: CF=1 if found, CF=0 if not. Trashes A,B,DE,HL.
+; ------------------------------------------------------
+RESP_CONTAINS
+	PUSH	HL				; needle start
+	LD	DE,WIFI.RS_BUFF
 .SCAN
-	LD	A,(HL)
-	AND	A
-	JR	Z,.NO
-	PUSH	HL
-	LD	DE,LIT_BUSY
-.CMP
 	LD	A,(DE)
 	AND	A
-	JR	Z,.YES				; whole "busy" matched
-	LD	B,A
+	JR	Z,.NO
+	POP	HL				; reload needle start
+	PUSH	HL
+	PUSH	DE				; save haystack position
+.CMP
 	LD	A,(HL)
+	AND	A
+	JR	Z,.YES				; whole needle matched
+	LD	B,A
+	LD	A,(DE)
 	CP	B
 	JR	NZ,.NEXT
 	INC	HL
 	INC	DE
 	JR	.CMP
 .NEXT
-	POP	HL
-	INC	HL
+	POP	DE				; restore haystack position
+	INC	DE
 	JR	.SCAN
 .YES
-	POP	HL
+	POP	DE				; discard saved position
+	POP	HL				; discard needle start
 	SCF
 	RET
 .NO
+	POP	HL				; discard needle start
 	OR	A
 	RET
 

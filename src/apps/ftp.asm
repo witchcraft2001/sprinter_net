@@ -39,6 +39,12 @@ LINE_SIZE		EQU 112
 NO_HANDLE		EQU 0xFF
 DATA_CLOSED_LEN		EQU 8
 FTP_RESUME_LIMIT	EQU 12			; max automatic REST re-fetch attempts per download
+; Quiet ESP recovery (ESP_SOFT_RECOVER) tuning.
+FTP_DRAIN_IDLE_MS	EQU 60			; UART idle gap that ends a drain
+FTP_DRAIN_MAX_BYTES	EQU 8192		; safety cap on bytes discarded per drain
+FTP_SOFT_AT_RETRIES	EQU 12			; AT probes before giving up to a hard reset
+FTP_SOFT_AT_TIMEOUT	EQU 1200		; ms to wait for each AT reply
+FTP_SOFT_AT_DELAY	EQU 300			; ms between AT probes
 DSS_CREATE_OVERWRITE	EQU 0x0A
 OUT_SIZE		EQU 80
 
@@ -194,13 +200,19 @@ START
 		LD	(DATA_OPEN),A
 		LD	(CONTROL_OPEN),A
 		LD	(DATA_BYTES_SEEN),A
-		; Let the wedged ESP settle on its OWN (poll AT, no reset). A hardware
-		; reset would drop the Wi-Fi join and make the reconnect CIPSTART fail
-		; (#1); the manual re-run works precisely because it waits a few seconds
-		; with Wi-Fi still up. Only if AT never returns do we hard-reset, then
-		; wait out the Wi-Fi rejoin before logging in again.
-		CALL	WAIT_ESP_READY
-		JR	NC,.AR_LOGIN
+		; First try a QUIET recovery: drain the backlog the truncated transfer
+		; left in the UART, poll AT until the ESP answers, then close the stale
+		; sockets and restore CIPMUX=1 - all without AT+RST, which would drop the
+		; Wi-Fi join and force a manual NETUP. The routine is cold, so it runs
+		; from the WIN2 overlay and reports back in SOFT_RECOVER_OK.
+		LD	HL,OVL_ESP_SOFT_RECOVER
+		CALL	CALL_OVERLAY
+		LD	A,(SOFT_RECOVER_OK)
+		AND	A
+		JR	NZ,.AR_LOGIN			; ESP responsive -> re-login (no reset)
+		; AT never answered even after draining: the module is truly wedged, so
+		; hard-reset as the last resort. This drops Wi-Fi, so the reconnect may
+		; then fail with #1 and the user must re-run NETUP.
 		PRINTLN	MSG_RESETTING_ESP
 		CALL	WIFI.ESP_RESET
 		CALL	WIFI.UART_SET_DEFAULT_DIVISOR
@@ -1002,31 +1014,10 @@ DIV_HL_10
 ; data link mid-transfer the ESP can stop answering control traffic; running
 ; this before re-login is what lets an in-run auto-resume recover the same way
 ; a fresh re-run of the utility does.
-; Poll AT until the ESP answers again, WITHOUT a hardware reset (which would
-; drop the Wi-Fi join). After the peer closes a data link mid-transfer the
-; module stops answering control traffic for a few seconds; re-sending AT also
-; helps flush its UART parser. Out: CF=0 if it answered, CF=1 if still silent
-; after the window. Trashes A,BC,DE,HL.
-WAIT_ESP_READY
-		LD	B,12
-.LOOP
-		PUSH	BC
-		LD	HL,CMD_AT
-		LD	DE,WIFI.RS_BUFF
-		LD	BC,1500
-		CALL	WIFI.UART_TX_CMD
-		AND	A
-		JR	Z,.READY
-		LD	HL,500
-		CALL	UTIL.DELAY
-		POP	BC
-		DJNZ	.LOOP
-		SCF
-		RET
-.READY
-		POP	BC
-		OR	A				; CF=0
-		RET
+; ESP_SOFT_RECOVER / ESP_DRAIN_RX are cold (only run on a mid-transfer wedge) and
+; never touch RECV_BUFFER, so they live in the WIN2 cold overlay to keep WIN1
+; free for the hot path. See OVL_ESP_SOFT_RECOVER below; the auto-resume path
+; invokes them via CALL_OVERLAY and reads the SOFT_RECOVER_OK result byte.
 
 ESP_PRELUDE
 		LD	HL,CMD_AT
@@ -2688,6 +2679,10 @@ CALL_OVERLAY
 		RET
 
 RUNTIME_BLOCK	DB 0
+; Result of OVL_ESP_SOFT_RECOVER (run via CALL_OVERLAY, which cannot return a
+; value in registers). 1 = ESP responsive, 0 = AT never answered. Code-segment
+; var (not WIN2 BSS) so the overlay routine can write it and the caller read it.
+SOFT_RECOVER_OK	DB 0
 
 INIT_MEMORY_ERROR
 		LD	B,3
@@ -3028,6 +3023,75 @@ OVL_MSG_USAGE
 		DB "  -r        resume (append)",13,10
 		DB "  -l, -n    list (LIST / NLST)",13,10
 		DB "  /?        help",0
+
+; Quiet recovery after a mid-transfer error, WITHOUT a hardware reset (which
+; would drop the Wi-Fi join and force a manual NETUP). The truncated transfer
+; leaves async backlog (tail +IPD, CLOSED, "busy") in the UART that buries the
+; AT reply, so a naive AT probe times out and looks "dead". Steps:
+;   1. drain the UART to idle so the next reply is clean;
+;   2. probe AT (short timeout) with drain+delay between tries;
+;   3. once it answers: restore CIPMUX=1 and close the stale sockets.
+; The caller then re-logins. If Wi-Fi was actually lost, that re-login's
+; CIPSTART returns #1 and NET_ERROR_EXIT already prints the "...Wi-Fi not up
+; (run NETUP)" hint - so no separate Wi-Fi probe is needed here.
+; Cold-only and RECV_BUFFER-free, so it runs from the WIN2 overlay; CALL_OVERLAY
+; clobbers A/flags on return, so the result is passed back in SOFT_RECOVER_OK
+; (1 = ESP responsive, caller re-logins; 0 = AT never answered, caller resets).
+OVL_ESP_SOFT_RECOVER
+		LD	B,FTP_SOFT_AT_RETRIES
+.AT_LOOP
+		PUSH	BC
+		CALL	ESP_DRAIN_RX
+		LD	HL,CMD_AT
+		LD	DE,WIFI.RS_BUFF
+		LD	BC,FTP_SOFT_AT_TIMEOUT
+		CALL	WIFI.UART_TX_CMD
+		POP	BC
+		AND	A
+		JR	Z,.ALIVE
+		PUSH	BC
+		LD	HL,FTP_SOFT_AT_DELAY
+		CALL	UTIL.DELAY
+		POP	BC
+		DJNZ	.AT_LOOP
+		XOR	A
+		LD	(SOFT_RECOVER_OK),A		; 0 -> never answered, hard reset
+		RET
+.ALIVE
+		; Command interface is back. Restore the expected mode and clear any
+		; half-open sockets the wedge left behind (errors ignored - the link
+		; may already be gone).
+		LD	HL,CMD_CIPMUX_1
+		CALL	SEND_CMD_IGNORE
+		LD	A,DATA_LINK
+		CALL	TCP.CLOSE_LINK
+		LD	A,CONTROL_LINK
+		CALL	TCP.CLOSE_LINK
+		CALL	ESP_DRAIN_RX			; swallow the CLOSED/OK replies
+		LD	A,1
+		LD	(SOFT_RECOVER_OK),A		; 1 -> recovered, caller re-logins
+		RET
+
+; Drain pending UART RX bytes to idle so a following command sees a clean reply.
+; Asserts RTS (UART_RX_RESUME) so the ESP releases whatever it was holding, then
+; reads+discards until no byte arrives within FTP_DRAIN_IDLE_MS (or the byte cap
+; is hit), and resets the hardware FIFO. Trashes A,BC,DE,HL.
+ESP_DRAIN_RX
+		CALL	WIFI.UART_RX_RESUME
+		LD	DE,FTP_DRAIN_MAX_BYTES
+.LOOP
+		LD	BC,FTP_DRAIN_IDLE_MS
+		CALL	WIFI.UART_WAIT_RS		; CF=1 -> idle (no byte in window)
+		JR	C,.DONE
+		LD	HL,REG_RBR
+		CALL	WIFI.UART_READ			; consume one byte, discard
+		DEC	DE
+		LD	A,D
+		OR	E
+		JR	NZ,.LOOP
+.DONE
+		CALL	WIFI.UART_EMPTY_RS
+		RET
 OVL_END
 		ENT
 OVERLAY_SIZE	EQU OVL_END - OVL_BASE
