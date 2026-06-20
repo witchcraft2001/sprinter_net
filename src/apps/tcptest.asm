@@ -79,6 +79,7 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
+	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
 

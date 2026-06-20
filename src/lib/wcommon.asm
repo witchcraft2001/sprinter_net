@@ -358,6 +358,33 @@ SET_DHCP_MODE
 	;;ENDIF
 
 ; ------------------------------------------------------
+; Close any TCP/UDP connection a previous (possibly aborted or crashed) run
+; left open on the ESP, and flush stale UART bytes. ESP-AT rejects AT+CIPMUX
+; with ERROR while a connection is still established, which made wget/ftp/telnet
+; fail with "communication error #1" on their first command after such a
+; leftover (ping is immune because it never touches CIPMUX). Call this once,
+; after AT/ATE0 and before AT+CIPMUX. Every step ignores its result: with no
+; connection (or the other mux mode) the close just returns ERROR, which is
+; expected and harmless. Trashes A,BC,DE,HL.
+; ------------------------------------------------------
+; Compact: send close-all, then fall through to send close-one. UART_TX_CMD
+; already empties the RX FIFO before each send, so the next command (AT+CIPMUX)
+; starts clean without an explicit flush here.
+CLEAN_ESP_LINKS
+	LD	HL,CMD_CIPCLOSE_ALL		; close all links (id 5) - multi-conn mode
+	CALL	.tx
+	LD	HL,CMD_CIPCLOSE_ONE		; close the single connection - single mode
+.tx
+	LD	DE,@WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	JP	@WIFI.UART_TX_CMD
+
+CMD_CIPCLOSE_ALL
+	DB	"AT+CIPCLOSE=5",13,10,0
+CMD_CIPCLOSE_ONE
+	DB	"AT+CIPCLOSE",13,10,0
+
+; ------------------------------------------------------
 ; Require that NETUP has brought the network up: env NET must equal "WIFI" and
 ; NET_ESP_HW must be set (both published by NETUP). On failure print a hint and
 ; exit with B=4 (config error). Network-dependent tools call this before any

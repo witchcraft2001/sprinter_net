@@ -108,6 +108,7 @@ START
 	AND	A
 	JP	NZ,UDP_ERROR_EXIT
 
+	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
 
