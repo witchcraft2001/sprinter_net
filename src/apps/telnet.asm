@@ -231,8 +231,9 @@ USAGE
 ;        CF=0, ZF=1 (Z)  -> no key pending.
 ; Alt+X is the ONLY quit; every other key is forwarded to the host: Enter as
 ; CR,LF and any other ASCII (including control codes such as Esc 0x1B, Tab,
-; Backspace) as-is, so BBSes that navigate with Esc work. Special keys with no
-; ASCII (E=0), e.g. arrows, are consumed but not yet mapped.
+; Backspace) as-is, so BBSes that navigate with Esc work. Keys with no ASCII
+; (E=0) carry a scancode in D - arrows and Home/End/PgUp/PgDn/Del are mapped to
+; their ANSI sequences (SEND_SPECIAL_KEY); anything else is consumed.
 ; ------------------------------------------------------
 HANDLE_KEY
 	DSS_EXEC	DSS_SCANKEY
@@ -249,13 +250,16 @@ HANDLE_KEY
 .SEND
 	LD	A,E
 	AND	A
-	JR	Z,.HANDLED			; non-ASCII key (arrows etc.) - consumed, not mapped
+	JR	Z,.SPECIAL			; no ASCII -> arrow/navigation key (scancode in D)
 	CP	CR
 	JR	Z,.SEND_CRLF
 	LD	(TX_BUF),A
 	LD	HL,TX_BUF
 	LD	BC,1
 	CALL	TCP.SEND_BUFFER
+	JR	.HANDLED
+.SPECIAL
+	CALL	SEND_SPECIAL_KEY		; D = scancode; sends an ANSI seq if known
 	JR	.HANDLED
 .SEND_CRLF
 	LD	A,CR
@@ -271,6 +275,76 @@ HANDLE_KEY
 .NO_KEY
 	XOR	A				; ZF=1 (no key), CF=0
 	RET
+
+; ------------------------------------------------------
+; SEND_SPECIAL_KEY: D = scancode of a non-ASCII key. If it is a known
+; navigation key, transmit its ANSI escape sequence to the host; otherwise do
+; nothing. Scancodes are the DSS values used by the Sprinter text editor.
+; ------------------------------------------------------
+SEND_SPECIAL_KEY
+	LD	HL,KEYMAP
+.scan
+	LD	A,(HL)				; scancode entry (0 = end)
+	OR	A
+	RET	Z				; unknown key -> ignore
+	CP	D
+	JR	Z,.found
+	INC	HL				; skip scancode + 2-byte seq pointer
+	INC	HL
+	INC	HL
+	JR	.scan
+.found
+	INC	HL
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)				; DE -> ASCIIZ sequence
+	EX	DE,HL				; HL -> sequence
+; SEND_ASCIIZ: transmit the ASCIIZ string at HL over TCP.
+SEND_ASCIIZ
+	PUSH	HL
+	LD	BC,0
+.len
+	LD	A,(HL)
+	OR	A
+	JR	Z,.go
+	INC	HL
+	INC	BC
+	JR	.len
+.go
+	POP	HL
+	JP	TCP.SEND_BUFFER
+
+; Scancode -> ANSI sequence map (terminated by scancode 0). Arrows use normal
+; cursor-key mode (CSI), the form BBS menus expect.
+KEYMAP
+	DB	0x58
+	DW	SEQ_UP
+	DB	0x52
+	DW	SEQ_DOWN
+	DB	0x56
+	DW	SEQ_RIGHT
+	DB	0x54
+	DW	SEQ_LEFT
+	DB	0x57
+	DW	SEQ_HOME
+	DB	0x51
+	DW	SEQ_END
+	DB	0x59
+	DW	SEQ_PGUP
+	DB	0x53
+	DW	SEQ_PGDN
+	DB	0x4F
+	DW	SEQ_DEL
+	DB	0
+SEQ_UP		DB 27,"[A",0
+SEQ_DOWN	DB 27,"[B",0
+SEQ_RIGHT	DB 27,"[C",0
+SEQ_LEFT	DB 27,"[D",0
+SEQ_HOME	DB 27,"[H",0
+SEQ_END		DB 27,"[F",0
+SEQ_PGUP	DB 27,"[5~",0
+SEQ_PGDN	DB 27,"[6~",0
+SEQ_DEL		DB 27,"[3~",0
 
 ; ------------------------------------------------------
 ; PROCESS_RX: run BC bytes at HL through the telnet IAC state machine.
