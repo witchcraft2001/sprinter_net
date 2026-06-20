@@ -23,6 +23,7 @@ BUILD_APPS=(
   tftp
   ftp
   wterm
+  telnet
 )
 
 # Text/documentation files copied to the distribution root.
