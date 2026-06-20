@@ -66,6 +66,16 @@ SCREEN_ROWS		EQU 32
 STATUS_ROWS		EQU 1
 TERM_COLS		EQU SCREEN_COLS
 TERM_ROWS		EQU SCREEN_ROWS - STATUS_ROWS	; 31 rows offered to the BBS
+STATUS_ROW		EQU SCREEN_ROWS - 1		; bottom row = persistent status
+STATUS_ATTR		EQU 0x17			; white ink (7) on blue paper (1)
+DEF_ATTR		EQU 0x07			; default white on black
+MAX_PARAMS		EQU 8				; CSI parameters captured per sequence
+
+; DSS text-screen functions (RST #10, C=func). Estex-DSS API numbers; the few
+; already in dss.inc (CLEAR #56, PUTCHAR #5B) are reused from there.
+DSS_LOCATE		EQU 0x52			; D=row, E=col  (set cursor)
+DSS_SCROLL		EQU 0x55			; D=row E=col H=h L=w B=1up/2down A=0
+DSS_WRCHAR		EQU 0x58			; D=row E=col A=char B=attr
 
 	DEVICE NOSLOT64K
 
@@ -129,7 +139,7 @@ START
 	PRINT	HOST_BUFF
 	PRINTLN	WCOMMON.LINE_END
 	CALL	CONNECT_TCP
-	JR	C,CONNECT_FAILED
+	JP	C,CONNECT_FAILED
 
 	PRINTLN	MSG_CONNECTED
 
@@ -138,6 +148,10 @@ START
 	LD	(TN_STATE),A
 	LD	(OUT_STATE),A
 	LD	(NEG_LEN),A
+	; Hand the screen over to the emulator: clear the terminal region and paint
+	; the status row. From here output goes through WrChar, not the DSS console.
+	CALL	INIT_SCREEN
+	CALL	DRAW_STATUS
 
 ; ------------------------------------------------------
 ; Interactive loop: forward keys, render incoming data.
@@ -164,6 +178,7 @@ MAIN_LOOP
 	LD	HL,RECV_BUFFER
 	CALL	PROCESS_RX
 	CALL	WIFI.UART_RX_RESUME
+	CALL	SYNC_CURSOR			; park the hardware cursor at the emulator cursor
 	CALL	FLUSH_NEG
 	JR	MAIN_LOOP
 
@@ -501,64 +516,693 @@ NAWS_REPLY
 	DB	TN_IAC,TN_SE
 NAWS_REPLY_LEN	EQU $-NAWS_REPLY
 
-; ------------------------------------------------------
-; OUTPUT_BYTE: render one data byte to the console with a temporary ANSI
-; stripper (ESC / CSI sequences are swallowed) and CR/LF normalisation.
-; Replaced by the real ANSI/CP437 emulator in a later phase. In: C = byte.
-; ------------------------------------------------------
+; ======================================================
+; ANSI/VT100 terminal emulator (Phase 2)
+; Renders the post-telnet byte stream straight to the DSS text screen via
+; WrChar(#58)/Clear(#56)/Scroll(#55). No shadow buffer: the cursor
+; (CUR_ROW 0..TERM_ROWS-1, CUR_COL 0..TERM_COLS-1) and colour (CUR_ATTR,
+; derived from FG/BG/BOLD/REV) are tracked here and characters are written at
+; absolute positions. The status row (SCREEN_ROWS-1) is never touched.
+; PROCESS_RX runs with the ISA window closed (TCP.RECEIVE closed it) and RTS
+; deasserted, so DSS calls are safe and the ESP is paused while we render.
+; ======================================================
+
+; OUTPUT_BYTE: feed one data byte (C) through the emulator state machine.
 OUTPUT_BYTE
 	LD	A,(OUT_STATE)
 	CP	O_ESC
 	JR	Z,.IN_ESC
 	CP	O_CSI
-	JR	Z,.IN_CSI
+	JP	Z,.IN_CSI
 ; --- O_NORMAL ---
 	LD	A,C
-	CP	0x1B				; ESC -> start escape sequence
+	CP	0x1B				; ESC -> start an escape sequence
 	JR	Z,.TO_ESC
-	CP	CR
-	RET	Z				; drop bare CR; LF drives the newline
-	CP	LF
-	JR	Z,.NEWLINE
-	CP	0x20
-	RET	C				; drop other control chars
-	JP	PUT_CHAR			; A = printable byte
+	JP	TERM_CHAR			; printable byte or C0 control
 .TO_ESC
 	LD	A,O_ESC
 	LD	(OUT_STATE),A
 	RET
-.NEWLINE
-	LD	A,CR
-	CALL	PUT_CHAR
-	LD	A,LF
-	JP	PUT_CHAR
-; --- O_ESC: expect '[' for a CSI, otherwise a 2-byte ESC seq we ignore ---
+; --- O_ESC: expect '[' for a CSI; any other ESC<x> is ignored ---
 .IN_ESC
 	LD	A,C
 	CP	'['
 	JR	Z,.TO_CSI
-	LD	A,O_NORMAL			; non-CSI escape: consume the one byte, done
+	LD	A,O_NORMAL			; ESC <x>: drop the single byte
 	LD	(OUT_STATE),A
 	RET
 .TO_CSI
+	CALL	CSI_RESET
 	LD	A,O_CSI
 	LD	(OUT_STATE),A
 	RET
-; --- O_CSI: skip params until a final byte 0x40..0x7E ---
+; --- O_CSI: collect parameters, dispatch on the final byte ---
 .IN_CSI
 	LD	A,C
+	CP	'?'
+	JR	Z,.PRIV
+	CP	'>'
+	JR	Z,.PRIV
+	CP	'='
+	JR	Z,.PRIV
+	CP	'<'
+	JR	Z,.PRIV
+	CP	'0'
+	JR	C,.PUNCT
+	CP	'9'+1
+	JR	NC,.PUNCT
+	JR	.DIGIT
+.PUNCT
+	CP	';'
+	JR	Z,.SEP
 	CP	0x40
-	RET	C				; intermediate/param byte -> keep skipping
+	JR	C,.IGNORE_INT			; 0x20..0x3F intermediate -> ignore, stay
 	CP	0x7F
-	RET	NC
-	LD	A,O_NORMAL			; final byte reached
+	JR	NC,.CSI_END			; > 0x7E -> abort
+	CALL	CSI_DISPATCH			; 0x40..0x7E final byte (C)
+.CSI_END
+	LD	A,O_NORMAL
 	LD	(OUT_STATE),A
 	RET
+.PRIV
+	LD	A,1
+	LD	(CSI_PRIV),A
+	RET
+.IGNORE_INT
+	RET
+.SEP
+	LD	A,1
+	LD	(CSI_ANY),A
+	LD	A,(CSI_IDX)
+	CP	MAX_PARAMS-1
+	RET	NC
+	INC	A
+	LD	(CSI_IDX),A
+	RET
+.DIGIT
+	LD	A,1
+	LD	(CSI_ANY),A
+	LD	A,(CSI_IDX)
+	LD	L,A
+	LD	H,0
+	LD	DE,CSI_PARAMS
+	ADD	HL,DE				; HL -> params[idx]
+	LD	A,C
+	SUB	'0'
+	LD	E,A				; E = new digit
+	LD	A,(HL)				; D = old value, A *= 10
+	LD	D,A
+	ADD	A,A
+	JR	C,.DCLAMP
+	ADD	A,A
+	JR	C,.DCLAMP
+	ADD	A,D
+	JR	C,.DCLAMP
+	ADD	A,A
+	JR	C,.DCLAMP
+	ADD	A,E
+	JR	C,.DCLAMP
+	LD	(HL),A
+	RET
+.DCLAMP
+	LD	(HL),255
+	RET
 
-PUT_CHAR
-	PUSH	BC,HL
-	LD	C,DSS_PUTCHAR			; A = char
+; Reset the CSI parameter parser.
+CSI_RESET
+	XOR	A
+	LD	(CSI_IDX),A
+	LD	(CSI_PRIV),A
+	LD	(CSI_ANY),A
+	LD	HL,CSI_PARAMS
+	LD	B,MAX_PARAMS
+.Z	LD	(HL),0
+	INC	HL
+	DJNZ	.Z
+	RET
+
+; GET_PARAM: A = index -> A = CSI_PARAMS[index].
+GET_PARAM
+	LD	L,A
+	LD	H,0
+	LD	DE,CSI_PARAMS
+	ADD	HL,DE
+	LD	A,(HL)
+	RET
+
+; PARAM0_OR1: A = params[0], or 1 if it is 0 (default count).
+PARAM0_OR1
+	XOR	A
+	CALL	GET_PARAM
+	OR	A
+	RET	NZ
+	INC	A
+	RET
+
+; CSI_DISPATCH: act on final byte in C. Private (?,>,=,<) sequences are ignored.
+CSI_DISPATCH
+	LD	A,(CSI_PRIV)
+	OR	A
+	RET	NZ
+	LD	A,C
+	CP	'H'
+	JP	Z,CUP
+	CP	'f'
+	JP	Z,CUP
+	CP	'A'
+	JP	Z,CUU
+	CP	'B'
+	JP	Z,CUD
+	CP	'C'
+	JP	Z,CUF
+	CP	'D'
+	JP	Z,CUB
+	CP	'J'
+	JP	Z,ED
+	CP	'K'
+	JP	Z,EL
+	CP	'm'
+	JP	Z,SGR
+	CP	's'
+	JP	Z,SCP
+	CP	'u'
+	JP	Z,RCP
+	RET					; unhandled final byte
+
+; --- Cursor movement ---
+CUP						; ESC[r;cH / f
+	XOR	A
+	CALL	GET_PARAM			; row (1-based; 0 = default)
+	OR	A
+	JR	NZ,.R
+	INC	A
+.R	DEC	A
+	LD	(CUR_ROW),A
+	LD	A,1
+	CALL	GET_PARAM			; col
+	OR	A
+	JR	NZ,.C
+	INC	A
+.C	DEC	A
+	LD	(CUR_COL),A
+	JP	CLAMP_CURSOR
+CUU						; up
+	CALL	PARAM0_OR1
+	LD	B,A
+	LD	A,(CUR_ROW)
+	SUB	B
+	JR	NC,.OK
+	XOR	A
+.OK	LD	(CUR_ROW),A
+	RET
+CUD						; down
+	CALL	PARAM0_OR1
+	LD	B,A
+	LD	A,(CUR_ROW)
+	ADD	A,B
+	CP	TERM_ROWS
+	JR	C,.OK
+	LD	A,TERM_ROWS-1
+.OK	LD	(CUR_ROW),A
+	RET
+CUF						; right
+	CALL	PARAM0_OR1
+	LD	B,A
+	LD	A,(CUR_COL)
+	ADD	A,B
+	CP	TERM_COLS
+	JR	C,.OK
+	LD	A,TERM_COLS-1
+.OK	LD	(CUR_COL),A
+	RET
+CUB						; left
+	CALL	PARAM0_OR1
+	LD	B,A
+	LD	A,(CUR_COL)
+	SUB	B
+	JR	NC,.OK
+	XOR	A
+.OK	LD	(CUR_COL),A
+	RET
+
+CLAMP_CURSOR
+	LD	A,(CUR_ROW)
+	CP	TERM_ROWS
+	JR	C,.ROW_OK
+	LD	A,TERM_ROWS-1
+	LD	(CUR_ROW),A
+.ROW_OK
+	LD	A,(CUR_COL)
+	CP	TERM_COLS
+	RET	C
+	LD	A,TERM_COLS-1
+	LD	(CUR_COL),A
+	RET
+
+SCP						; save cursor
+	LD	A,(CUR_ROW)
+	LD	(SAVED_ROW),A
+	LD	A,(CUR_COL)
+	LD	(SAVED_COL),A
+	RET
+RCP						; restore cursor
+	LD	A,(SAVED_ROW)
+	LD	(CUR_ROW),A
+	LD	A,(SAVED_COL)
+	LD	(CUR_COL),A
+	RET
+
+; --- Erase ---
+ED						; ESC[nJ erase in display
+	XOR	A
+	CALL	GET_PARAM
+	OR	A
+	JR	Z,.FROM_CUR			; 0: cursor..end
+	CP	1
+	JR	Z,.TO_CUR			; 1: start..cursor
+	CP	2
+	RET	NZ
+	; 2: clear whole terminal region and home (ANSI.SYS behaviour)
+	LD	D,0
+	LD	E,0
+	LD	H,TERM_ROWS
+	LD	L,TERM_COLS
+	CALL	CLEAR_RECT
+	XOR	A
+	LD	(CUR_ROW),A
+	LD	(CUR_COL),A
+	RET
+.FROM_CUR
+	CALL	EL_FROM_CUR
+	LD	A,(CUR_ROW)
+	INC	A
+	CP	TERM_ROWS
+	RET	NC				; nothing below the cursor row
+	LD	D,A
+	LD	E,0
+	LD	A,TERM_ROWS
+	SUB	D
+	LD	H,A
+	LD	L,TERM_COLS
+	JP	CLEAR_RECT
+.TO_CUR
+	LD	A,(CUR_ROW)
+	OR	A
+	JR	Z,.TC_LINE
+	LD	D,0
+	LD	E,0
+	LD	H,A				; rows above
+	LD	L,TERM_COLS
+	CALL	CLEAR_RECT
+.TC_LINE
+	JP	EL_TO_CUR
+
+EL						; ESC[nK erase in line
+	XOR	A
+	CALL	GET_PARAM
+	OR	A
+	JR	Z,EL_FROM_CUR
+	CP	1
+	JR	Z,EL_TO_CUR
+	CP	2
+	RET	NZ
+	LD	A,(CUR_ROW)
+	LD	D,A
+	LD	E,0
+	LD	H,1
+	LD	L,TERM_COLS
+	JP	CLEAR_RECT
+
+EL_FROM_CUR					; current line: cursor..EOL
+	LD	A,(CUR_ROW)
+	LD	D,A
+	LD	A,(CUR_COL)
+	LD	E,A
+	LD	H,1
+	LD	A,TERM_COLS
+	SUB	E
+	LD	L,A
+	JP	CLEAR_RECT
+EL_TO_CUR					; current line: BOL..cursor
+	LD	A,(CUR_ROW)
+	LD	D,A
+	LD	E,0
+	LD	H,1
+	LD	A,(CUR_COL)
+	INC	A
+	LD	L,A
+	JP	CLEAR_RECT
+
+; CLEAR_RECT: D=row E=col H=height L=width. Fills with spaces in CUR_ATTR.
+CLEAR_RECT
+	LD	A,H
+	OR	A
+	RET	Z
+	LD	A,L
+	OR	A
+	RET	Z
+	LD	A,(CUR_ATTR)
+	LD	B,A
+	LD	A,' '
+	LD	C,DSS_CLEAR
 	RST	DSS
+	RET
+
+; --- SGR colours ---
+SGR
+	LD	A,(CSI_ANY)
+	OR	A
+	JR	NZ,.HAVE
+	XOR	A				; bare ESC[m == ESC[0m
+	CALL	SGR_APPLY
+	JP	RECALC_ATTR
+.HAVE
+	LD	B,0
+.LOOP
+	LD	A,B
+	CALL	GET_PARAM
+	CALL	SGR_APPLY
+	LD	A,B
+	LD	HL,CSI_IDX
+	CP	(HL)
+	JR	Z,.FIN
+	INC	B
+	JR	.LOOP
+.FIN
+	JP	RECALC_ATTR
+
+; SGR_APPLY: fold one SGR code (A) into the FG/BG/BOLD/REV state.
+SGR_APPLY
+	OR	A
+	JR	Z,.RESET
+	CP	1
+	JR	Z,.BOLD
+	CP	2
+	JR	Z,.NOBOLD
+	CP	7
+	JR	Z,.REV
+	CP	22
+	JR	Z,.NOBOLD
+	CP	27
+	JR	Z,.NOREV
+	CP	39
+	JR	Z,.DEFFG
+	CP	49
+	JR	Z,.DEFBG
+	CP	30
+	RET	C
+	CP	38
+	JR	C,.FG				; 30..37
+	CP	40
+	RET	C				; 38,39 handled/ignored
+	CP	48
+	JR	C,.BG				; 40..47
+	CP	90
+	RET	C
+	CP	98
+	JR	C,.FGBRT			; 90..97
+	CP	100
+	RET	C
+	CP	108
+	JR	C,.BGBRT			; 100..107
+	RET
+.RESET
+	LD	A,7
+	LD	(ATTR_FG),A
+	XOR	A
+	LD	(ATTR_BG),A
+	LD	(ATTR_BOLD),A
+	LD	(ATTR_REV),A
+	RET
+.BOLD
+	LD	A,1
+	LD	(ATTR_BOLD),A
+	RET
+.NOBOLD
+	XOR	A
+	LD	(ATTR_BOLD),A
+	RET
+.REV
+	LD	A,1
+	LD	(ATTR_REV),A
+	RET
+.NOREV
+	XOR	A
+	LD	(ATTR_REV),A
+	RET
+.DEFFG
+	LD	A,7
+	LD	(ATTR_FG),A
+	RET
+.DEFBG
+	XOR	A
+	LD	(ATTR_BG),A
+	RET
+.FG
+	SUB	30
+	CALL	ANSI2ZX
+	LD	(ATTR_FG),A
+	RET
+.BG
+	SUB	40
+	CALL	ANSI2ZX
+	LD	(ATTR_BG),A
+	RET
+.FGBRT
+	SUB	90
+	CALL	ANSI2ZX
+	LD	(ATTR_FG),A
+	LD	A,1
+	LD	(ATTR_BOLD),A
+	RET
+.BGBRT
+	SUB	100
+	CALL	ANSI2ZX
+	OR	8
+	LD	(ATTR_BG),A
+	RET
+
+; ANSI2ZX: A = ANSI colour index 0..7 -> ZX palette index.
+ANSI2ZX
+	PUSH	HL
+	LD	L,A
+	LD	H,0
+	LD	DE,ANSI2ZX_TAB
+	ADD	HL,DE
+	LD	A,(HL)
+	POP	HL
+	RET
+ANSI2ZX_TAB
+	DB	0,2,4,6,1,3,5,7			; blk,red,grn,yel,blu,mag,cyn,wht
+
+; RECALC_ATTR: CUR_ATTR = (PAPER<<4)|INK from FG/BG/BOLD/REV.
+RECALC_ATTR
+	LD	A,(ATTR_FG)
+	AND	0x07
+	LD	B,A				; B = ink (fg)
+	LD	A,(ATTR_BOLD)
+	OR	A
+	JR	Z,.NB
+	LD	A,B
+	OR	8
+	LD	B,A				; bright ink
+.NB
+	LD	A,(ATTR_BG)
+	AND	0x0F
+	LD	C,A				; C = paper (bg)
+	LD	A,(ATTR_REV)
+	OR	A
+	JR	Z,.NOREV2
+	LD	A,B				; swap ink/paper
+	LD	B,C
+	LD	C,A
+.NOREV2
+	LD	A,C
+	AND	0x0F
+	RLCA
+	RLCA
+	RLCA
+	RLCA					; paper -> high nibble
+	LD	C,A
+	LD	A,B
+	AND	0x0F
+	OR	C
+	LD	(CUR_ATTR),A
+	RET
+
+; --- Character output ---
+; TERM_CHAR: render a post-escape data byte (C). Printable bytes (incl. 0x80+
+; box-drawing, which the CP866 font renders like CP437) are written at the
+; cursor and advance it with auto-wrap; C0 controls move the cursor.
+TERM_CHAR
+	LD	A,C
+	CP	0x20
+	JR	C,.CTRL
+	CALL	WRITE_GLYPH			; A = glyph
+	LD	A,(CUR_COL)
+	INC	A
+	CP	TERM_COLS
+	JR	C,.SETCOL
+	XOR	A				; wrap to next line
+	LD	(CUR_COL),A
+	JP	TERM_LF
+.SETCOL
+	LD	(CUR_COL),A
+	RET
+.CTRL
+	LD	A,C
+	CP	CR
+	JR	Z,.CR
+	CP	LF
+	JR	Z,TERM_LF
+	CP	0x08
+	JR	Z,.BS
+	CP	0x09
+	JR	Z,.TAB
+	RET					; ignore BEL and other controls
+.CR
+	XOR	A
+	LD	(CUR_COL),A
+	RET
+.BS
+	LD	A,(CUR_COL)
+	OR	A
+	RET	Z
+	DEC	A
+	LD	(CUR_COL),A
+	RET
+.TAB
+	LD	A,(CUR_COL)
+	OR	7
+	INC	A				; next multiple of 8
+	CP	TERM_COLS
+	JR	C,.TSET
+	LD	A,TERM_COLS-1
+.TSET
+	LD	(CUR_COL),A
+	RET
+
+; TERM_LF: move the cursor down one line, scrolling the region if at the bottom.
+TERM_LF
+	LD	A,(CUR_ROW)
+	INC	A
+	CP	TERM_ROWS
+	JR	C,.SET
+	CALL	SCROLL_TERM
+	LD	A,TERM_ROWS-1
+.SET
+	LD	(CUR_ROW),A
+	RET
+
+; WRITE_GLYPH: WrChar(A) at the cursor with CUR_ATTR (does not move the cursor).
+WRITE_GLYPH
+	PUSH	BC,DE,HL
+	LD	C,A				; C = glyph
+	LD	A,(CUR_ROW)
+	LD	D,A
+	LD	A,(CUR_COL)
+	LD	E,A
+	LD	A,(CUR_ATTR)
+	LD	B,A
+	LD	A,C
+	LD	C,DSS_WRCHAR
+	RST	DSS
+	POP	HL,DE,BC
+	RET
+
+; SCROLL_TERM: scroll rows 0..TERM_ROWS-1 up by one and clear the new bottom
+; row in the current attribute (so the scrolled-in line uses the right paper).
+SCROLL_TERM
+	PUSH	BC,DE,HL
+	LD	D,0
+	LD	E,0
+	LD	H,TERM_ROWS
+	LD	L,TERM_COLS
+	LD	B,1				; scroll up
+	XOR	A
+	LD	C,DSS_SCROLL
+	RST	DSS
+	LD	D,TERM_ROWS-1
+	LD	E,0
+	LD	H,1
+	LD	L,TERM_COLS
+	CALL	CLEAR_RECT
+	POP	HL,DE,BC
+	RET
+
+; SYNC_CURSOR: position the hardware text cursor at CUR_ROW/CUR_COL.
+SYNC_CURSOR
+	PUSH	BC,DE,HL
+	LD	A,(CUR_ROW)
+	LD	D,A
+	LD	A,(CUR_COL)
+	LD	E,A
+	LD	C,DSS_LOCATE
+	RST	DSS
+	POP	HL,DE,BC
+	RET
+
+; INIT_SCREEN: reset attributes/cursor and clear the terminal region.
+INIT_SCREEN
+	XOR	A
+	LD	(CUR_ROW),A
+	LD	(CUR_COL),A
+	LD	(ATTR_BOLD),A
+	LD	(ATTR_REV),A
+	LD	(ATTR_BG),A
+	LD	A,7
+	LD	(ATTR_FG),A
+	CALL	RECALC_ATTR
+	LD	D,0
+	LD	E,0
+	LD	H,TERM_ROWS
+	LD	L,TERM_COLS
+	JP	CLEAR_RECT
+
+; DRAW_STATUS: paint the bottom status row (host:port + key hints).
+DRAW_STATUS
+	LD	D,STATUS_ROW
+	LD	E,0
+	LD	H,1
+	LD	L,TERM_COLS
+	LD	A,' '
+	LD	B,STATUS_ATTR
+	LD	C,DSS_CLEAR
+	RST	DSS
+	LD	D,STATUS_ROW
+	LD	E,1
+	LD	HL,HOST_BUFF
+	CALL	PUTS_STATUS
+	LD	A,':'
+	CALL	PUTC_STATUS
+	LD	HL,PORT_BUFF
+	CALL	PUTS_STATUS
+	LD	HL,MSG_STAT_HINT
+	JP	PUTS_STATUS
+
+; PUTS_STATUS: write ASCIIZ at HL onto the status row. In: D=row, E=col; E advances.
+PUTS_STATUS
+	LD	A,(HL)
+	OR	A
+	RET	Z
+	CALL	PUTC_STATUS
+	INC	HL
+	JR	PUTS_STATUS
+; PUTC_STATUS: write char A at (D,E) in STATUS_ATTR, then E++ (clipped at edge).
+PUTC_STATUS
+	PUSH	BC,HL
+	LD	C,A				; C = char
+	LD	A,E
+	CP	TERM_COLS
+	JR	NC,.DONE			; past the right edge: skip the write
+	LD	A,C
+	LD	B,STATUS_ATTR
+	PUSH	DE
+	LD	C,DSS_WRCHAR
+	RST	DSS
+	POP	DE
+.DONE
+	INC	E
 	POP	HL,BC
 	RET
 
@@ -767,6 +1411,8 @@ MSG_NO_CONNECT_HINT
 	DB "resolve (DNS). Check the address/port and your connection.",0
 MSG_DONE
 	DB "TELNET done.",0
+MSG_STAT_HINT
+	DB "   Alt+X quit   Esc->BBS",0
 MSG_COMM_ERROR
 	DB "ESP communication error #"
 MSG_ERROR_NO
@@ -797,6 +1443,21 @@ OUT_STATE	DB 0
 NEG_LEN		DB 0
 TX_BUF		DB 0,0
 NEG_BUF		DS NEG_BUF_SIZE,0
+
+; --- ANSI emulator state ---
+CUR_ROW		DB 0			; cursor row 0..TERM_ROWS-1
+CUR_COL		DB 0			; cursor col 0..TERM_COLS-1
+CUR_ATTR	DB DEF_ATTR		; current attribute byte (PAPER<<4 | INK)
+SAVED_ROW	DB 0			; ESC[s / ESC[u
+SAVED_COL	DB 0
+ATTR_FG		DB 7			; base ink 0..7
+ATTR_BG		DB 0			; paper 0..15
+ATTR_BOLD	DB 0			; SGR 1 -> bright ink
+ATTR_REV	DB 0			; SGR 7 -> swap ink/paper
+CSI_IDX		DB 0			; index of the current/last CSI parameter
+CSI_PRIV	DB 0			; non-zero if a private (?,>,=,<) CSI
+CSI_ANY		DB 0			; non-zero if any digit/';' was seen
+CSI_PARAMS	DS MAX_PARAMS,0		; parsed CSI parameters
 
 	ENDMODULE
 
