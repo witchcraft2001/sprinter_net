@@ -1,16 +1,18 @@
 ; ======================================================
-; TELNET for Sprinter DSS Network Kit
-; Phase 0: raw telnet client over ESP-AT TCP.
+; TELNET / ANSI-BBS client for Sprinter DSS over ESP-AT
 ;
-; Connects to a telnet host (default port 23), runs an interactive
-; half-duplex loop that polls TCP.RECEIVE for incoming data and forwards
-; typed keys with TCP.SEND_BUFFER. A minimal telnet IAC state machine
-; answers option negotiation so BBSes do not stall. Output is rendered with
-; ANSI escape sequences STRIPPED for now (a real ANSI/CP437 emulator is a
-; later phase); printable text and CR/LF are shown.
+; Connects to a telnet host (default port 23) and runs the session in ESP-AT
+; TRANSPARENT mode (AT+CIPMODE=1): after CIPSTART the socket is a raw, full-
+; duplex UART pipe (no +IPD framing, no per-keystroke AT+CIPSEND), so typed
+; keys and server echo are not lost to the half-duplex send/discard window.
+; Keys are written straight to the UART; incoming bytes are drained raw and fed
+; to the telnet IAC state machine and a full ANSI/VT100 emulator (cursor moves,
+; erase, SGR colour, scroll region) rendered on the Sprinter 80x32 text screen,
+; with a status row (clock/state/idle). RTS/CTS brackets the slow render. The
+; peer drop is caught via the "\r\nCLOSED" token; exit restores CIPMODE=0.
+; Zmodem download auto-starts on a "**"+ZDLE header (see zmodem.asm).
 ;
-; Quit with Alt+X. Every other key, including Esc, is forwarded to the BBS
-; (many BBSes use Esc for navigation). Arrow keys are not yet mapped.
+; Quit with Alt+X. Every other key (incl. Esc and arrows) is forwarded.
 ; ======================================================
 
 EXE_VERSION		EQU 1
@@ -22,6 +24,7 @@ DEFAULT_TIMEOUT		EQU 2000
 ; Esc free to reach the BBS instead of aborting the session.
 RECV_POLL_MS		EQU 20
 RECV_BUFFER_SIZE	EQU 512
+RX_DRAIN_SPIN		EQU 200			; RX_DRAIN inter-byte wait (bridges ~87us gaps)
 HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
 NEG_BUF_SIZE		EQU 96			; batched IAC negotiation/subneg replies
@@ -143,11 +146,18 @@ START
 	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
+	LD	HL,CMD_CIPMODE_1		; transparent (raw passthrough) mode
+	CALL	SEND_CMD
 
 	PRINT	MSG_CONNECTING
 	PRINT	HOST_BUFF
 	PRINTLN	WCOMMON.LINE_END
 	CALL	CONNECT_TCP
+	JP	C,CONNECT_FAILED
+	; Enter the raw byte pipe: AT+CIPSEND -> ">" prompt. From here the socket is
+	; a full-duplex UART stream (no +IPD framing, no per-keystroke CIPSEND), so
+	; nothing is lost to the half-duplex send/discard window.
+	CALL	ENTER_TRANSPARENT
 	JP	C,CONNECT_FAILED
 
 	PRINTLN	MSG_CONNECTED
@@ -177,47 +187,52 @@ MAIN_LOOP
 
 	CALL	STATUS_TICK			; keep the status row alive (spinner/clock/idle)
 
-	; Poll for incoming TCP data.
+	; Raw transparent receive. RTS is raised ONLY around the drain and dropped
+	; for everything else (key polling, status, the slow render), so the ESP is
+	; held off the entire non-draining path - no FIFO overrun, no lost bytes.
+	CALL	WIFI.UART_RX_RESUME		; RTS up: let the ESP stream
 	LD	HL,RECV_BUFFER
 	LD	BC,RECV_BUFFER_SIZE
-	LD	DE,RECV_POLL_MS
-	CALL	TCP.RECEIVE
-	JR	C,.RX_NONE
-
-	; Got BC bytes: pause ESP TX while we render, then process and flush
-	; any negotiation replies the batch produced.
+	CALL	RX_DRAIN
+	CALL	WIFI.UART_RX_PAUSE		; RTS down: hold ESP for render + key/status
 	LD	A,B
 	OR	C
-	JR	Z,MAIN_LOOP
+	JR	NZ,.GOT_DATA
+	; Idle: brief pause so we do not spin (and toggle RTS) thousands of times a
+	; second while waiting; keys stay responsive at this rate.
+	LD	HL,4
+	CALL	UTIL.DELAY
+	JR	MAIN_LOOP
+.GOT_DATA
 	XOR	A
 	LD	(IDLE_SECS),A			; data arrived -> reset the idle timer
-	CALL	WIFI.UART_RX_PAUSE
+	PUSH	BC
+	LD	HL,RECV_BUFFER
+	CALL	WATCH_CLOSED			; sets LINK_DOWN on a "\r\nCLOSED" token
+	POP	BC
 	LD	HL,RECV_BUFFER
 	CALL	PROCESS_RX
-	CALL	WIFI.UART_RX_RESUME
 	CALL	SYNC_CURSOR			; park the hardware cursor at the emulator cursor
 	CALL	FLUSH_NEG
-	JR	MAIN_LOOP
-
-.RX_NONE
-	; CF=1: either a plain poll timeout (no data) or the link closed. A holds
-	; the TCP.RECEIVE result code.
-	CP	RES_NOT_CONN
-	JP	Z,REMOTE_CLOSED
+	LD	A,(LINK_DOWN)
+	OR	A
+	JP	NZ,REMOTE_CLOSED
 	JR	MAIN_LOOP
 
 REMOTE_CLOSED
+	; The peer closed: ESP printed CLOSED and is already back in command mode.
 	LD	A,1
 	LD	(LINK_DOWN),A
 	CALL	REDRAW_DYNAMIC			; show CLOSED in the status row
+	CALL	EXIT_CMDMODE			; close socket + restore CIPMODE=0
 	PRINT	WCOMMON.LINE_END
 	PRINTLN	MSG_CLOSED
 	LD	B,0
 	JP	WCOMMON.EXIT
 
 QUIT
+	CALL	EXIT_TRANSPARENT		; "+++" escape, close, restore CIPMODE=0
 	PRINT	WCOMMON.LINE_END
-	CALL	TCP.CLOSE
 	PRINTLN	MSG_DONE
 	LD	B,0
 	JP	WCOMMON.EXIT
@@ -276,7 +291,7 @@ HANDLE_KEY
 	LD	(TX_BUF),A
 	LD	HL,TX_BUF
 	LD	BC,1
-	CALL	TCP.SEND_BUFFER
+	CALL	WIFI.UART_TX_BUFFER
 	CALL	NOTE_TX_RESULT
 	JR	.HANDLED
 .SPECIAL
@@ -290,7 +305,7 @@ HANDLE_KEY
 	LD	(TX_BUF+1),A
 	LD	HL,TX_BUF
 	LD	BC,2
-	CALL	TCP.SEND_BUFFER
+	CALL	WIFI.UART_TX_BUFFER
 	CALL	NOTE_TX_RESULT
 .HANDLED
 	OR	1				; ZF=0 (key handled), CF=0
@@ -335,7 +350,7 @@ SEND_ASCIIZ
 	JR	.len
 .go
 	POP	HL
-	JP	TCP.SEND_BUFFER
+	JP	WIFI.UART_TX_BUFFER
 
 ; Scancode -> ANSI sequence map (terminated by scancode 0). Arrows use normal
 ; cursor-key mode (CSI), the form BBS menus expect.
@@ -394,8 +409,16 @@ PROCESS_RX
 	JR	.NEXT
 .ZMODEM
 	CALL	ZM.RECEIVE			; HL=tail ptr, BC=remaining count
+	; The binary Zmodem stream (or an aborted transfer) can leave the IAC and
+	; ANSI state machines mid-sequence; reset them and repaint so the terminal
+	; recovers cleanly instead of mis-parsing every following byte.
 	XOR	A
 	LD	(ZTRIG),A
+	LD	(TN_STATE),A
+	LD	(OUT_STATE),A
+	LD	(NEG_LEN),A
+	CALL	INIT_SCREEN
+	CALL	DRAW_STATUS
 	RET					; batch consumed by Zmodem; resume terminal
 
 ; ZM_TRIGGER: feed one stream byte (A) to the "*" "*" ZDLE detector.
@@ -640,7 +663,7 @@ FLUSH_NEG
 	LD	C,A
 	LD	B,0
 	LD	HL,NEG_BUF
-	CALL	TCP.SEND_BUFFER
+	CALL	WIFI.UART_TX_BUFFER
 	XOR	A
 	LD	(NEG_LEN),A
 	RET
@@ -1554,6 +1577,187 @@ SEND_CMD_RECOVER
 	POP	HL
 	RET
 
+; ======================================================
+; Transparent-mode (CIPMODE=1) raw transport
+; ======================================================
+
+; ENTER_TRANSPARENT: AT+CIPSEND -> wait for the ">" prompt. The socket then
+; becomes a raw full-duplex UART pipe. CF=1 on failure.
+ENTER_TRANSPARENT
+	CALL	WIFI.UART_EMPTY_RS
+	LD	HL,CMD_CIPSEND
+	CALL	WIFI.UART_TX_STRING
+	RET	C
+	; Read bytes until ">" (the CIPSEND reply is "OK\r\n>"); stop AT the prompt
+	; so the server's first burst stays in the FIFO for RX_DRAIN.
+.wp
+	LD	BC,3000				; each byte resets the 3 s window
+	CALL	WIFI.UART_WAIT_RS
+	RET	C				; no prompt -> fail
+	LD	HL,REG_RBR
+	CALL	WIFI.UART_READ
+	CP	'>'
+	JR	NZ,.wp
+	OR	A				; CF=0
+	RET
+
+; EXIT_TRANSPARENT: leave passthrough cleanly. 2 s silence, "+++" (no CRLF),
+; 2 s silence, then ATE0 / CIPCLOSE / CIPMODE=0 so the next utility gets a
+; normal-mode ESP back.
+EXIT_TRANSPARENT
+	CALL	WIFI.UART_RX_RESUME
+	CALL	QUIET_2S
+	LD	HL,STR_PLUS3
+	CALL	WIFI.UART_TX_STRING
+	CALL	QUIET_2S
+	LD	HL,STR_CRLF
+	CALL	WIFI.UART_TX_STRING
+; EXIT_CMDMODE: ESP already in command mode -> just close + restore CIPMODE=0.
+EXIT_CMDMODE
+	LD	HL,CMD_ECHO_OFF
+	CALL	SEND_CMD_IGNORE
+	LD	HL,CMD_CIPCLOSE
+	CALL	SEND_CMD_IGNORE
+	LD	HL,CMD_CIPMODE_0
+	; fall through
+
+; SEND_CMD_IGNORE: send the AT command in HL, ignore the result.
+SEND_CMD_IGNORE
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	JP	WIFI.UART_TX_CMD
+
+; QUIET_2S: ~2 s of no TX, discarding any RX, as the "+++" escape guard time.
+QUIET_2S
+	LD	B,20				; 20 * 100 ms
+.l
+	PUSH	BC
+	LD	HL,RECV_BUFFER
+	LD	BC,RECV_BUFFER_SIZE
+	CALL	RX_DRAIN			; discard
+	LD	HL,100
+	CALL	UTIL.DELAY
+	POP	BC
+	DJNZ	.l
+	RET
+
+; ------------------------------------------------------
+; RX_DRAIN: read all UART bytes currently available into the buffer.
+; In: HL=buffer, BC=max. Out: BC=byte count. Non-blocking (stops when the FIFO
+; is momentarily empty or the buffer is full). Opens/closes the ISA window once.
+; ------------------------------------------------------
+RX_DRAIN
+	PUSH	BC				; max
+	CALL	ISA.ISA_OPEN
+	POP	BC				; BC = max
+	LD	DE,0				; DE = count
+.l
+	LD	A,D				; count < max ?
+	CP	B
+	JR	C,.room
+	JR	NZ,.done			; count > max (shouldn't)
+	LD	A,E
+	CP	C
+	JR	NC,.done			; count >= max -> full
+.room
+	; Spin briefly for the next byte so a continuous stream (Zmodem data, a
+	; full-screen ANSI burst) is drained as one large batch instead of many
+	; tiny ones - fewer FILL/keyboard-poll round-trips, far less chance of loss.
+	LD	A,RX_DRAIN_SPIN
+	LD	(RXD_SPIN),A
+.spin
+	LD	A,(REG_LSR)
+	AND	LSR_DR
+	JR	NZ,.got
+	LD	A,(RXD_SPIN)
+	DEC	A
+	LD	(RXD_SPIN),A
+	JR	NZ,.spin
+	JR	.done				; no byte within the spin -> stream paused
+.got
+	LD	A,(REG_RBR)
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	JR	.l
+.done
+	CALL	ISA.ISA_CLOSE
+	LD	B,D
+	LD	C,E
+	RET
+
+; ------------------------------------------------------
+; RX_DRAIN_WAIT: wait up to DE ms for at least one byte, then drain.
+; In: HL=buffer, BC=max, DE=timeout ms. Out: BC=count, CF=1 if nothing arrived.
+; (Used by the Zmodem receiver for a blocking byte source.)
+; ------------------------------------------------------
+RX_DRAIN_WAIT
+	PUSH	HL
+	PUSH	BC
+	LD	B,D
+	LD	C,E
+	CALL	WIFI.UART_WAIT_RS		; CF=1 if no byte within DE ms
+	POP	BC
+	POP	HL
+	RET	C
+	JP	RX_DRAIN
+
+; ------------------------------------------------------
+; WATCH_CLOSED: scan a received batch for the "\r\nCLOSED" token the ESP emits
+; when the peer drops the socket (it then returns to command mode). Anchored on
+; CR/LF so ordinary text containing "CLOSED" does not trip it. Sets LINK_DOWN.
+; In: HL=buffer, BC=count. State (CM) persists across batches.
+; ------------------------------------------------------
+WATCH_CLOSED
+.l
+	LD	A,B
+	OR	C
+	RET	Z
+	LD	A,(HL)
+	INC	HL
+	DEC	BC
+	PUSH	HL
+	PUSH	BC
+	LD	C,A				; C = current byte
+	LD	A,(CM)
+	LD	L,A
+	LD	H,0
+	LD	DE,CLOSED_TOK
+	ADD	HL,DE
+	LD	A,(HL)				; expected byte
+	CP	C
+	JR	NZ,.miss
+	LD	A,(CM)
+	INC	A
+	CP	CLOSED_TOK_LEN
+	JR	Z,.closed
+	LD	(CM),A
+	JR	.cont
+.miss
+	LD	A,C
+	CP	0x0D				; restart match on a CR
+	JR	Z,.cm1
+	XOR	A
+	LD	(CM),A
+	JR	.cont
+.cm1
+	LD	A,1
+	LD	(CM),A
+	JR	.cont
+.closed
+	XOR	A
+	LD	(CM),A
+	LD	A,1
+	LD	(LINK_DOWN),A
+.cont
+	POP	BC
+	POP	HL
+	JR	.l
+
+CLOSED_TOK
+	DB 0x0D,0x0A,"CLOSED"
+CLOSED_TOK_LEN	EQU $-CLOSED_TOK
+
 ; ------------------------------------------------------
 ; Command line: TELNET.EXE host [port]   (default port 23)
 ; ------------------------------------------------------
@@ -1720,6 +1924,18 @@ CMD_ECHO_OFF
 	DB "ATE0",13,10,0
 CMD_CIPMUX_0
 	DB "AT+CIPMUX=0",13,10,0
+CMD_CIPMODE_1
+	DB "AT+CIPMODE=1",13,10,0
+CMD_CIPMODE_0
+	DB "AT+CIPMODE=0",13,10,0
+CMD_CIPSEND
+	DB "AT+CIPSEND",13,10,0
+CMD_CIPCLOSE
+	DB "AT+CIPCLOSE",13,10,0
+STR_PLUS3
+	DB "+++",0			; transparent-mode escape (NO CR/LF)
+STR_CRLF
+	DB 13,10,0
 DEFAULT_PORT
 	DB "23",0
 
@@ -1767,6 +1983,8 @@ LINK_DOWN	DB 0			; 1 once a disconnect is detected
 SEND_FAILS	DB 0			; consecutive TCP send failures
 ZTRIG		DB 0			; Zmodem "*" "*" ZDLE detector state
 ZM_BYTE		DB 0			; last raw RX byte (for the detector)
+CM		DB 0			; WATCH_CLOSED rolling match count
+RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
 
 	ENDMODULE
 
