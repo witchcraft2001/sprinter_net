@@ -381,11 +381,56 @@ PROCESS_RX
 	LD	A,(HL)
 	INC	HL
 	DEC	BC
+	LD	(ZM_BYTE),A			; keep the raw byte for Zmodem auto-detect
 	PUSH	BC,HL
 	LD	C,A				; C = current byte
 	CALL	PROCESS_RX_BYTE
 	POP	HL,BC
+	; Watch the stream for a Zmodem header start ("*" "*" ZDLE); on a hit hand
+	; the rest of the batch (and the live socket) to the Zmodem receiver.
+	LD	A,(ZM_BYTE)
+	CALL	ZM_TRIGGER
+	JR	C,.ZMODEM
 	JR	.NEXT
+.ZMODEM
+	CALL	ZM.RECEIVE			; HL=tail ptr, BC=remaining count
+	XOR	A
+	LD	(ZTRIG),A
+	RET					; batch consumed by Zmodem; resume terminal
+
+; ZM_TRIGGER: feed one stream byte (A) to the "*" "*" ZDLE detector.
+; Out: CF=1 when the sequence just completed (start a Zmodem download).
+ZM_TRIGGER
+	CP	'*'
+	JR	Z,.star
+	CP	0x18				; ZDLE
+	JR	Z,.dle
+	XOR	A
+	LD	(ZTRIG),A
+	OR	A				; CF=0
+	RET
+.star
+	LD	A,(ZTRIG)
+	CP	2
+	JR	NC,.keep
+	INC	A
+	LD	(ZTRIG),A
+.keep
+	OR	A				; CF=0
+	RET
+.dle
+	LD	A,(ZTRIG)
+	CP	2
+	JR	C,.nofire
+	XOR	A
+	LD	(ZTRIG),A
+	SCF					; fire
+	RET
+.nofire
+	XOR	A
+	LD	(ZTRIG),A
+	OR	A
+	RET
 
 ; In: C = byte. Dispatches on TN_STATE.
 PROCESS_RX_BYTE
@@ -1720,6 +1765,8 @@ SPIN_TICK	DB 0			; main-loop counter for spinner pacing
 SPIN_IDX	DB 0			; spinner glyph index 0..3
 LINK_DOWN	DB 0			; 1 once a disconnect is detected
 SEND_FAILS	DB 0			; consecutive TCP send failures
+ZTRIG		DB 0			; Zmodem "*" "*" ZDLE detector state
+ZM_BYTE		DB 0			; last raw RX byte (for the detector)
 
 	ENDMODULE
 
@@ -1728,6 +1775,7 @@ SEND_FAILS	DB 0			; consecutive TCP send failures
 	INCLUDE "isa.asm"
 	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esp_tcp.asm"
+	INCLUDE "zmodem.asm"
 	INCLUDE "esplib.asm"
 
 	MODULE MAIN
