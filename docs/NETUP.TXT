@@ -13,7 +13,6 @@ Before running
 Typical sequence
   NETCFG.EXE /W
   NETUP.EXE
-  TCPTEST.EXE
   PING.EXE example.com
 
 Behavior

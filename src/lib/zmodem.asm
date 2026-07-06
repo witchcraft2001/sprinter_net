@@ -1,5 +1,5 @@
 ; ======================================================
-; Zmodem receive (download) for Sprinter DSS Network Kit
+; Zmodem receive (download) for Sprinter ESP Network Kit
 ; Runs over the same ESP-AT TCP stream as the telnet client. CRC-16 only:
 ; we never advertise CANFC32, so the sender uses 16-bit CRC. Auto-started
 ; from the terminal when a Zmodem header start ("*" "*" ZDLE) is seen.
@@ -64,9 +64,11 @@ CANOVIO			EQU 0x02		; can overlap I/O
 ; Returns when the session ends (success or abort); caller resumes terminal.
 ; ------------------------------------------------------
 RECEIVE
-	LD	(SRC_PTR),HL
-	LD	(SRC_CNT),BC
-	CALL	WIFI.UART_RX_RESUME	; RTS up for the session (caller had paused it)
+	; Switch out of transparent passthrough into +IPD mode: TCP.RECEIVE then
+	; gives us the proven, back-pressured receive path (the raw transparent
+	; drain loses bytes during disk writes). The handoff bytes are dropped - the
+	; sender re-sends ZRQINIT, which we pick up via TCP.RECEIVE.
+	CALL	MAIN.ZM_TO_CMDMODE
 	XOR	A
 	LD	(FH_OPEN),A
 	LD	(ABORTED),A
@@ -77,6 +79,9 @@ RECEIVE
 	PRINTLN	MSG_START
 .SESSION
 	CALL	SEND_ZRINIT		; advertise CRC16 / full duplex
+	JR	NC,.NEXT_HDR
+	LD	A,'S'			; TEMP: ZRINIT send (CIPSEND) failed
+	CALL	DBG_CH
 .NEXT_HDR
 	LD	A,(ABORTED)		; Esc pressed during a read -> stop now
 	OR	A
@@ -155,12 +160,12 @@ RECEIVE
 	CALL	SEND_ZFIN
 	CALL	CLOSE_OUTPUT
 	PRINTLN	MSG_DONE
-	RET
+	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
 
 .GIVEUP
 	CALL	ABORT_TRANSFER
 	PRINTLN	MSG_ABORT
-	RET
+	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
 
 ; ======================================================
 ; Stream input
@@ -197,18 +202,19 @@ FILL
 	; Poll the keyboard with RTS DROPPED: DSS_SCANKEY is a slow call and with
 	; RTS up the ESP overruns the FIFO (lost bytes -> data-subpacket CRC fails).
 	; RTS goes back up for the drain itself.
-	; RTS stays UP across the data stream (toggling it per batch drops a byte at
-	; the boundary). Only the keyboard poll drops it briefly.
-	CALL	WIFI.UART_RX_PAUSE
+	; +IPD receive via the kit's TCP.RECEIVE, bracketed RTS up/down like
+	; moonrabbit/ftp: RTS up to stream the batch, down while we parse/CRC/write
+	; (TCP backpressure holds the sender, so no bytes are lost during writes).
 	CALL	CHECK_ABORT
-	PUSH	AF
-	CALL	WIFI.UART_RX_RESUME
-	POP	AF
 	JR	C,.fail
+	CALL	WIFI.UART_RX_RESUME
 	LD	HL,RXBUF
 	LD	BC,ZM_RXBUF_SIZE
 	LD	DE,ZM_RECV_TMO
-	CALL	MAIN.RX_DRAIN_WAIT
+	CALL	TCP.RECEIVE
+	PUSH	AF
+	CALL	WIFI.UART_RX_PAUSE
+	POP	AF
 	JR	C,.fail
 	LD	A,B
 	OR	C
@@ -595,13 +601,13 @@ SEEK_TO_SP_START
 ; sends <=1 KB subpackets, each ZCRCW-terminated, waiting for our ZACK. That
 ; paces it to our disk-write speed and stops the ESP buffer from overrunning.
 SEND_ZRINIT
-	LD	A,low ZM_RX_WINDOW
-	LD	(TXP+0),A		; ZP0 = window size low byte
-	LD	A,high ZM_RX_WINDOW
-	LD	(TXP+1),A		; ZP1 = window size high byte
+	; +IPD mode gives reliable back-pressured RX, so no window limit is needed
+	; (windowing the sender did not help and the sender ignored it anyway).
 	XOR	A
+	LD	(TXP+0),A
+	LD	(TXP+1),A
 	LD	(TXP+2),A
-	LD	A,CANFDX		; full-duplex, but NOT can-overlap-IO
+	LD	A,CANFDX | CANOVIO
 	LD	(TXP+3),A
 	LD	A,ZRINIT
 	JR	SEND_HDR
@@ -673,7 +679,9 @@ SEND_HDR
 	LD	B,H
 	LD	C,L
 	LD	HL,TXBUF
-	JP	WIFI.UART_TX_BUFFER
+	; NO_WAIT: do not wait for "SEND OK" - that would consume the sender's reply
+	; (ZFILE/data +IPD) which we need to parse next.
+	JP	TCP.SEND_BUFFER_NO_WAIT
 
 ; PUT: append A to (TXP_DST). Preserves A,BC,DE.
 PUT
@@ -833,19 +841,18 @@ CLOSE_OUTPUT
 ABORT_TRANSFER
 	LD	HL,CANSEQ
 	LD	BC,CANSEQ_LEN
-	CALL	WIFI.UART_TX_BUFFER
+	CALL	TCP.SEND_BUFFER
 	; The sender keeps streaming for a while before it processes the ZCAN, so
-	; drain+discard ~2 s of in-flight data; otherwise it floods the terminal as
-	; garbage when we return.
+	; drain+discard ~2 s of in-flight +IPD data; otherwise it floods the terminal
+	; as garbage when we return.
 	CALL	WIFI.UART_RX_RESUME
 	LD	B,20
 .drain
 	PUSH	BC
 	LD	HL,RXBUF
 	LD	BC,ZM_RXBUF_SIZE
-	CALL	MAIN.RX_DRAIN
-	LD	HL,100
-	CALL	UTIL.DELAY
+	LD	DE,100
+	CALL	TCP.RECEIVE
 	POP	BC
 	DJNZ	.drain
 	JP	CLOSE_OUTPUT

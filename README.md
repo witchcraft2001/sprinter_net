@@ -1,4 +1,4 @@
-# Sprinter DSS Network Kit
+# Sprinter ESP Network Kit
 
 Network utility package for Sprinter DSS and the SprinterESP Wi-Fi card
 (ESP12-F/ESP8266 with ESP-AT firmware).
@@ -7,9 +7,9 @@ Package version: 0.1
 
 ## Attribution
 
-Sprinter DSS Network Kit project author:
+Sprinter ESP Network Kit project author:
 
-- Dmitry Mikhalchenkov
+- Dmitry Mikhalchenkov, FidoNet: 2:5030/1997.10
 
 This project builds on Sprinter-Wi-Fi / ESPKit DSS code authored by Roman
 Boykov. The imported UART, ISA and ESP-AT support modules retain their original
@@ -85,8 +85,6 @@ Example batch files are included in the package root:
 
 ```text
 CONNECT.BAT      NETRESET, NETUP and PING 8.8.8.8
-WGETGUT.BAT      download Project Gutenberg pg1.txt
-WGETCERN.BAT     download the short CERN home page as CERN.HTM
 TFTPGET.BAT      sample TFTP download from 192.168.1.36
 TFTPPUT.BAT      sample TFTP upload to 192.168.1.36
 UDPECHO.BAT      UDPTEST 192.168.1.36 7777 hello
@@ -101,8 +99,8 @@ settings to ESP flash; legacy commands are used only as fallback.
 
 ## ESP-AT Firmware Baseline
 
-The current baseline firmware checked for this project is the local ESP8266
-ESP-AT package at `/Users/dmitry/Downloads/V2.2.1`. The AT binaries contain
+The current baseline firmware checked for this project is the ESP8266
+ESP-AT firmware version `V2.2.1`. The AT firmware contain
 command tokens for the project-critical command families below:
 
 - Basic: `AT`, `ATE0`, `AT+GMR`, `AT+RST`, `AT+RESTORE`, `AT+SLEEP`,
@@ -120,7 +118,7 @@ command tokens for the project-critical command families below:
   `AT+CIPDINFO`, `AT+CIPDOMAIN`, `AT+CIPSSLSIZE`.
 - Diagnostics and time: `AT+PING`, `AT+CIPSNTPCFG`, `AT+CIPSNTPTIME`.
 
-The V2.2.1 binaries do not contain `AT+CIPRECVMODE` or `AT+CIPRECVDATA`, so
+The V2.2.1 firmware do not contain `AT+CIPRECVMODE` or `AT+CIPRECVDATA`, so
 ESP-AT passive TCP receive should be treated as unsupported for this firmware.
 WGET must keep a reliable active `+IPD` receive path for V2.2.1.
 

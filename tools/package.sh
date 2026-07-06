@@ -43,7 +43,24 @@ copy_optional_file() {
   fi
 }
 
+is_zip_excluded_app() {
+  local app="$1"
+  local excluded
+
+  for excluded in "${ZIP_EXCLUDE_APPS[@]}"; do
+    if [ "$app" = "$excluded" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 for app in "${BUILD_APPS[@]}"; do
+  if is_zip_excluded_app "$app"; then
+    continue
+  fi
+
   upper="$(printf '%s' "$app" | tr '[:lower:]' '[:upper:]')"
   exe="$repo_root/build/$upper.EXE"
   if [ -f "$exe" ]; then
@@ -82,4 +99,3 @@ cd "$repo_root/build/package"
 zip -qr "$zip_path" "$DIST_NAME"
 
 echo "Created $zip_path"
-

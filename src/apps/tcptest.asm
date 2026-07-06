@@ -1,5 +1,5 @@
 ; ======================================================
-; TCPTEST for Sprinter DSS Network Kit
+; TCPTEST for Sprinter ESP Network Kit
 ; Minimal TCP smoke test over ESP-AT.
 ; ======================================================
 

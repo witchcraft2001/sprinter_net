@@ -1,5 +1,5 @@
 ; ======================================================
-; NTP for Sprinter DSS Network Kit
+; NTP for Sprinter ESP Network Kit
 ; Minimal NTPv3 client over UDP (firmware-independent).
 ;
 ; Sends a 48-byte client query to UDP port 123 through the

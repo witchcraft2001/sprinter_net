@@ -1,5 +1,5 @@
 ; ======================================================
-; Minimal passive FTP client for Sprinter DSS Network Kit.
+; Minimal passive FTP client for Sprinter ESP Network Kit.
 ; Logs in, opens PASV data link and downloads files or prints listings.
 ; ======================================================
 

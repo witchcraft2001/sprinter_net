@@ -1,5 +1,5 @@
 ; ======================================================
-; WGET for Sprinter DSS Network Kit
+; WGET for Sprinter ESP Network Kit
 ; Minimal HTTP/1.0 downloader over ESP-AT TCP.
 ; ======================================================
 

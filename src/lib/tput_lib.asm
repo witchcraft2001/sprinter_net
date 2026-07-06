@@ -1,5 +1,5 @@
 ; ======================================================
-; Transfer throughput / speed reporting for Sprinter DSS Network Kit.
+; Transfer throughput / speed reporting for Sprinter ESP Network Kit.
 ; Measures wall-clock seconds via DSS_SYSTIME (seconds-of-day) and prints a
 ; "<bytes> bytes in <secs> sec, <rate>" summary. Ported from the rtl8019a CLI
 ; utilities so wget/ftp report download speed consistently.

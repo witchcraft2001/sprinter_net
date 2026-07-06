@@ -1,5 +1,5 @@
 ; ======================================================
-; Sprinter DSS Network Kit package version.
+; Sprinter ESP Network Kit package version.
 ; Keep this as the single source for banner version text.
 ; ======================================================
 

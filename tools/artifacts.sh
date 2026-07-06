@@ -26,17 +26,22 @@ BUILD_APPS=(
   telnet
 )
 
+# Applications that are built from source but intentionally omitted from the
+# ZIP package.
+ZIP_EXCLUDE_APPS=(
+  tcptest
+  udptest
+)
+
 # Text/documentation files copied to the distribution root.
 DIST_DOC_FILES=(
-  README.md
+  README.TXT
   docs/HOWTO.TXT
   docs/USAGE.md
   docs/NETCFG.TXT
   docs/NETUP.TXT
   docs/NETRESET.TXT
   docs/NETPROBE.TXT
-  docs/TCPTEST.TXT
-  docs/UDPTEST.TXT
   docs/PING.TXT
   docs/WGET.TXT
   docs/NTP.TXT
@@ -51,6 +56,7 @@ DIST_DOC_FILES=(
 # console uses for Cyrillic. package.sh / image.sh convert these with iconv
 # instead of copying them verbatim. Do NOT also list them in DIST_DOC_FILES.
 DIST_DOC_CP866_FILES=(
+  READMERU.TXT
   docs/HOWTO_RU.TXT
 )
 
@@ -64,10 +70,6 @@ DIST_CONFIG_FILES=(
 DIST_EXTRA_FILES=(
   VERSION
   examples/CONNECT.BAT
-  examples/WGETGUT.BAT
-  examples/WGETCERN.BAT
   examples/TFTPGET.BAT
   examples/TFTPPUT.BAT
-  examples/UDPECHO.BAT
-  examples/UDP_ECHO.PY
 )

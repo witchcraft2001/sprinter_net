@@ -1,7 +1,7 @@
 NETCFG.EXE - Network configuration editor
 
 Purpose
-  Shows or edits the shared NET.CFG file used by Sprinter DSS Network Kit
+  Shows or edits the shared NET.CFG file used by Sprinter ESP Network Kit
   utilities.
 
 Usage

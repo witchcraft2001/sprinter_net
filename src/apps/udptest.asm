@@ -1,5 +1,5 @@
 ; ======================================================
-; UDPTEST for Sprinter DSS Network Kit
+; UDPTEST for Sprinter ESP Network Kit
 ; Minimal UDP smoke test over ESP-AT.
 ; ======================================================
 

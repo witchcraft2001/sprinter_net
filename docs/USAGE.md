@@ -1,4 +1,4 @@
-# Sprinter DSS Network Kit Usage
+# Sprinter ESP Network Kit Usage
 
 This package provides small Sprinter DSS utilities for the SprinterESP /
 Sprinter-WiFi card with ESP8266 ESP-AT firmware.
@@ -8,10 +8,6 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETCFG.EXE` shows current `NET.CFG` values.
 - `NETCFG.EXE /W` edits and saves `NET.CFG`.
 - `NETUP.EXE` initializes the ESP module and connects to Wi-Fi using `NET.CFG`.
-- `TCPTEST.EXE [host [port [path]]]` opens a TCP connection and prints a short
-  HTTP response. Use it after `NETUP`.
-- `UDPTEST.EXE host port [message [local_port]]` sends one UDP datagram and
-  waits for one reply. Use it before testing TFTP.
 - `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y|-f]` downloads one
   file over TFTP. Existing output files require confirmation unless `-y` (or
   its alias `-f`) is used. TFTP has no resume.
@@ -44,9 +40,8 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 Planned utilities include `CHAT.EXE` and `IRC.EXE`.
 
 Each current utility also has a short standalone TXT reference file:
-`NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TCPTEST.TXT`,
-`UDPTEST.TXT`, `TFTP.TXT`, `FTP.TXT`, `PING.TXT`, `WGET.TXT`, `NTP.TXT` and
-`WTERM.TXT`.
+`NETCFG.TXT`, `NETUP.TXT`, `NETRESET.TXT`, `NETPROBE.TXT`, `TFTP.TXT`,
+`FTP.TXT`, `PING.TXT`, `WGET.TXT`, `NTP.TXT` and `WTERM.TXT`.
 
 ## Installation
 
@@ -81,14 +76,13 @@ configuration in the common network kit location.
 5. Keep `DHCP=1` for normal home/router networks.
 6. Save the configuration.
 7. Run `NETUP.EXE`.
-8. Run `TCPTEST.EXE` to verify real TCP access.
+8. Run `PING.EXE example.com` to verify reachability.
 
 Typical sequence:
 
 ```text
 NETCFG.EXE /W
 NETUP.EXE
-TCPTEST.EXE
 PING.EXE example.com
 WGET.EXE http://example.com -o INDEX.HTM -y
 NTP.EXE
@@ -125,42 +119,28 @@ Use this order during normal testing:
 
 1. `NETCFG.EXE` - verify saved settings.
 2. `NETUP.EXE` - connect to Wi-Fi.
-3. `TCPTEST.EXE` - verify TCP access.
-4. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
-5. `WGET.EXE http://example.com -o INDEX.HTM -y` - verify HTTP download.
-6. `NTP.EXE` - set DSS time from ESP SNTP.
-7. `UDPTEST.EXE server 7777 hello` - verify UDP echo.
-8. `TFTP.EXE server GET file -o FILE -y` - verify TFTP download.
-9. `TFTP.EXE server PUT FILE -o file` - verify TFTP upload where the
+3. `PING.EXE example.com` - verify ESP-AT ping support and host reachability.
+4. `WGET.EXE http://example.com -o INDEX.HTM -y` - verify HTTP download.
+5. `NTP.EXE` - set DSS time from ESP SNTP.
+6. `TFTP.EXE server GET file -o FILE -y` - verify TFTP download.
+7. `TFTP.EXE server PUT FILE -o file` - verify TFTP upload where the
    server permits writes.
-10. `FTP.EXE server -l` - verify FTP login, passive mode and directory listing.
-11. `FTP.EXE server PUT FILE -o file` - verify FTP upload where the server
+8. `FTP.EXE server -l` - verify FTP login, passive mode and directory listing.
+9. `FTP.EXE server PUT FILE -o file` - verify FTP upload where the server
    account permits writes.
 
 Bundled batch examples:
 
 - `CONNECT.BAT` runs `NETRESET.EXE`, `NETUP.EXE` and `PING.EXE 8.8.8.8`.
-- `WGETGUT.BAT` tries the requested Project Gutenberg `pg1.txt` URL. It may
-  fail when the server redirects plain HTTP to HTTPS; TLS is not implemented.
-- `WGETCERN.BAT` downloads the short CERN home page as `CERN.HTM`.
-  Keep BAT examples short; some DSS shells are sensitive to long command lines.
 - `TFTPGET.BAT` and `TFTPPUT.BAT` show TFTP download/upload forms for
   `192.168.1.36`.
-- `UDPECHO.BAT` runs `UDPTEST.EXE 192.168.1.36 7777 hello`.
-
-For local receive tests, point `TCPTEST.EXE` at a small file on a local HTTP
-server:
-
-```text
-TCPTEST.EXE 192.168.1.36 80 /check-2k.txt
-```
 
 Use this order when something is stuck:
 
 1. `NETRESET.EXE`
 2. `NETPROBE.EXE`
 3. `NETUP.EXE`
-4. `TCPTEST.EXE`
+4. `PING.EXE example.com`
 
 ## Diagnostic Notes
 
@@ -169,7 +149,7 @@ printing at the current DSS console cursor position, so they can be used in
 batch logs and command sequences without erasing previous output.
 
 `NETPROBE.EXE` sends `AT`, `ATE0` and `AT+GMR`. It now retries each command once
-after an ESP reset. If `NETPROBE.EXE` fails after `NETUP.EXE` and `TCPTEST.EXE`
+after an ESP reset. If `NETPROBE.EXE` fails after `NETUP.EXE` and `PING.EXE`
 have already succeeded, the network path may still be fine; run `NETRESET.EXE`
 and repeat `NETPROBE.EXE` for a clean firmware diagnostic.
 
@@ -205,9 +185,6 @@ Current utility-specific notes:
   errors and `5` for local output file errors.
 - `NTP.EXE` returns `0` after DSS time is set, `2` when hardware is not found
   and `3` on ESP SNTP, response parse or DSS SETTIME failure.
-- `UDPTEST.EXE` returns `0` when the echoed UDP payload is received, `1` for
-  invalid command line, `2` when hardware is not found and `3` on ESP/UDP
-  errors.
 - `TFTP.EXE` returns `0` after a successful download or upload, `1` for invalid
   command line, `2` when hardware is not found, `3` on ESP/UDP/TFTP protocol
   errors and `5` for local DSS file errors.

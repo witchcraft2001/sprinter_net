@@ -1,8 +1,11 @@
-Sprinter Wi-Fi Network Kit - Quick Start (HOWTO)
+Sprinter ESP Network Kit - Quick Start (HOWTO)
 ================================================
 
 What you need
   - Sprinter DSS with the SprinterESP / Sprinter-Wi-Fi card (ESP8266, ESP-AT).
+  - ESP-AT firmware version 2.2.1. This is the only tested version; other
+    versions are not guaranteed. Check it with NETPROBE (the AT+GMR line) or
+    by typing AT+GMR in WTERM.
   - The name and password of your Wi-Fi network.
 
 1. Install
@@ -46,7 +49,10 @@ Everyday commands (run after NETUP)
   FTP  host file [-u user -p pass]   download over FTP
   TFTP host GET file -o FILE          download over TFTP
   NTP                       set the DSS clock from the network
-  NTP server is taken from NET.CFG (NTP=, TZ=).
+                            NTP server and timezone are taken from NET.CFG
+                            (NTP=, TZ=).
+  WTERM                     open a manual ESP-AT terminal for hand-typed
+                            commands.
 
   Overwrite/resume of an existing local file (WGET, FTP, TFTP):
     if the file exists, the tool asks [R]esume / [O]verwrite / [C]ancel.
@@ -54,18 +60,18 @@ Everyday commands (run after NETUP)
     -r         resume/append without asking (WGET, FTP; TFTP has no resume)
   Handy in batch files, e.g.:  WGET url -o FILE.BIN -y
 
-If something is stuck
+If something is stuck and tools report "ESP connection error #1"
   Run, in this order:
       NETRESET      reset the ESP module
-      NETPROBE      low-level AT check
       NETUP         reconnect
-  WTERM opens a manual ESP-AT terminal for hand-typed commands.
 
 Tips
   - Run NETUP once per session; the other tools reuse that connection.
   - If a tool right after NETUP reports "busy", the ESP stack is still coming
-    up - just run it again (PING already retries automatically).
+    up - just run it again.
   - Only http:// is supported, not https://.
+  - Use CONNECT.BAT to connect; it contains the commands needed to initialize
+    and bring up the network after starting the computer.
 
 More detail
   README.TXT   - overview, full command list, batch examples.

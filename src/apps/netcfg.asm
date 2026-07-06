@@ -1,5 +1,5 @@
 ; ======================================================
-; NETCFG for Sprinter DSS Network Kit
+; NETCFG for Sprinter ESP Network Kit
 ; Display parsed NET.CFG values.
 ; ======================================================
 
@@ -311,7 +311,7 @@ COPY_INPUT_TO_DEST
 MSG_START
 	DB "NETCFG "
 	PACKAGE_VERSION_TAG
-	DB " - Sprinter DSS Network Kit configuration"
+	DB " - Sprinter ESP Network Kit configuration"
 	DB 0
 MSG_LOADED
 	DB "Loaded NET.CFG.",0

@@ -1581,6 +1581,33 @@ SEND_CMD_RECOVER
 ; Transparent-mode (CIPMODE=1) raw transport
 ; ======================================================
 
+; ZM_TO_CMDMODE: leave transparent passthrough (send "+++" with the required
+; ~1 s silence guard before and after) so the socket data arrives as +IPD,
+; which TCP.RECEIVE handles with proper TCP backpressure (the raw transparent
+; drain loses bytes whenever we pause RTS for a disk write). The connection
+; stays open; we reset the +IPD parser for a fresh receive.
+ZM_TO_CMDMODE
+	CALL	QUIET_2S
+	LD	HL,STR_PLUS3
+	CALL	WIFI.UART_TX_STRING
+	CALL	QUIET_2S
+	; In command mode the connection only emits +IPD in normal (CIPMODE=0) mode,
+	; so switch it; the TCP connection itself stays open.
+	LD	HL,CMD_CIPMODE_0
+	CALL	SEND_CMD_IGNORE
+	LD	HL,0
+	LD	(TCP.PAYLOAD_LEFT),HL
+	XOR	A
+	LD	(TCP.LSR_ACCUM),A
+	JP	WIFI.UART_EMPTY_RS
+
+; ZM_RESUME_TRANSPARENT: after a Zmodem transfer re-enable transparent mode and
+; re-enter passthrough so the terminal resumes.
+ZM_RESUME_TRANSPARENT
+	LD	HL,CMD_CIPMODE_1
+	CALL	SEND_CMD_IGNORE
+	JP	ENTER_TRANSPARENT
+
 ; ENTER_TRANSPARENT: AT+CIPSEND -> wait for the ">" prompt. The socket then
 ; becomes a raw full-duplex UART pipe. CF=1 on failure.
 ENTER_TRANSPARENT

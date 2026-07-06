@@ -1,5 +1,5 @@
 ; ======================================================
-; ESP-AT multi-connection TCP helpers for Sprinter DSS Network Kit
+; ESP-AT multi-connection TCP helpers for Sprinter ESP Network Kit
 ; Include after esp_tcp.asm only in tools that require AT+CIPMUX=1.
 ; Single-connection tools should not include this file.
 ; ======================================================

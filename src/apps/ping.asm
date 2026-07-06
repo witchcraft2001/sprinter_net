@@ -1,5 +1,5 @@
 ; ======================================================
-; PING for Sprinter DSS Network Kit
+; PING for Sprinter ESP Network Kit
 ; Host reachability diagnostic using ESP-AT AT+PING.
 ; ======================================================
 

@@ -1,5 +1,5 @@
 ; ======================================================
-; ESP-AT TCP helper routines for Sprinter DSS Network Kit
+; ESP-AT TCP helper routines for Sprinter ESP Network Kit
 ; Single-connection TCP client over Sprinter-WiFi UART.
 ; ======================================================
 

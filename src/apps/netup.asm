@@ -1,5 +1,5 @@
 ; ======================================================
-; NETUP for Sprinter DSS Network Kit
+; NETUP for Sprinter ESP Network Kit
 ; Bring SprinterESP Wi-Fi connection up from NET.CFG.
 ; ======================================================
 

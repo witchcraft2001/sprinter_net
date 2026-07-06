@@ -1,5 +1,5 @@
 ; ======================================================
-; ESP-AT UDP helper routines for Sprinter DSS Network Kit
+; ESP-AT UDP helper routines for Sprinter ESP Network Kit
 ; Single-connection UDP client over Sprinter-WiFi UART.
 ; ======================================================
 

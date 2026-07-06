@@ -1,5 +1,5 @@
 ; ======================================================
-; TFTP client for Sprinter DSS Network Kit
+; TFTP client for Sprinter ESP Network Kit
 ; Minimal RFC 1350 RRQ/WRQ client over ESP-AT UDP.
 ; ======================================================
 

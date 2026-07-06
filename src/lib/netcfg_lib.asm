@@ -1,5 +1,5 @@
 ; ======================================================
-; Shared NET.CFG parser for Sprinter DSS Network Kit
+; Shared NET.CFG parser for Sprinter ESP Network Kit
 ; ======================================================
 
 	IFNDEF _NETCFG
@@ -588,7 +588,7 @@ KEY_AUTOJOIN	DB "AUTOJOIN=",0
 KEY_BAUD	DB "BAUD=",0
 
 SAVE_HEADER
-	DB "# Sprinter DSS Network Kit configuration",13,10
+	DB "# Sprinter ESP Network Kit configuration",13,10
 	DB "# Password is stored in clear text.",13,10,0
 
 CFG_SSID_SIZE		EQU 33
