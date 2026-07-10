@@ -10,19 +10,18 @@
 ; erase, SGR colour, scroll region) rendered on the Sprinter 80x32 text screen,
 ; with a status row (clock/state/idle). RTS/CTS brackets the slow render. The
 ; peer drop is caught via the "\r\nCLOSED" token; exit restores CIPMODE=0.
-; Zmodem download auto-starts on a "**"+ZDLE header (see zmodem.asm).
+; Zmodem download/upload auto-starts on a "**"+ZDLE header (see zmodem.asm).
+; ZRQINIT selects download; ZRINIT prompts for a local file and selects upload.
 ;
 ; Quit with Alt+X. Every other key (incl. Esc and arrows) is forwarded.
 ; ======================================================
 
 EXE_VERSION		EQU 1
 DEFAULT_TIMEOUT		EQU 2000
-; Per-iteration RX poll window. Bounds key latency AND must stay well under
-; 200 ms: TCP.RECEIVE's internal Esc/Ctrl+Z cancel poll
-; (WCOMMON.CHECK_CANCEL_IN_ISA) only fires after ~200 one-ms waits within a
-; single byte read, so a sub-200 ms timeout keeps that poll dormant and leaves
-; Esc free to reach the BBS instead of aborting the session.
-RECV_POLL_MS		EQU 20
+LOAD_ADDR		EQU 0x4100
+CMDLINE_ADDR		EQU LOAD_ADDR - 0x80
+STACK_TOP		EQU 0x8000
+WIN2_BASE		EQU 0x8000
 RECV_BUFFER_SIZE	EQU 512
 RX_DRAIN_SPIN		EQU 200			; RX_DRAIN inter-byte wait (bridges ~87us gaps)
 HOST_SIZE		EQU 96
@@ -40,6 +39,7 @@ TN_WILL			EQU 251
 TN_SB			EQU 250
 TN_SE			EQU 240
 ; --- Telnet options we react to ---
+TNOPT_BINARY		EQU 0			; 8-bit clean path required by Zmodem
 TNOPT_ECHO		EQU 1
 TNOPT_SGA		EQU 3
 TNOPT_TTYPE		EQU 24			; TERMINAL-TYPE (RFC 1091)
@@ -95,12 +95,14 @@ DSS_WRCHAR		EQU 0x58			; D=row E=col A=char B=attr
 
 	MODULE MAIN
 
-	ORG 0x8080
+	; Full DSS header. Code and small BSS stay in WIN1; the Zmodem transfer
+	; buffers use a separately allocated WIN2 page.
+	ORG LOAD_ADDR - 0x0200
 
 EXE_HEADER
 	DB "EXE"
 	DB EXE_VERSION
-	DW 0x0080
+	DW 0x0200
 	DW 0
 	DW 0
 	DW 0
@@ -109,15 +111,16 @@ EXE_HEADER
 	DW START
 	DW START
 	DW STACK_TOP
-	DS 106, 0
+	DS 490, 0
 
-	ORG 0x8100
-@STACK_TOP
+	ORG LOAD_ADDR
 
 START
 	; DSS passes the command-line buffer pointer in IX at entry; capture it
-	; before any CALL clobbers IX (load-#80 = 0x8080 is the default, not assumed).
+	; before any CALL clobbers IX (CMDLINE_ADDR is the default, not assumed).
 	LD	(CMDLINE_PTR),IX
+	CALL	INIT_RUNTIME_PAGE
+	JP	C,INIT_MEMORY_ERROR
 	CALL	ISA.ISA_RESET
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN	MSG_START
@@ -159,6 +162,11 @@ START
 	; nothing is lost to the half-duplex send/discard window.
 	CALL	ENTER_TRANSPARENT
 	JP	C,CONNECT_FAILED
+	; Negotiate both Telnet BINARY directions before any file transfer. Literal
+	; IAC bytes are still doubled by Telnet and decoded inside zmodem.asm.
+	LD	HL,TN_BINARY_INIT
+	LD	BC,TN_BINARY_INIT_LEN
+	CALL	WIFI.UART_TX_BUFFER
 
 	PRINTLN	MSG_CONNECTED
 
@@ -402,7 +410,7 @@ PROCESS_RX
 	CALL	PROCESS_RX_BYTE
 	POP	HL,BC
 	; Watch the stream for a Zmodem header start ("*" "*" ZDLE); on a hit hand
-	; the rest of the batch (and the live socket) to the Zmodem receiver.
+	; the rest of the batch (and the live socket) to the Zmodem engine.
 	LD	A,(ZM_BYTE)
 	CALL	ZM_TRIGGER
 	JR	C,.ZMODEM
@@ -422,7 +430,7 @@ PROCESS_RX
 	RET					; batch consumed by Zmodem; resume terminal
 
 ; ZM_TRIGGER: feed one stream byte (A) to the "*" "*" ZDLE detector.
-; Out: CF=1 when the sequence just completed (start a Zmodem download).
+; Out: CF=1 when the sequence just completed (start a Zmodem transfer).
 ZM_TRIGGER
 	CP	'*'
 	JR	Z,.star
@@ -578,6 +586,8 @@ NEGOTIATE
 	RET					; WONT / DONT -> no reply
 .ON_WILL
 	LD	A,C
+	CP	TNOPT_BINARY
+	JR	Z,.REPLY_DO
 	CP	TNOPT_ECHO
 	JR	Z,.REPLY_DO
 	CP	TNOPT_SGA
@@ -589,6 +599,8 @@ NEGOTIATE
 	JP	QUEUE_CMD
 .ON_DO
 	LD	A,C
+	CP	TNOPT_BINARY
+	JR	Z,.REPLY_WILL
 	CP	TNOPT_SGA
 	JR	Z,.REPLY_WILL
 	CP	TNOPT_TTYPE
@@ -680,6 +692,12 @@ NAWS_REPLY
 	DB	high TERM_ROWS, low TERM_ROWS
 	DB	TN_IAC,TN_SE
 NAWS_REPLY_LEN	EQU $-NAWS_REPLY
+
+; Request an 8-bit-clean path in both directions. This is harmless for normal
+; terminal traffic and mandatory for arbitrary Zmodem file bytes.
+TN_BINARY_INIT
+	DB	TN_IAC,TN_WILL,TNOPT_BINARY,TN_IAC,TN_DO,TNOPT_BINARY
+TN_BINARY_INIT_LEN	EQU $-TN_BINARY_INIT
 
 ; ======================================================
 ; ANSI/VT100 terminal emulator (Phase 2)
@@ -1577,6 +1595,25 @@ SEND_CMD_RECOVER
 	POP	HL
 	RET
 
+; ------------------------------------------------------
+; Reserve one 16 KB page for Zmodem RX/data/encoded-TX buffers and map it in
+; WIN2. The stack remains at 0x8000 and grows down through WIN1.
+; ------------------------------------------------------
+INIT_RUNTIME_PAGE
+	LD	B,1
+	LD	C,DSS_GETMEM
+	RST	DSS
+	RET	C
+	LD	B,0
+	LD	C,DSS_SETWIN2
+	RST	DSS
+	RET
+
+INIT_MEMORY_ERROR
+	LD	B,3
+	LD	C,DSS_EXIT
+	RST	DSS
+
 ; ======================================================
 ; Transparent-mode (CIPMODE=1) raw transport
 ; ======================================================
@@ -1594,7 +1631,7 @@ ZM_TO_CMDMODE
 	; In command mode the connection only emits +IPD in normal (CIPMODE=0) mode,
 	; so switch it; the TCP connection itself stays open.
 	LD	HL,CMD_CIPMODE_0
-	CALL	SEND_CMD_IGNORE
+	CALL	ZM_SEND_CMD_IGNORE
 	LD	HL,0
 	LD	(TCP.PAYLOAD_LEFT),HL
 	XOR	A
@@ -1605,12 +1642,23 @@ ZM_TO_CMDMODE
 ; re-enter passthrough so the terminal resumes.
 ZM_RESUME_TRANSPARENT
 	LD	HL,CMD_CIPMODE_1
-	CALL	SEND_CMD_IGNORE
+	CALL	ZM_SEND_CMD_IGNORE
 	JP	ENTER_TRANSPARENT
+
+; AT replies obey RTS/CTS too. Zmodem normally keeps RTS low outside receive
+; calls, so temporarily raise it around a command-mode transaction.
+ZM_SEND_CMD_IGNORE
+	CALL	WIFI.UART_RX_RESUME
+	CALL	SEND_CMD_IGNORE
+	PUSH	AF
+	CALL	WIFI.UART_RX_PAUSE
+	POP	AF
+	RET
 
 ; ENTER_TRANSPARENT: AT+CIPSEND -> wait for the ">" prompt. The socket then
 ; becomes a raw full-duplex UART pipe. CF=1 on failure.
 ENTER_TRANSPARENT
+	CALL	WIFI.UART_RX_RESUME
 	CALL	WIFI.UART_EMPTY_RS
 	LD	HL,CMD_CIPSEND
 	CALL	WIFI.UART_TX_STRING
@@ -1712,22 +1760,6 @@ RX_DRAIN
 	LD	B,D
 	LD	C,E
 	RET
-
-; ------------------------------------------------------
-; RX_DRAIN_WAIT: wait up to DE ms for at least one byte, then drain.
-; In: HL=buffer, BC=max, DE=timeout ms. Out: BC=count, CF=1 if nothing arrived.
-; (Used by the Zmodem receiver for a blocking byte source.)
-; ------------------------------------------------------
-RX_DRAIN_WAIT
-	PUSH	HL
-	PUSH	BC
-	LD	B,D
-	LD	C,E
-	CALL	WIFI.UART_WAIT_RS		; CF=1 if no byte within DE ms
-	POP	BC
-	POP	HL
-	RET	C
-	JP	RX_DRAIN
 
 ; ------------------------------------------------------
 ; WATCH_CLOSED: scan a received batch for the "\r\nCLOSED" token the ESP emits
@@ -1908,7 +1940,7 @@ MSG_START
 	DB 0
 MSG_USAGE
 	DB "Usage: TELNET.EXE host [port]   (default port 23)",13,10
-	DB "  Alt+X to quit (Esc and other keys go to the BBS).",0
+	DB "  Alt+X quits; Zmodem download/upload is detected automatically.",0
 MSG_TARGET
 	DB "Target ",0
 MSG_COLON
@@ -1920,7 +1952,7 @@ MSG_RESETTING_ESP
 MSG_CONNECTING
 	DB "Connecting to ",0
 MSG_CONNECTED
-	DB "Connected. Alt+X to quit.",13,10,0
+	DB "Connected. Alt+X to quit; Zmodem is automatic.",13,10,0
 MSG_CLOSED
 	DB "Remote host closed the connection.",0
 MSG_NO_CONNECT
@@ -2025,11 +2057,14 @@ RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
 
 	MODULE MAIN
 
+	ASSERT	$ < STACK_TOP - 0x0100
+
 ; App receive buffer above the (overlapping) NETCFG/TCP BSS chains.
 HOST_BUFF	EQU NETCFG.NETCFG_BSS_END
 PORT_BUFF	EQU HOST_BUFF + HOST_SIZE
 RECV_BUFFER	EQU PORT_BUFF + PORT_SIZE
 TELNET_BSS_END	EQU RECV_BUFFER + RECV_BUFFER_SIZE
+	ASSERT	TELNET_BSS_END < STACK_TOP - 0x0100
 
 	ENDMODULE
 

@@ -89,7 +89,8 @@ header with code file offset `0x0200`. There are two valid load profiles:
   `0x4100`, entry point `0x4100`, command-line storage at
   `load_addr - 0x80 = 0x4080`, stack top `0x8000`. Code and small BSS live in
   `0x4100..0x7FFF`; large receive/file buffers should use a DSS-allocated page
-  mapped in WIN2 (`0x8000..0xBFFF`). Currently: `WGET`, `TFTP`, `FTP`.
+  mapped in WIN2 (`0x8000..0xBFFF`). Currently: `WGET`, `TFTP`, `FTP`,
+  `TELNET`.
 
 For `ORG 0x4100` utilities, do not assume DSS allocated WIN2
 (`#8000..#BFFF`) merely because the BSS map reaches that range. If the loaded
@@ -102,7 +103,7 @@ in WIN1, make the first startup action `DSS_GETMEM` for the required page
 count, open it with `DSS_SETWIN2`, and place large buffers at `WIN2_BASE EQU
 0x8000`. The `RST #10` dispatcher itself uses the current stack (`PUSH HL`,
 `EX (SP),HL`, `RET`), so do not generalize this into a blanket "all DSS calls
-require WIN2" rule. Current examples: `WGET`, `TFTP`, and `FTP`.
+require WIN2" rule. Current examples: `WGET`, `TFTP`, `FTP`, and `TELNET`.
 
 In both cases the header padding is allowed and is not a runtime buffer;
 large runtime buffers still must live outside the `.EXE` image (use
@@ -129,7 +130,14 @@ helpers.
 
 ## Testing Guidelines
 
-No automated test suite is present. For DSS assembly, assemble every touched entry program and smoke-test on Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed program and verify behavior against an ESP8266 running ESP-AT firmware. For hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify regenerated PDFs, BOMs, and Gerbers before publishing.
+No broad automated test suite is present. For Telnet/Zmodem changes, run
+`tools/test-zmodem.sh`; it uses `sjasmplus` plus `z88dk-ticks` to execute the
+actual Z80 CRC/header/subpacket routines against lrzsz-compatible vectors. For
+DSS assembly, also assemble every touched entry program and smoke-test on
+Sprinter DSS, emulator, or hardware. For DOS utilities, compile the changed
+program and verify behavior against an ESP8266 running ESP-AT firmware. For
+hardware edits, run EasyEDA ERC/DRC, inspect ISA/UART signal names, and verify
+regenerated PDFs, BOMs, and Gerbers before publishing.
 
 ## Exit Status Guidelines
 

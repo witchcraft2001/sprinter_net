@@ -43,6 +43,7 @@ connect, test). Full reference is in `docs/USAGE.md`.
 - `WGET.EXE`
 - `NTP.EXE`
 - `WTERM.EXE`
+- `TELNET.EXE`
 
 ## Configuration
 
@@ -79,6 +80,8 @@ PING.EXE host    test host reachability using ESP-AT AT+PING
 WGET.EXE url [-o output] [-y|-f] [-r]
                  download an http:// URL to a local file (-y/-f overwrite, -r resume)
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
+TELNET.EXE host [port]
+                 ANSI Telnet client with automatic Zmodem download/upload
 ```
 
 Example batch files are included in the package root:

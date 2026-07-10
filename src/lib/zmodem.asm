@@ -1,24 +1,27 @@
 ; ======================================================
-; Zmodem receive (download) for Sprinter ESP Network Kit
+; Zmodem send/receive for Sprinter ESP Network Kit
 ; Runs over the same ESP-AT TCP stream as the telnet client. CRC-16 only:
-; we never advertise CANFC32, so the sender uses 16-bit CRC. Auto-started
-; from the terminal when a Zmodem header start ("*" "*" ZDLE) is seen.
+; we never advertise CANFC32, so the peer uses 16-bit CRC. Auto-started from
+; the terminal when a Zmodem header start ("*" "*" ZDLE) is seen.
 ;
 ; Depends on: TCP.SEND_BUFFER / TCP.RECEIVE (esp_tcp), WIFI.UART_RX_* (esplib),
-; DSS file funcs, the PRINT/PRINTLN macros. Include AFTER esp_tcp and BEFORE
-; esplib so the kit's RS_BUFF BSS anchor sits above this module's buffers.
+; DSS file funcs, the PRINT/PRINTLN macros, and one allocated WIN2 page.
+; Include after esp_tcp and before esplib.
 ; ======================================================
 
 	IFNDEF	_ZMODEM
 	DEFINE	_ZMODEM
 
 ZM_RXBUF_SIZE		EQU 512			; TCP refill buffer
-ZM_DATA_SIZE		EQU 1024		; flush-to-disk chunk size
-ZM_RX_WINDOW		EQU 1024		; receive window advertised in ZRINIT (paces sender)
+ZM_DATA_SIZE		EQU 8192		; max accepted receive subpacket
+ZM_TX_CHUNK		EQU 1024		; stop-and-wait upload chunk
+ZM_RX_WINDOW		EQU ZM_DATA_SIZE		; advertised sender frame limit
 ZM_FNAME_SIZE		EQU 96
 ZM_TXBUF_SIZE		EQU 40			; outgoing hex header build area
+ZM_TXDATA_SIZE		EQU ZM_TX_CHUNK*2+16	; worst-case escaped upload subpacket
 ZM_RECV_TMO		EQU 10000		; ms to wait for the next stream byte
 ZM_HDR_RETRIES		EQU 10			; header re-scans before giving up
+ZM_SEND_RETRIES		EQU 10
 
 DSS_CREATE_OVERWRITE	EQU 0x0A		; create, truncating an existing file
 
@@ -29,18 +32,22 @@ ZBIN			EQU 'A'			; binary header, CRC16
 ZHEX			EQU 'B'			; hex header
 ZBIN32			EQU 'C'			; binary header, CRC32 (we don't request it)
 XON			EQU 0x11
+XOFF			EQU 0x13
 
 ; --- frame types ---
 ZRQINIT			EQU 0
 ZRINIT			EQU 1
+ZSINIT			EQU 2
 ZACK			EQU 3
 ZFILE			EQU 4
 ZSKIP			EQU 5
 ZNAK			EQU 6
+ZABORT			EQU 7
 ZFIN			EQU 8
 ZRPOS			EQU 9
 ZDATA			EQU 10
 ZEOF			EQU 11
+ZCRC			EQU 13
 
 ; --- ZDLE data-subpacket terminators ---
 ZCRCE			EQU 'h'			; 0x68 end of frame, header follows
@@ -53,14 +60,31 @@ ZRUB1			EQU 'm'			; 0x6D -> 0xFF
 ; --- ZRINIT capability flags (placed in ZF0 = the 4th header byte) ---
 CANFDX			EQU 0x01		; full duplex
 CANOVIO			EQU 0x02		; can overlap I/O
+ESCCTL			EQU 0x40		; peer must escape all control bytes
 ; (CANFC32 = 0x20 deliberately NOT set -> sender uses CRC16)
+
+; --- ZFILE conversion/management flags ---
+ZCBIN			EQU 1			; binary transfer, no conversion
+ZMCLOB			EQU 4			; replace destination if it exists
+
+; --- Telnet command bytes used by the binary stream decoder ---
+ZM_IAC			EQU 0xFF
+ZM_WILL			EQU 0xFB
+ZM_WONT			EQU 0xFC
+ZM_DO			EQU 0xFD
+ZM_DONT			EQU 0xFE
+ZM_SB			EQU 0xFA
+ZM_SE			EQU 0xF0
 
 	MODULE ZM
 
 ; ------------------------------------------------------
 ; RECEIVE: entry from the telnet terminal once a header start was seen.
 ; In: HL = pointer to the unconsumed tail of the current TCP batch,
-;     BC = its byte count (the "handoff"). Further bytes come from TCP.RECEIVE.
+;     BC = its byte count (the handoff is intentionally discarded while the
+;     ESP switches from transparent mode to back-pressured +IPD mode).
+; The first repeated header chooses the role: ZRQINIT means the remote side is
+; sending (download), while ZRINIT means it is receiving (upload).
 ; Returns when the session ends (success or abort); caller resumes terminal.
 ; ------------------------------------------------------
 RECEIVE
@@ -72,92 +96,133 @@ RECEIVE
 	XOR	A
 	LD	(FH_OPEN),A
 	LD	(ABORTED),A
+	LD	(WCOMMON.CANCELLED),A
+	LD	(IO_ERROR),A
+	LD	(SP_TO_FILE),A
+	LD	(HDR_WAIT),A
 	LD	HL,0
+	LD	(SRC_CNT),HL
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
 	PRINT	WCOMMON.LINE_END
-	PRINTLN	MSG_START
-.SESSION
+	PRINTLN	MSG_DETECT
+.WAIT_ROLE
+	CALL	RECV_HEADER
+	JP	C,.GIVEUP
+	CP	ZRQINIT
+	JR	Z,.RX_START
+	CP	ZRINIT
+	JR	Z,.TX_START
+	JR	.WAIT_ROLE
+
+.TX_START
+	CALL	SEND_FILE
+	JP	C,.GIVEUP
+	JP	.DONE
+
+.RX_START
+	PRINTLN	MSG_DOWNLOAD
+.RX_SESSION
 	CALL	SEND_ZRINIT		; advertise CRC16 / full duplex
-	JR	NC,.NEXT_HDR
-	LD	A,'S'			; TEMP: ZRINIT send (CIPSEND) failed
-	CALL	DBG_CH
-.NEXT_HDR
+	JP	C,.GIVEUP
+.RX_NEXT_HDR
 	LD	A,(ABORTED)		; Esc pressed during a read -> stop now
 	OR	A
 	JP	NZ,.GIVEUP
 	CALL	RECV_HEADER		; A = frame type, CF=1 on fatal timeout/close
 	JP	C,.GIVEUP
 	CP	ZRQINIT
-	JR	Z,.SESSION		; sender still announcing
+	JR	Z,.RX_SESSION		; sender still announcing
+	CP	ZSINIT
+	JR	Z,.RX_ZSINIT
 	CP	ZFILE
-	JP	Z,.ON_ZFILE
+	JR	Z,.RX_ZFILE
 	CP	ZDATA
-	JP	Z,.ON_ZDATA
+	JP	Z,.RX_ZDATA
 	CP	ZEOF
-	JP	Z,.ON_ZEOF
+	JP	Z,.RX_ZEOF
 	CP	ZFIN
-	JP	Z,.ON_ZFIN
-	JR	.NEXT_HDR		; ZSKIP/ZNAK/unknown -> keep listening
+	JP	Z,.RX_ZFIN
+	JR	.RX_NEXT_HDR		; ZSKIP/ZNAK/unknown -> keep listening
 
-.ON_ZFILE
+.RX_ZSINIT
+	XOR	A
+	LD	(SP_TO_FILE),A
+	CALL	RECV_SUBPACKET		; attention string; currently ignored
+	JR	C,.RX_SESSION
+	CALL	SEND_ZACK_ZERO
+	JP	C,.GIVEUP
+	JP	.RX_NEXT_HDR
+
+.RX_ZFILE
+	CALL	CLOSE_OUTPUT		; a repeated offer replaces any partial prior file
+	XOR	A
+	LD	(SP_TO_FILE),A		; metadata stays in DATA_BUF; no file is open yet
 	CALL	RECV_SUBPACKET		; name+info -> DATA_BUF, DE=len
-	JR	C,.SESSION		; bad subpacket -> resend ZRINIT
+	JR	C,.RX_SESSION		; bad subpacket -> resend ZRINIT
 	CALL	OPEN_OUTPUT
 	JP	C,.GIVEUP
 	LD	HL,0
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
 	CALL	SEND_ZRPOS
-	JP	.NEXT_HDR
+	JP	C,.GIVEUP
+	JP	.RX_NEXT_HDR
 
-.ON_ZDATA
+.RX_ZDATA
 	CALL	HDR_POS_MATCHES		; CF=0 if header pos == FPOS
-	JR	NC,.DATA_LOOP
-	LD	A,'p'			; TEMP: ZDATA position mismatch
-	CALL	DBG_CH
-	JP	.RESYNC
-.DATA_LOOP
+	JR	NC,.RX_DATA_LOOP
+	JP	.RX_RESYNC
+.RX_DATA_LOOP
+	LD	A,1
+	LD	(SP_TO_FILE),A
 	CALL	RECV_SUBPACKET		; DATA_BUF/DE=len, A=terminator
-	JR	NC,.SP_OK
-	LD	A,'c'			; TEMP: subpacket read/CRC failure
-	CALL	DBG_CH
-	JP	.RESYNC
-.SP_OK
+	JR	NC,.RX_SP_OK
+	LD	A,(IO_ERROR)
+	OR	A
+	JP	NZ,.GIVEUP
+	JP	.RX_RESYNC
+.RX_SP_OK
 	LD	(LAST_TERM),A		; RECV_SUBPACKET already wrote the data to disk
 	CALL	SHOW_PROGRESS
 	LD	A,(LAST_TERM)
 	CP	ZCRCG
-	JR	Z,.DATA_LOOP
+	JR	Z,.RX_DATA_LOOP
 	CP	ZCRCQ
-	JR	Z,.DATA_ACK
+	JR	Z,.RX_DATA_ACK
 	CP	ZCRCW
-	JR	Z,.DATA_ACK_END
-	JP	.NEXT_HDR		; ZCRCE / anything -> header follows
-.DATA_ACK
+	JR	Z,.RX_DATA_ACK_END
+	JP	.RX_NEXT_HDR		; ZCRCE / anything -> header follows
+.RX_DATA_ACK
 	CALL	SEND_ZACK
-	JR	.DATA_LOOP
-.DATA_ACK_END
+	JP	C,.GIVEUP
+	JR	.RX_DATA_LOOP
+.RX_DATA_ACK_END
 	CALL	SEND_ZACK
-	JP	.NEXT_HDR
-.RESYNC
+	JP	C,.GIVEUP
+	JP	.RX_NEXT_HDR
+.RX_RESYNC
 	CALL	SEND_ZRPOS		; tell the sender our position
-	JP	.NEXT_HDR
+	JP	C,.GIVEUP
+	JP	.RX_NEXT_HDR
 
-.ON_ZEOF
+.RX_ZEOF
 	CALL	HDR_POS_MATCHES		; all bytes received?
-	JR	NC,.EOF_OK
-	LD	A,'e'			; TEMP: ZEOF position mismatch (FPOS != filelen)
-	CALL	DBG_CH
-	CALL	DBG_POS			; TEMP: show FPOS vs ZEOF position
-	JP	.RESYNC
-.EOF_OK
+	JR	NC,.RX_EOF_OK
+	JP	.RX_RESYNC
+.RX_EOF_OK
 	CALL	CLOSE_OUTPUT
 	PRINTLN	MSG_FILE_OK
-	JP	.SESSION		; ready for the next file or ZFIN
+	JP	.RX_SESSION		; ready for the next file or ZFIN
 
-.ON_ZFIN
+.RX_ZFIN
 	CALL	SEND_ZFIN
+	JP	C,.GIVEUP
+	CALL	WAIT_OO			; sender closes a successful session with "OO"
+	CALL	CLOSE_OUTPUT
+	JR	.DONE
+
+.DONE
 	CALL	CLOSE_OUTPUT
 	PRINTLN	MSG_DONE
 	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
@@ -168,11 +233,483 @@ RECEIVE
 	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
 
 ; ======================================================
+; Upload (local sender)
+; ======================================================
+
+SEND_FILE
+	PRINTLN	MSG_UPLOAD
+	CALL	PROMPT_FILENAME
+	RET	C
+	CALL	OPEN_INPUT
+	RET	C
+	CALL	BUILD_FILE_INFO
+	LD	A,ZM_SEND_RETRIES
+	LD	(SEND_TRIES),A
+.offer
+	XOR	A
+	LD	(TXP+0),A		; ZF3
+	LD	(TXP+1),A		; ZF2: normal transport
+	LD	A,ZMCLOB
+	LD	(TXP+2),A		; ZF1: replace existing destination
+	LD	A,ZCBIN
+	LD	(TXP+3),A		; ZF0: binary, no conversion
+	LD	A,ZFILE
+	CALL	SEND_HDR_WAIT
+	JP	C,.fail
+	LD	HL,DATA_BUF
+	LD	BC,(INFO_LEN)
+	LD	A,ZCRCW
+	CALL	SEND_SUBPACKET
+	JP	C,.fail
+.wait_pos
+	CALL	RECV_HEADER
+	JR	C,.retry_offer
+	CP	ZRPOS
+	JR	Z,.position
+	CP	ZSKIP
+	JP	Z,.skipped
+	CP	ZRINIT
+	JR	Z,.wait_pos		; discard an rz retry queued while user chose a file
+	CP	ZNAK
+	JR	Z,.retry_offer
+	CP	ZFIN
+	JP	Z,.fail
+	CP	ZABORT
+	JP	Z,.fail
+	JR	.wait_pos
+.retry_offer
+	LD	A,(SEND_TRIES)
+	DEC	A
+	LD	(SEND_TRIES),A
+	JR	NZ,.offer
+	JP	.fail
+.position
+	CALL	SEEK_TO_HDR_POS
+	JP	C,.fail
+.next_chunk
+	LD	A,ZM_SEND_RETRIES
+	LD	(SEND_TRIES),A
+.read_chunk
+	CALL	READ_INPUT
+	JP	C,.fail
+	LD	A,D
+	OR	E
+	JP	Z,.start_eof
+	LD	(TX_COUNT),DE
+	LD	HL,(FPOS)
+	LD	(SP_START),HL
+	LD	HL,(FPOS+2)
+	LD	(SP_START+2),HL
+	CALL	COPY_FPOS_TO_TXP
+	LD	A,ZDATA
+	CALL	SEND_HDR_WAIT
+	JP	C,.fail
+	LD	HL,DATA_BUF
+	LD	BC,(TX_COUNT)
+	LD	A,ZCRCW			; stop-and-wait: slower, deterministic and retryable
+	CALL	SEND_SUBPACKET
+	JP	C,.fail
+	LD	DE,(TX_COUNT)
+	CALL	ADD_FPOS
+	CALL	SHOW_PROGRESS
+.wait_ack
+	CALL	RECV_HEADER
+	JR	C,.retry_chunk
+	CP	ZACK
+	JR	Z,.ack
+	CP	ZRPOS
+	JR	Z,.reposition
+	CP	ZNAK
+	JR	Z,.retry_chunk
+	CP	ZSKIP
+	JP	Z,.skipped
+	CP	ZABORT
+	JP	Z,.fail
+	CP	ZFIN
+	JP	Z,.fail
+	LD	A,(SEND_TRIES)
+	DEC	A
+	LD	(SEND_TRIES),A
+	JR	NZ,.wait_ack
+	JP	.fail
+.ack
+	CALL	HDR_POS_MATCHES
+	JR	NC,.next_chunk
+	; A stale/different ZACK is treated like an explicit reposition request.
+.reposition
+	CALL	SEEK_TO_HDR_POS
+	JP	C,.fail
+	JR	.next_chunk
+.retry_chunk
+	LD	A,(SEND_TRIES)
+	DEC	A
+	LD	(SEND_TRIES),A
+	JP	Z,.fail
+	LD	A,1
+	LD	(SP_TO_FILE),A
+	CALL	SEEK_TO_SP_START
+	JP	.read_chunk
+
+.start_eof
+	LD	A,ZM_SEND_RETRIES
+	LD	(SEND_TRIES),A
+.send_eof
+	CALL	COPY_FPOS_TO_TXP
+	LD	A,ZEOF
+	CALL	SEND_HDR
+	JR	C,.fail
+.wait_eof
+	CALL	RECV_HEADER
+	JR	C,.retry_eof
+	CP	ZRINIT
+	JR	Z,.finish
+	CP	ZRPOS
+	JR	Z,.reposition
+	CP	ZACK
+	JR	Z,.retry_eof
+	CP	ZSKIP
+	JR	Z,.skipped
+	CP	ZABORT
+	JR	Z,.fail
+.retry_eof
+	LD	A,(SEND_TRIES)
+	DEC	A
+	LD	(SEND_TRIES),A
+	JR	NZ,.send_eof
+	JR	.fail
+
+.skipped
+	PRINTLN	MSG_SKIPPED
+.finish
+	CALL	CLOSE_OUTPUT
+	CALL	SEND_ZFIN
+	JR	C,.fail_closed
+	LD	A,ZM_SEND_RETRIES
+	LD	(SEND_TRIES),A
+.wait_fin
+	CALL	RECV_HEADER
+	JR	C,.retry_fin
+	CP	ZFIN
+	JR	Z,.send_oo
+	; Ignore unrelated delayed headers, but periodically resend ZFIN.
+.retry_fin
+	LD	A,(SEND_TRIES)
+	DEC	A
+	LD	(SEND_TRIES),A
+	JR	Z,.fail_closed
+	CALL	SEND_ZFIN
+	JR	NC,.wait_fin
+	JR	.fail_closed
+.send_oo
+	LD	HL,OO_SEQ
+	LD	BC,2
+	CALL	SEND_TCP_NO_WAIT
+	RET
+.fail
+	CALL	CLOSE_OUTPUT
+.fail_closed
+	SCF
+	RET
+
+; Ask for a local file after the remote rz/ZRINIT is detected. Empty input or
+; Esc cancels the transfer. DSS_ECHOKEY provides the visible line editing.
+PROMPT_FILENAME
+	PRINT	MSG_FILE_PROMPT
+	LD	C,DSS_KCLEAR
+	RST	DSS
+	LD	HL,FNAME
+	LD	(INPUT_PTR),HL
+	XOR	A
+	LD	(INPUT_LEN),A
+.key
+	LD	C,DSS_ECHOKEY
+	RST	DSS
+	CP	0x1B
+	JR	Z,.cancel
+	CP	13
+	JR	Z,.done
+	CP	10
+	JR	Z,.done
+	CP	8
+	JR	Z,.backspace
+	CP	0x20
+	JR	C,.key
+	LD	C,A
+	LD	A,(INPUT_LEN)
+	CP	ZM_FNAME_SIZE-1
+	JR	NC,.key
+	LD	HL,(INPUT_PTR)
+	LD	(HL),C
+	INC	HL
+	LD	(INPUT_PTR),HL
+	LD	A,(INPUT_LEN)
+	INC	A
+	LD	(INPUT_LEN),A
+	JR	.key
+.backspace
+	LD	A,(INPUT_LEN)
+	OR	A
+	JR	Z,.key
+	DEC	A
+	LD	(INPUT_LEN),A
+	LD	HL,(INPUT_PTR)
+	DEC	HL
+	LD	(INPUT_PTR),HL
+	JR	.key
+.done
+	LD	HL,(INPUT_PTR)
+	LD	(HL),0
+	PRINT	WCOMMON.LINE_END
+	LD	A,(INPUT_LEN)
+	OR	A
+	JR	Z,.cancel_no_line
+	RET
+.cancel
+	PRINT	WCOMMON.LINE_END
+.cancel_no_line
+	SCF
+	RET
+
+OPEN_INPUT
+	PRINT	MSG_SENDING
+	PRINT	FNAME
+	PRINT	WCOMMON.LINE_END
+	LD	HL,FNAME
+	LD	A,FM_READ
+	LD	C,DSS_OPEN_FILE
+	RST	DSS
+	JR	C,.error
+	LD	(FH),A
+	LD	A,1
+	LD	(FH_OPEN),A
+	LD	A,(FH)
+	LD	B,SEEK_END
+	LD	HL,0
+	LD	IX,0
+	LD	C,DSS_MOVE_FP
+	RST	DSS
+	JR	C,.error_close
+	LD	(FILE_SIZE),IX
+	LD	(FILE_SIZE+2),HL
+	LD	A,(FH)
+	LD	B,0
+	LD	HL,0
+	LD	IX,0
+	LD	C,DSS_MOVE_FP
+	RST	DSS
+	JR	C,.error_close
+	LD	HL,0
+	LD	(FPOS),HL
+	LD	(FPOS+2),HL
+	OR	A
+	RET
+.error_close
+	CALL	CLOSE_OUTPUT
+.error
+	PRINTLN	MSG_FILE_ERROR
+	SCF
+	RET
+
+; DATA_BUF = basename NUL, decimal size and standard metadata fields NUL.
+BUILD_FILE_INFO
+	LD	HL,FNAME
+	LD	DE,FNAME
+.find_end
+	LD	A,(HL)
+	OR	A
+	JR	Z,.copy_name
+	CP	'/'
+	JR	Z,.new_base
+	CP	92			; '\\'
+	JR	Z,.new_base
+	CP	':'
+	JR	NZ,.find_next
+.new_base
+	PUSH	HL
+	POP	DE
+	INC	DE
+.find_next
+	INC	HL
+	JR	.find_end
+.copy_name
+	LD	HL,DATA_BUF
+.copy_loop
+	LD	A,(DE)
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,.copy_loop
+	CALL	APPEND_FILE_SIZE
+	LD	DE,FILE_INFO_SUFFIX
+.suffix
+	LD	A,(DE)
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,.suffix
+	LD	DE,DATA_BUF
+	OR	A
+	SBC	HL,DE
+	LD	(INFO_LEN),HL
+	RET
+
+; Append FILE_SIZE as ten decimal digits (leading zeroes are valid decimal).
+; Out: HL points just after the digits.
+APPEND_FILE_SIZE
+	PUSH	HL
+	LD	HL,FILE_SIZE
+	LD	DE,U32_WORK
+	LD	BC,4
+	LDIR
+	POP	HL
+	LD	IX,U32_POW10
+	LD	B,10
+.power
+	XOR	A
+	LD	(DEC_DIGIT),A
+.subtract
+	CALL	U32_WORK_GE_IX
+	JR	C,.emit
+	CALL	U32_WORK_SUB_IX
+	LD	A,(DEC_DIGIT)
+	INC	A
+	LD	(DEC_DIGIT),A
+	JR	.subtract
+.emit
+	LD	A,(DEC_DIGIT)
+	ADD	A,'0'
+	LD	(HL),A
+	INC	HL
+	LD	DE,4
+	ADD	IX,DE
+	DJNZ	.power
+	RET
+
+; CF=0 if U32_WORK >= little-endian dword at IX, CF=1 otherwise.
+U32_WORK_GE_IX
+	LD	A,(U32_WORK+3)
+	CP	(IX+3)
+	RET	NZ
+	LD	A,(U32_WORK+2)
+	CP	(IX+2)
+	RET	NZ
+	LD	A,(U32_WORK+1)
+	CP	(IX+1)
+	RET	NZ
+	LD	A,(U32_WORK)
+	CP	(IX+0)
+	RET
+
+U32_WORK_SUB_IX
+	LD	A,(U32_WORK)
+	SUB	(IX+0)
+	LD	(U32_WORK),A
+	LD	A,(U32_WORK+1)
+	SBC	A,(IX+1)
+	LD	(U32_WORK+1),A
+	LD	A,(U32_WORK+2)
+	SBC	A,(IX+2)
+	LD	(U32_WORK+2),A
+	LD	A,(U32_WORK+3)
+	SBC	A,(IX+3)
+	LD	(U32_WORK+3),A
+	RET
+
+READ_INPUT
+	CALL	CHECK_ABORT
+	RET	C
+	CALL	WIFI.UART_RX_PAUSE
+	LD	A,(FH)
+	LD	HL,DATA_BUF
+	LD	DE,ZM_TX_CHUNK
+	LD	C,DSS_READ_FILE
+	RST	DSS
+	RET	NC
+	LD	A,1
+	LD	(IO_ERROR),A
+	SCF
+	RET
+
+SEEK_TO_HDR_POS
+	LD	A,(FH)
+	LD	B,0
+	LD	HL,(HDR_P2)
+	LD	IX,(HDR_P0)
+	LD	C,DSS_MOVE_FP
+	RST	DSS
+	RET	C
+	LD	(FPOS),IX
+	LD	(FPOS+2),HL
+	OR	A
+	RET
+
+COPY_FPOS_TO_TXP
+	LD	HL,FPOS
+	LD	DE,TXP
+	LD	BC,4
+	LDIR
+	RET
+
+WAIT_OO
+.first
+	CALL	GETBYTE
+	RET	C
+	CP	'O'
+	JR	NZ,.first
+	CALL	GETBYTE
+	RET	C
+	CP	'O'
+	JR	NZ,.first
+	OR	A
+	RET
+
+; ======================================================
 ; Stream input
 ; ======================================================
 
-; GETBYTE: next raw byte. Out: A=byte, CF=0; CF=1 on timeout/close/abort.
+; GETBYTE: next Telnet-decoded TCP byte. Telnet represents a literal 0xFF as
+; IAC IAC; option commands and subnegotiations are transport control and are
+; removed from the Zmodem stream. Out: A=byte, CF=0; CF=1 on timeout/close.
 GETBYTE
+.again
+	CALL	GET_RAWBYTE
+	RET	C
+	CP	ZM_IAC
+	RET	NZ
+	CALL	GET_RAWBYTE
+	RET	C
+	CP	ZM_IAC
+	JR	Z,.literal_iac
+	CP	ZM_SB
+	JR	Z,.subneg
+	CP	ZM_WILL
+	JR	C,.again		; one-byte Telnet command
+	CP	ZM_DONT+1
+	JR	NC,.again
+	CALL	GET_RAWBYTE		; WILL/WONT/DO/DONT option byte
+	RET	C
+	JR	.again
+.subneg
+	CALL	GET_RAWBYTE
+	RET	C
+	CP	ZM_IAC
+	JR	NZ,.subneg
+	CALL	GET_RAWBYTE
+	RET	C
+	CP	ZM_IAC
+	JR	Z,.subneg		; escaped IAC inside SB
+	CP	ZM_SE
+	JR	NZ,.subneg
+	JR	.again
+.literal_iac
+	LD	A,ZM_IAC
+	OR	A
+	RET
+
+; GET_RAWBYTE: next byte from the +IPD payload before Telnet decoding.
+GET_RAWBYTE
 	LD	HL,(SRC_CNT)
 	LD	A,H
 	OR	L
@@ -231,8 +768,17 @@ FILL
 ; GET_UNESC: next ZDLE-decoded element.
 ; Out: A=value, B=0 (data) or B=1 (terminator; A=ZCRC* char), CF=1 on error.
 GET_UNESC
+.raw
 	CALL	GETBYTE
 	RET	C
+	CP	XON
+	JR	Z,.raw
+	CP	XOFF
+	JR	Z,.raw
+	CP	XON | 0x80
+	JR	Z,.raw
+	CP	XOFF | 0x80
+	JR	Z,.raw
 	CP	ZDLE
 	JR	Z,.esc
 	LD	B,0
@@ -241,6 +787,14 @@ GET_UNESC
 .esc
 	CALL	GETBYTE
 	RET	C
+	CP	XON
+	JR	Z,.esc
+	CP	XOFF
+	JR	Z,.esc
+	CP	XON | 0x80
+	JR	Z,.esc
+	CP	XOFF | 0x80
+	JR	Z,.esc
 	CP	ZCRCE
 	JR	Z,.term
 	CP	ZCRCG
@@ -253,6 +807,11 @@ GET_UNESC
 	JR	Z,.rub0
 	CP	ZRUB1
 	JR	Z,.rub1
+	PUSH	AF
+	AND	0x60
+	CP	0x40
+	POP	AF
+	JR	NZ,.bad
 	XOR	0x40			; ZDLEE etc.
 	LD	B,0
 	OR	A
@@ -270,6 +829,9 @@ GET_UNESC
 	LD	A,0xFF
 	LD	B,0
 	OR	A
+	RET
+.bad
+	SCF
 	RET
 
 ; ======================================================
@@ -292,7 +854,6 @@ RECV_HEADER
 	JR	Z,.bin
 	CP	ZBIN32
 	JR	Z,.bin32
-	CALL	DBG_CH			; TEMP: unrecognised format byte
 	JR	.retry
 .hex
 	CALL	RECV_HEX
@@ -306,13 +867,10 @@ RECV_HEADER
 	CALL	RECV_BIN32
 	JR	C,.crcfail
 .ok
-	CALL	DBG_HDR			; TEMP diagnostic: show each received frame type
 	LD	A,(HDR_TYPE)
 	OR	A			; CF=0
 	RET
 .crcfail
-	LD	A,'!'			; TEMP: header CRC/parse error
-	CALL	DBG_CH
 .retry
 	LD	A,(HDR_TRY)
 	DEC	A
@@ -322,8 +880,6 @@ RECV_HEADER
 	SCF
 	RET
 .timeout
-	LD	A,'T'			; TEMP: no data / stream end
-	CALL	DBG_CH
 	SCF
 	RET
 
@@ -369,7 +925,9 @@ RECV_HEX
 	CP	(HL)
 	JR	NZ,.bad
 	CALL	GETBYTE			; trailing CR
+	RET	C
 	CALL	GETBYTE			; trailing LF
+	RET	C
 	OR	A
 	RET
 .bad
@@ -407,8 +965,8 @@ RECV_BIN
 	SCF
 	RET
 
-; RECV_BIN32: a CRC32 header we never requested; read type,p0..3 + 4 CRC bytes
-; and accept the type without verification (best effort).
+; RECV_BIN32: CRC32 is deliberately unsupported and never advertised. Consume
+; the complete header to keep framing aligned, then reject it.
 RECV_BIN32
 	LD	IX,HDR_TYPE
 	LD	C,5			; counter in C (GET_UNESC clobbers B)
@@ -425,7 +983,7 @@ RECV_BIN32
 	RET	C
 	DEC	C
 	JR	NZ,.cc
-	OR	A
+	SCF
 	RET
 
 ; HDR_CRC: CRC16 over HDR_TYPE,HDR_P0..3 (5 bytes). Out: HL=crc.
@@ -438,13 +996,14 @@ HDR_CRC
 	INC	IX
 	CALL	CRC_UPD
 	DJNZ	.l
-	RET
+	JP	CRC_FINISH
 
 ; GET_HEXBYTE: two hex chars -> A=byte. CF=1 on stream error.
 GET_HEXBYTE
 	CALL	GETBYTE
 	RET	C
 	CALL	UNHEX
+	RET	C
 	RLCA
 	RLCA
 	RLCA
@@ -454,6 +1013,7 @@ GET_HEXBYTE
 	CALL	GETBYTE
 	RET	C
 	CALL	UNHEX
+	RET	C
 	OR	C
 	OR	A			; CF=0
 	RET
@@ -462,11 +1022,9 @@ GET_HEXBYTE
 ; Data subpacket receive
 ; ======================================================
 
-; RECV_SUBPACKET: read a data subpacket, writing it to the output file as the
-; 1 KB buffer fills - so a subpacket of ANY size is handled (the sender here
-; sends the whole file as one big subpacket). On a good CRC the data stays
-; committed and FPOS is advanced; on a bad CRC / stream error the file is
-; rewound to the subpacket start and FPOS restored, so .RESYNC re-requests it.
+; RECV_SUBPACKET: buffer one complete subpacket, verify CRC, then commit it.
+; Nothing reaches disk before CRC succeeds, so a retry cannot leave stale bytes
+; beyond the eventual EOF. ZRINIT advertises the matching 8 KB maximum.
 ; Out: A=terminator, CF=0 on success; CF=1 on CRC/stream error.
 RECV_SUBPACKET
 	LD	HL,(FPOS)		; remember where this subpacket starts
@@ -486,14 +1044,13 @@ RECV_SUBPACKET
 	LD	A,B
 	OR	A
 	JR	NZ,.term
-	; data byte: if the buffer is full, flush it to disk first
+	; Data is held until CRC succeeds. Reject an oversized non-standard packet.
 	LD	HL,(SP_LEN)
 	LD	DE,ZM_DATA_SIZE
 	OR	A
 	SBC	HL,DE
 	JR	C,.store		; len < size
-	CALL	FLUSH_BUF
-	JR	C,.writeerr
+	JR	.overflow
 .store
 	LD	HL,(SP_PTR)
 	LD	(HL),C
@@ -512,6 +1069,7 @@ RECV_SUBPACKET
 	LD	(SP_TERM),A		; terminator char
 	LD	HL,(SP_CRC)
 	CALL	CRC_UPD			; terminator is part of the CRC (A = terminator)
+	CALL	CRC_FINISH		; Zmodem CRC-16 appends two zero bytes
 	LD	(SP_CRC),HL
 	; Read + verify the 2 CRC bytes FIRST, while the stream is still flowing fast.
 	; They arrive immediately after the terminator; if we did the slow buffer-tail
@@ -527,22 +1085,28 @@ RECV_SUBPACKET
 	LD	HL,SP_CRC		; computed lo
 	CP	(HL)
 	JR	NZ,.crcbad
+	LD	A,(SP_TO_FILE)
+	OR	A
+	JR	Z,.metadata_ok
 	CALL	FLUSH_BUF		; CRC ok -> commit the buffer tail now
 	JR	C,.writeerr
+	JR	.good
+.metadata_ok
+	LD	DE,(SP_LEN)
+.good
 	LD	A,(SP_TERM)
 	OR	A			; CF=0
 	RET
 .crcbad
-	LD	A,'X'			; TEMP: subpacket CRC mismatch
-	CALL	DBG_CH
-	CALL	SEEK_TO_SP_START
 	SCF
 	RET
 .streamerr
-	CALL	SEEK_TO_SP_START
 	SCF
 	RET
 .writeerr
+	SCF
+	RET
+.overflow
 	SCF
 	RET
 
@@ -554,16 +1118,13 @@ FLUSH_BUF
 	OR	E
 	RET	Z			; nothing buffered (CF=0)
 	PUSH	DE
-	CALL	WIFI.UART_RX_PAUSE	; hold the ESP during the slow disk write
+	CALL	WIFI.UART_RX_PAUSE	; remain paused until the next FILL
 	LD	A,(FH)
 	LD	HL,DATA_BUF
 	POP	DE
 	PUSH	DE
 	LD	C,DSS_WRITE
 	RST	DSS			; A=handle, HL=buf, DE=count
-	PUSH	AF
-	CALL	WIFI.UART_RX_RESUME
-	POP	AF
 	JR	C,.err
 	POP	DE
 	CALL	ADD_FPOS		; FPOS += bytes written
@@ -575,6 +1136,8 @@ FLUSH_BUF
 	RET
 .err
 	POP	DE
+	LD	A,1
+	LD	(IO_ERROR),A
 	SCF
 	RET
 
@@ -596,18 +1159,18 @@ SEEK_TO_SP_START
 ; Header send
 ; ======================================================
 
-; SEND_ZRINIT: advertise a 1 KB receive window (ZP0/ZP1) and DROP CANOVIO, so
-; the sender stops streaming the whole file as one giant subpacket and instead
-; sends <=1 KB subpackets, each ZCRCW-terminated, waiting for our ZACK. That
-; paces it to our disk-write speed and stops the ESP buffer from overrunning.
+; SEND_ZRINIT: advertise the complete verified-subpacket buffer in ZP0/ZP1,
+; request control-byte escaping, CRC-16 and conservative non-overlapped I/O.
 SEND_ZRINIT
-	; +IPD mode gives reliable back-pressured RX, so no window limit is needed
-	; (windowing the sender did not help and the sender ignored it anyway).
-	XOR	A
+	LD	A,low ZM_RX_WINDOW
 	LD	(TXP+0),A
+	LD	A,high ZM_RX_WINDOW
 	LD	(TXP+1),A
+	XOR	A
 	LD	(TXP+2),A
-	LD	A,CANFDX | CANOVIO
+	; Request CRC-16 and full control-byte escaping. CANOVIO is deliberately
+	; clear: DSS disk I/O is slower than the UART and we want conservative flow.
+	LD	A,CANFDX | ESCCTL
 	LD	(TXP+3),A
 	LD	A,ZRINIT
 	JR	SEND_HDR
@@ -626,6 +1189,15 @@ SEND_POS				; A=type, position = FPOS
 	POP	AF
 	JR	SEND_HDR
 
+SEND_ZACK_ZERO
+	XOR	A
+	LD	(TXP+0),A
+	LD	(TXP+1),A
+	LD	(TXP+2),A
+	LD	(TXP+3),A
+	LD	A,ZACK
+	JR	SEND_HDR
+
 SEND_ZFIN
 	XOR	A
 	LD	(TXP+0),A
@@ -633,7 +1205,19 @@ SEND_ZFIN
 	LD	(TXP+2),A
 	LD	(TXP+3),A
 	LD	A,ZFIN
-	; fall through
+	JR	SEND_HDR
+
+SEND_HDR_WAIT
+	LD	(HDR_TYPE_OUT),A
+	LD	A,1
+	LD	(HDR_WAIT),A
+	LD	A,(HDR_TYPE_OUT)
+	CALL	SEND_HDR
+	PUSH	AF
+	XOR	A
+	LD	(HDR_WAIT),A
+	POP	AF
+	RET
 
 ; SEND_HDR: build "**" ZDLE 'B' hex(type,p0..3,crchi,crclo) CR LF XON, send it.
 ; In: A=type, TXP[0..3]=the four bytes.
@@ -661,16 +1245,23 @@ SEND_HDR
 	CALL	EMIT_CRC_HEX
 	DJNZ	.p
 	LD	HL,(SEND_CRC)
+	CALL	CRC_FINISH
 	LD	A,H
 	CALL	PUTHEX
 	LD	A,L
 	CALL	PUTHEX
 	LD	A,0x0D
 	CALL	PUT
-	LD	A,0x0A
+	LD	A,0x8A			; standard Zmodem hex-header LF with parity bit
 	CALL	PUT
+	LD	A,(SEND_T)
+	CP	ZFIN
+	JR	Z,.built
+	CP	ZACK
+	JR	Z,.built
 	LD	A,XON
 	CALL	PUT
+.built
 	; length = TXP_DST - TXBUF
 	LD	HL,(TXP_DST)
 	LD	DE,TXBUF
@@ -679,9 +1270,113 @@ SEND_HDR
 	LD	B,H
 	LD	C,L
 	LD	HL,TXBUF
-	; NO_WAIT: do not wait for "SEND OK" - that would consume the sender's reply
-	; (ZFILE/data +IPD) which we need to parse next.
-	JP	TCP.SEND_BUFFER_NO_WAIT
+	LD	A,(HDR_WAIT)
+	OR	A
+	JP	NZ,SEND_TCP_WAIT	; peer cannot reply before the following subpacket
+	; Otherwise do not wait for SEND OK: it could consume the peer's reply.
+	JP	SEND_TCP_NO_WAIT
+
+; ESP command replies are also subject to RTS/CTS. Raise RTS before CIPSEND,
+; then lower it immediately after the payload so protocol parsing and DSS I/O
+; cannot overrun the UART FIFO.
+SEND_TCP_NO_WAIT
+	CALL	WIFI.UART_RX_RESUME
+	CALL	TCP.SEND_BUFFER_NO_WAIT
+	PUSH	AF
+	CALL	WIFI.UART_RX_PAUSE
+	POP	AF
+	RET
+
+SEND_TCP_WAIT
+	CALL	WIFI.UART_RX_RESUME
+	CALL	TCP.SEND_BUFFER
+	PUSH	AF
+	CALL	WIFI.UART_RX_PAUSE
+	POP	AF
+	RET
+
+; SEND_SUBPACKET: encode BC bytes at HL with ZDLE quoting, append the requested
+; terminator and CRC-16, then send as one TCP payload. Full control escaping
+; honors ESCCTL; 0xFF uses ZRUB1 so no literal Telnet IAC reaches the wire.
+SEND_SUBPACKET
+	LD	(TX_TERM),A
+	LD	(TX_SRC),HL
+	LD	(TX_LEFT),BC
+	LD	HL,TXDATA_BUF
+	LD	(TXP_DST),HL
+	LD	HL,0
+	LD	(SEND_CRC),HL
+.byte
+	LD	HL,(TX_LEFT)
+	LD	A,H
+	OR	L
+	JR	Z,.term
+	DEC	HL
+	LD	(TX_LEFT),HL
+	LD	HL,(TX_SRC)
+	LD	A,(HL)
+	INC	HL
+	LD	(TX_SRC),HL
+	PUSH	AF
+	LD	HL,(SEND_CRC)
+	CALL	CRC_UPD
+	LD	(SEND_CRC),HL
+	POP	AF
+	CALL	PUT_ESCAPED
+	JR	.byte
+.term
+	LD	A,ZDLE
+	CALL	PUT
+	LD	A,(TX_TERM)
+	CALL	PUT
+	LD	HL,(SEND_CRC)
+	CALL	CRC_UPD
+	CALL	CRC_FINISH
+	LD	(SEND_CRC),HL
+	LD	A,H
+	CALL	PUT_ESCAPED
+	LD	HL,(SEND_CRC)
+	LD	A,L
+	CALL	PUT_ESCAPED
+	LD	A,(TX_TERM)
+	CP	ZCRCW
+	JR	NZ,.built
+	LD	A,XON
+	CALL	PUT
+.built
+	LD	HL,(TXP_DST)
+	LD	DE,TXDATA_BUF
+	OR	A
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L
+	LD	HL,TXDATA_BUF
+	JP	SEND_TCP_NO_WAIT
+
+PUT_ESCAPED
+	CP	0x7F
+	JR	Z,.rub0
+	CP	0xFF
+	JR	Z,.rub1
+	LD	C,A
+	AND	0x60
+	LD	A,C
+	JP	NZ,PUT
+	LD	A,ZDLE
+	CALL	PUT
+	LD	A,C
+	XOR	0x40
+	JP	PUT
+.rub0
+	LD	A,ZDLE
+	CALL	PUT
+	LD	A,ZRUB0
+	JP	PUT
+.rub1
+	LD	A,ZDLE
+	CALL	PUT
+	LD	A,ZRUB1
+	JP	PUT
 
 ; PUT: append A to (TXP_DST). Preserves A,BC,DE.
 PUT
@@ -726,19 +1421,33 @@ HEXCHR
 	ADD	A,'0'
 	RET
 
-; UNHEX: hex char in A -> nibble (0..15). Accepts upper/lower case.
+; UNHEX: hex char in A -> nibble (0..15), CF=0. CF=1 if invalid.
 UNHEX
-	CP	'a'
-	JR	C,.up
-	SUB	'a'-10
-	RET
-.up
+	CP	'0'
+	JR	C,.bad
+	CP	'9'+1
+	JR	C,.digit
 	CP	'A'
-	JR	C,.num
-	SUB	'A'-10
+	JR	C,.bad
+	CP	'F'+1
+	JR	C,.upper
+	CP	'a'
+	JR	C,.bad
+	CP	'f'+1
+	JR	NC,.bad
+	SUB	'a'-10
+	OR	A
 	RET
-.num
+.upper
+	SUB	'A'-10
+	OR	A
+	RET
+.digit
 	SUB	'0'
+	OR	A
+	RET
+.bad
+	SCF
 	RET
 
 ; CRC_UPD: CRC-16/XMODEM update. In: A=byte, HL=crc. Out: HL=crc. Preserves BC,DE.
@@ -763,6 +1472,14 @@ CRC_UPD
 	POP	BC
 	RET
 
+; Zmodem transmits the CRC-16 remainder after advancing it with two zero bytes
+; (unlike the shorter CRC calculation previously used here).
+CRC_FINISH
+	XOR	A
+	CALL	CRC_UPD
+	XOR	A
+	JP	CRC_UPD
+
 ; ======================================================
 ; Position / file
 ; ======================================================
@@ -785,9 +1502,32 @@ HDR_POS_MATCHES
 	SCF
 	RET
 
-; OPEN_OUTPUT: parse filename (ASCIIZ at DATA_BUF) and create/overwrite it.
+; OPEN_OUTPUT: keep only the offered basename, then create/overwrite it.
 OPEN_OUTPUT
 	LD	HL,DATA_BUF
+	LD	DE,DATA_BUF
+.scan
+	LD	A,(HL)
+	OR	A
+	JR	Z,.copy_start
+	CP	'/'
+	JR	Z,.new_base
+	CP	92
+	JR	Z,.new_base
+	CP	':'
+	JR	NZ,.scan_next
+.new_base
+	PUSH	HL
+	POP	DE
+	INC	DE
+.scan_next
+	INC	HL
+	JR	.scan
+.copy_start
+	EX	DE,HL
+	LD	A,(HL)
+	OR	A
+	JR	Z,.bad_name
 	LD	DE,FNAME
 	LD	B,ZM_FNAME_SIZE-1
 .cp
@@ -813,6 +1553,9 @@ OPEN_OUTPUT
 	LD	A,1
 	LD	(FH_OPEN),A
 	OR	A
+	RET
+.bad_name
+	SCF
 	RET
 
 ; ADD_FPOS: FPOS (4-byte LE) += DE.
@@ -841,7 +1584,7 @@ CLOSE_OUTPUT
 ABORT_TRANSFER
 	LD	HL,CANSEQ
 	LD	BC,CANSEQ_LEN
-	CALL	TCP.SEND_BUFFER
+	CALL	SEND_TCP_WAIT
 	; The sender keeps streaming for a while before it processes the ZCAN, so
 	; drain+discard ~2 s of in-flight +IPD data; otherwise it floods the terminal
 	; as garbage when we return.
@@ -895,107 +1638,19 @@ SHOW_PROGRESS
 	POP	BC
 	RET
 
-; DBG_CH (TEMP): print the char in A. Remove once Zmodem is verified.
-DBG_CH
-	PUSH	BC
-	PUSH	DE
-	PUSH	HL
-	LD	C,DSS_PUTCHAR
-	RST	DSS
-	POP	HL
-	POP	DE
-	POP	BC
-	RET
-
-; DBG_HDR (TEMP): print "<XX>" with XX = received frame type (hex), to trace
-; the handshake on screen. Remove once Zmodem is verified.
-DBG_HDR
-	PUSH	BC
-	PUSH	DE
-	PUSH	HL
-	LD	A,'<'
-	CALL	.pc
-	LD	A,(HDR_TYPE)
-	PUSH	AF
-	RRCA
-	RRCA
-	RRCA
-	RRCA
-	CALL	.ph
-	POP	AF
-	CALL	.ph
-	LD	A,'>'
-	CALL	.pc
-	POP	HL
-	POP	DE
-	POP	BC
-	RET
-.ph
-	AND	0x0F
-	CP	10
-	JR	C,.d
-	ADD	A,'a'-10
-	JR	.pc
-.d
-	ADD	A,'0'
-.pc
-	PUSH	BC
-	LD	C,DSS_PUTCHAR
-	RST	DSS
-	POP	BC
-	RET
-
-; DBG_BYTE (TEMP): print A as two hex chars.
-DBG_BYTE
-	PUSH	BC
-	PUSH	HL
-	LD	C,A
-	RRCA
-	RRCA
-	RRCA
-	RRCA
-	CALL	.nib
-	LD	A,C
-	CALL	.nib
-	POP	HL
-	POP	BC
-	RET
-.nib
-	AND	0x0F
-	CP	10
-	JR	C,.dig
-	ADD	A,'a'-10
-	JP	DBG_CH
-.dig
-	ADD	A,'0'
-	JP	DBG_CH
-
-; DBG_POS (TEMP): print "F<fpos>Z<zeof pos>" (little-endian byte order).
-DBG_POS
-	LD	A,'F'
-	CALL	DBG_CH
-	LD	HL,FPOS
-	CALL	.dump4
-	LD	A,'Z'
-	CALL	DBG_CH
-	LD	HL,HDR_P0
-	CALL	.dump4
-	LD	A,' '
-	JP	DBG_CH
-.dump4
-	LD	B,4
-.dl
-	LD	A,(HL)
-	CALL	DBG_BYTE
-	INC	HL
-	DJNZ	.dl
-	RET
-
 ; ======================================================
 ; Messages
 ; ======================================================
-MSG_START
-	DB "Zmodem download (Esc aborts)...",0
+MSG_DETECT
+	DB "Zmodem detected (Esc aborts)...",0
+MSG_DOWNLOAD
+	DB "Zmodem download.",0
+MSG_UPLOAD
+	DB "Zmodem upload.",0
+MSG_FILE_PROMPT
+	DB "Local file: ",0
+MSG_SENDING
+	DB "Sending ",0
 MSG_RECV
 	DB "Receiving ",0
 MSG_FILE_OK
@@ -1004,6 +1659,26 @@ MSG_DONE
 	DB "Zmodem done.",0
 MSG_ABORT
 	DB "Zmodem aborted.",0
+MSG_SKIPPED
+	DB "Remote skipped the file.",0
+MSG_FILE_ERROR
+	DB "Cannot open/read local file.",0
+
+OO_SEQ
+	DB "OO"
+FILE_INFO_SUFFIX
+	DB " 0 0 0 1 0",0
+U32_POW10
+	DD 1000000000
+	DD 100000000
+	DD 10000000
+	DD 1000000
+	DD 100000
+	DD 10000
+	DD 1000
+	DD 100
+	DD 10
+	DD 1
 
 CANSEQ
 	DB 0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18
@@ -1011,9 +1686,8 @@ CANSEQ
 CANSEQ_LEN	EQU $-CANSEQ
 
 ; ======================================================
-; State + buffers (in the loaded image; include this module before esplib so
-; the RS_BUFF BSS anchor sits above it). TODO: move the big buffers to runtime
-; BSS to shave ~1.6 KB off the .EXE.
+; Small state is initialised in the EXE. Large buffers are EQU maps in the
+; DSS-allocated WIN2 page, so they do not bloat the executable.
 ; ======================================================
 SRC_PTR		DW 0
 SRC_CNT		DW 0
@@ -1031,17 +1705,38 @@ SP_START	DS 4,0			; file offset at the current subpacket's start
 SP_TERM		DB 0
 LAST_TERM	DB 0
 SEND_T		DB 0
+HDR_WAIT	DB 0
+HDR_TYPE_OUT	DB 0
 SEND_CRC	DW 0
 TXP_DST		DW 0
 TXP		DS 4,0
 FH		DB 0
 FH_OPEN		DB 0
 ABORTED		DB 0
+IO_ERROR	DB 0
+SP_TO_FILE	DB 0
 FPOS		DS 4,0
-FNAME		DS ZM_FNAME_SIZE,0
-TXBUF		DS ZM_TXBUF_SIZE,0
-RXBUF		DS ZM_RXBUF_SIZE,0
-DATA_BUF	DS ZM_DATA_SIZE,0
+FILE_SIZE	DS 4,0
+INFO_LEN	DW 0
+TX_COUNT	DW 0
+TX_TERM		DB 0
+TX_SRC		DW 0
+TX_LEFT		DW 0
+SEND_TRIES	DB 0
+INPUT_PTR	DW 0
+INPUT_LEN	DB 0
+U32_WORK	DS 4,0
+DEC_DIGIT	DB 0
+
+RXBUF		EQU WIN2_BASE
+DATA_BUF	EQU RXBUF + ZM_RXBUF_SIZE
+TXDATA_BUF	EQU DATA_BUF + ZM_DATA_SIZE
+TXBUF		EQU TXDATA_BUF		; hex headers reuse the encoded-TX staging area
+FNAME		EQU TXDATA_BUF + ZM_TXDATA_SIZE
+ZM_BSS_END	EQU FNAME + ZM_FNAME_SIZE
+
+	ASSERT	TXBUF + ZM_TXBUF_SIZE <= FNAME
+	ASSERT	ZM_BSS_END <= 0xC000
 
 	ENDMODULE
 

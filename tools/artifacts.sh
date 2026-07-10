@@ -48,6 +48,7 @@ DIST_DOC_FILES=(
   docs/TFTP.TXT
   docs/FTP.TXT
   docs/WTERM.TXT
+  docs/TELNET.TXT
   LICENSE
 )
 

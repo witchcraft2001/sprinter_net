@@ -1,0 +1,55 @@
+TELNET.EXE - ANSI Telnet client with Zmodem
+===========================================
+
+Purpose
+-------
+  Opens an interactive ANSI/VT100 Telnet session through SprinterESP. The
+  client negotiates an 8-bit Telnet BINARY path and automatically detects
+  Zmodem downloads and uploads.
+
+Usage
+-----
+  TELNET.EXE host [port]
+
+  The default port is 23. Run NETUP.EXE before TELNET.EXE.
+
+Controls
+--------
+  Alt+X  close the Telnet session.
+  Esc    is sent to the remote application during normal terminal use.
+  Esc    aborts while a Zmodem transfer is active.
+
+Zmodem download (remote to Sprinter)
+------------------------------------
+  Select Download in the BBS or run "sz remote-file" on the remote host.
+  TELNET detects ZRQINIT, creates the offered local filename and receives the
+  file. An existing local file with the same name is overwritten.
+
+Zmodem upload (Sprinter to remote)
+----------------------------------
+  Select Upload in the BBS or run "rz" on the remote host. When TELNET detects
+  ZRINIT it prompts:
+
+    Local file:
+
+  Enter the DSS path of one local file and press Enter. The basename is sent
+  as the remote filename. TELNET requests binary transfer and replacement of
+  an existing destination, but the remote server may apply its own policy and
+  skip the file.
+
+Transfer behavior
+-----------------
+  - CRC-16 is checked for every header and data subpacket.
+  - Downloads buffer and verify up to 8 KB before writing to disk.
+  - Uploads use acknowledged 1 KB chunks and honor ZRPOS retransmit requests.
+  - Telnet IAC quoting and Zmodem control-byte escaping are both handled.
+  - A successful session uses the standard ZFIN / ZFIN / "OO" shutdown.
+
+Exit status
+-----------
+  0  Session ended normally or the remote host closed it.
+  1  Invalid command line.
+  2  Sprinter-WiFi hardware was not found.
+  3  ESP/TCP communication or connection error.
+
+  A canceled or failed Zmodem transfer returns to the open terminal session.

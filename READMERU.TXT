@@ -47,6 +47,7 @@ SprinterESP: настройка и подъём соединения, диагн
   TFTP.EXE      клиент TFTP
   NTP.EXE       синхронизация системного времени по сети
   WTERM.EXE     терминал ESP-AT (ручной ввод AT-команд)
+  TELNET.EXE    ANSI Telnet-клиент с передачей файлов Zmodem
 
 
 ДОКУМЕНТАЦИЯ  (каталог DOCS\)
@@ -56,7 +57,7 @@ SprinterESP: настройка и подъём соединения, диагн
   USAGE.MD      полный справочник и коды возврата
   <ИМЯ>.TXT     справка по каждой утилите: PING.TXT, WGET.TXT,
                 FTP.TXT, TFTP.TXT, NTP.TXT, NETCFG.TXT, NETUP.TXT,
-                NETRESET.TXT, NETPROBE.TXT, WTERM.TXT
+                NETRESET.TXT, NETPROBE.TXT, WTERM.TXT, TELNET.TXT
 
 
 КОНФИГУРАЦИЯ  (каталог CONFIG\)

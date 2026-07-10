@@ -48,6 +48,7 @@ PROGRAMS
   TFTP.EXE      TFTP client
   NTP.EXE       set the system clock over the network
   WTERM.EXE     ESP-AT terminal (manual AT commands)
+  TELNET.EXE    ANSI Telnet client with Zmodem send/receive
 
 
 DOCUMENTATION  (DOCS\ directory)
@@ -57,7 +58,7 @@ DOCUMENTATION  (DOCS\ directory)
   USAGE.MD      full reference and exit codes
   <NAME>.TXT    per-tool help: PING.TXT, WGET.TXT, FTP.TXT,
                 TFTP.TXT, NTP.TXT, NETCFG.TXT, NETUP.TXT,
-                NETRESET.TXT, NETPROBE.TXT, WTERM.TXT
+                NETRESET.TXT, NETPROBE.TXT, WTERM.TXT, TELNET.TXT
 
 
 CONFIGURATION  (CONFIG\ directory)
