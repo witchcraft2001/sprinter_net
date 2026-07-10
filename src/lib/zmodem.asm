@@ -4,7 +4,7 @@
 ; we never advertise CANFC32, so the peer uses 16-bit CRC. Auto-started from
 ; the terminal when a Zmodem header start ("*" "*" ZDLE) is seen.
 ;
-; Depends on: TCP.SEND_BUFFER / TCP.RECEIVE (esp_tcp), WIFI.UART_RX_* (esplib),
+; Depends on: transparent-mode WIFI.UART_TX_* / WIFI.UART_RX_* helpers,
 ; DSS file funcs, the PRINT/PRINTLN macros, and one allocated WIN2 page.
 ; Include after esp_tcp and before esplib.
 ; ======================================================
@@ -80,19 +80,36 @@ ZM_SE			EQU 0xF0
 
 ; ------------------------------------------------------
 ; RECEIVE: entry from the telnet terminal once a header start was seen.
-; In: HL = pointer to the unconsumed tail of the current TCP batch,
-;     BC = its byte count (the handoff is intentionally discarded while the
-;     ESP switches from transparent mode to back-pressured +IPD mode).
+; In: HL = pointer to the unconsumed tail of the current raw UART batch,
+;     BC = its byte count. The triggering "**" ZDLE prefix is reconstructed
+;     in RXBUF so the initial ZRQINIT/ZRINIT is parsed, not discarded.
 ; The first repeated header chooses the role: ZRQINIT means the remote side is
 ; sending (download), while ZRINIT means it is receiving (upload).
 ; Returns when the session ends (success or abort); caller resumes terminal.
 ; ------------------------------------------------------
 RECEIVE
-	; Switch out of transparent passthrough into +IPD mode: TCP.RECEIVE then
-	; gives us the proven, back-pressured receive path (the raw transparent
-	; drain loses bytes during disk writes). The handoff bytes are dropped - the
-	; sender re-sends ZRQINIT, which we pick up via TCP.RECEIVE.
-	CALL	MAIN.ZM_TO_CMDMODE
+	; CIPMODE cannot be changed reliably while this TCP connection is open.
+	; Stay in transparent mode and rely on RTS/CTS to stop ESP UART output while
+	; parsing or writing a subpacket. Preserve the header that triggered us so
+	; sz/rz does not have to wait for its first retry timeout.
+	LD	(SRC_CNT),BC
+	LD	DE,RXBUF+3
+	LDIR
+	LD	HL,RXBUF
+	LD	A,ZPAD
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	A,ZDLE
+	LD	(HL),A
+	LD	HL,(SRC_CNT)
+	INC	HL
+	INC	HL
+	INC	HL
+	LD	(SRC_CNT),HL
+	LD	HL,RXBUF
+	LD	(SRC_PTR),HL
 	XOR	A
 	LD	(FH_OPEN),A
 	LD	(ABORTED),A
@@ -101,11 +118,11 @@ RECEIVE
 	LD	(SP_TO_FILE),A
 	LD	(HDR_WAIT),A
 	LD	HL,0
-	LD	(SRC_CNT),HL
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
 	PRINT	WCOMMON.LINE_END
 	PRINTLN	MSG_DETECT
+	CALL	WIFI.UART_RX_RESUME
 .WAIT_ROLE
 	CALL	RECV_HEADER
 	JP	C,.GIVEUP
@@ -225,12 +242,14 @@ RECEIVE
 .DONE
 	CALL	CLOSE_OUTPUT
 	PRINTLN	MSG_DONE
-	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
+	CALL	WIFI.UART_RX_RESUME
+	RET				; connection is still in transparent mode
 
 .GIVEUP
 	CALL	ABORT_TRANSFER
 	PRINTLN	MSG_ABORT
-	JP	MAIN.ZM_RESUME_TRANSPARENT	; restore CIPMODE=1 + passthrough
+	CALL	WIFI.UART_RX_RESUME
+	RET				; connection is still in transparent mode
 
 ; ======================================================
 ; Upload (local sender)
@@ -708,7 +727,7 @@ GETBYTE
 	OR	A
 	RET
 
-; GET_RAWBYTE: next byte from the +IPD payload before Telnet decoding.
+; GET_RAWBYTE: next raw transparent-mode byte before Telnet decoding.
 GET_RAWBYTE
 	LD	HL,(SRC_CNT)
 	LD	A,H
@@ -731,24 +750,19 @@ GET_RAWBYTE
 	OR	A			; CF=0
 	RET
 
-; FILL: pull a fresh batch from the ESP into RXBUF. CF=1 on timeout/close/abort.
-; Transparent mode: read raw UART bytes (no +IPD framing). RTS is raised only
-; for the drain; the keyboard poll and the caller's processing run with RTS
-; down so the ESP is held off and no byte is lost.
+; FILL: pull a fresh raw transparent-mode UART batch into RXBUF. CF=1 on
+; timeout/close/abort. RTS is raised only while waiting/draining; it is lowered
+; before decoding, CRC work or disk I/O so the ESP pauses cleanly at the UART.
 FILL
-	; Poll the keyboard with RTS DROPPED: DSS_SCANKEY is a slow call and with
-	; RTS up the ESP overruns the FIFO (lost bytes -> data-subpacket CRC fails).
-	; RTS goes back up for the drain itself.
-	; +IPD receive via the kit's TCP.RECEIVE, bracketed RTS up/down like
-	; moonrabbit/ftp: RTS up to stream the batch, down while we parse/CRC/write
-	; (TCP backpressure holds the sender, so no bytes are lost during writes).
+	; DSS_SCANKEY is slow, so poll it with RTS dropped before accepting a batch.
+	CALL	WIFI.UART_RX_PAUSE
 	CALL	CHECK_ABORT
 	JR	C,.fail
 	CALL	WIFI.UART_RX_RESUME
 	LD	HL,RXBUF
 	LD	BC,ZM_RXBUF_SIZE
 	LD	DE,ZM_RECV_TMO
-	CALL	TCP.RECEIVE
+	CALL	MAIN.RX_DRAIN_WAIT
 	PUSH	AF
 	CALL	WIFI.UART_RX_PAUSE
 	POP	AF
@@ -1272,28 +1286,17 @@ SEND_HDR
 	LD	HL,TXBUF
 	LD	A,(HDR_WAIT)
 	OR	A
-	JP	NZ,SEND_TCP_WAIT	; peer cannot reply before the following subpacket
-	; Otherwise do not wait for SEND OK: it could consume the peer's reply.
+	JP	NZ,SEND_TCP_WAIT	; header is immediately followed by a subpacket
+	; Transparent mode writes both forms directly to the UART socket stream.
 	JP	SEND_TCP_NO_WAIT
 
-; ESP command replies are also subject to RTS/CTS. Raise RTS before CIPSEND,
-; then lower it immediately after the payload so protocol parsing and DSS I/O
-; cannot overrun the UART FIFO.
+; The Zmodem session remains in transparent mode, so these names denote direct
+; raw socket writes rather than AT+CIPSEND transactions.
 SEND_TCP_NO_WAIT
-	CALL	WIFI.UART_RX_RESUME
-	CALL	TCP.SEND_BUFFER_NO_WAIT
-	PUSH	AF
-	CALL	WIFI.UART_RX_PAUSE
-	POP	AF
-	RET
+	JP	WIFI.UART_TX_BUFFER
 
 SEND_TCP_WAIT
-	CALL	WIFI.UART_RX_RESUME
-	CALL	TCP.SEND_BUFFER
-	PUSH	AF
-	CALL	WIFI.UART_RX_PAUSE
-	POP	AF
-	RET
+	JP	WIFI.UART_TX_BUFFER
 
 ; SEND_SUBPACKET: encode BC bytes at HL with ZDLE quoting, append the requested
 ; terminator and CRC-16, then send as one TCP payload. Full control escaping
@@ -1588,16 +1591,19 @@ ABORT_TRANSFER
 	; The sender keeps streaming for a while before it processes the ZCAN, so
 	; drain+discard ~2 s of in-flight +IPD data; otherwise it floods the terminal
 	; as garbage when we return.
-	CALL	WIFI.UART_RX_RESUME
 	LD	B,20
 .drain
 	PUSH	BC
+	CALL	WIFI.UART_RX_RESUME
 	LD	HL,RXBUF
 	LD	BC,ZM_RXBUF_SIZE
-	LD	DE,100
-	CALL	TCP.RECEIVE
+	CALL	MAIN.RX_DRAIN
+	CALL	WIFI.UART_RX_PAUSE
+	LD	HL,100
+	CALL	UTIL.DELAY
 	POP	BC
 	DJNZ	.drain
+	CALL	WIFI.UART_RX_PAUSE
 	JP	CLOSE_OUTPUT
 
 ; CHECK_ABORT: Esc -> set ABORTED, CF=1. Preserves nothing important.

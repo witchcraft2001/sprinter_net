@@ -37,7 +37,8 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   diagnostic tool, not a network bring-up command.
 - `NETRESET.EXE` resets and reinitializes the ESP module.
 - `WTERM.EXE` opens an ESP-AT terminal for manual commands.
-- `TELNET.EXE host [port]` opens an ANSI/VT100 Telnet session. It negotiates
+- `TELNET.EXE host[:port]` (or `TELNET.EXE host [port]`) opens an ANSI/VT100
+  Telnet session. It negotiates
   Telnet BINARY mode and automatically receives files when the remote side
   starts `sz`, or prompts for one local file to upload when the remote side
   starts `rz`. Alt+X closes the session; Esc aborts only an active transfer.

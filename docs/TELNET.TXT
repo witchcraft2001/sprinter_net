@@ -9,9 +9,15 @@ Purpose
 
 Usage
 -----
+  TELNET.EXE host[:port]
   TELNET.EXE host [port]
 
-  The default port is 23. Run NETUP.EXE before TELNET.EXE.
+  Examples:
+    TELNET.EXE 192.168.1.108:2323
+    TELNET.EXE 192.168.1.108 2323
+
+  The default port is 23 when no port is specified. Run NETUP.EXE before
+  TELNET.EXE.
 
 Controls
 --------

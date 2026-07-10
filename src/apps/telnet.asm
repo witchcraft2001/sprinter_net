@@ -22,6 +22,7 @@ LOAD_ADDR		EQU 0x4100
 CMDLINE_ADDR		EQU LOAD_ADDR - 0x80
 STACK_TOP		EQU 0x8000
 WIN2_BASE		EQU 0x8000
+SCROLL_STACK_TOP	EQU 0xBFF0		; temp stack: DSS Scroll repages WIN1
 RECV_BUFFER_SIZE	EQU 512
 RX_DRAIN_SPIN		EQU 200			; RX_DRAIN inter-byte wait (bridges ~87us gaps)
 HOST_SIZE		EQU 96
@@ -58,6 +59,8 @@ S_SB_IAC		EQU 4			; saw IAC inside subnegotiation
 O_NORMAL		EQU 0
 O_ESC			EQU 1			; saw ESC, expect '['
 O_CSI			EQU 2			; inside CSI, skip until final byte
+O_OSC			EQU 3			; inside ESC ] ... BEL / ST
+O_OSC_ESC		EQU 4			; saw ESC inside OSC, expect '\\'
 
 ; --- Screen layout ---
 ; Sprinter DSS_VMOD_T80 is an 80x32, 16-colour text mode. Width stays 80
@@ -175,6 +178,7 @@ START
 	LD	(TN_STATE),A
 	LD	(OUT_STATE),A
 	LD	(NEG_LEN),A
+	LD	(TX_BINARY),A
 	; Hand the screen over to the emulator: clear the terminal region and paint
 	; the status row. From here output goes through WrChar, not the DSS console.
 	CALL	INIT_SCREEN
@@ -272,9 +276,10 @@ USAGE
 ;   Out: CF=1            -> Alt+X pressed (quit).
 ;        CF=0, ZF=0 (NZ) -> a key was handled (caller drains for more).
 ;        CF=0, ZF=1 (Z)  -> no key pending.
-; Alt+X is the ONLY quit; every other key is forwarded to the host: Enter as
-; CR,LF and any other ASCII (including control codes such as Esc 0x1B, Tab,
-; Backspace) as-is, so BBSes that navigate with Esc work. Keys with no ASCII
+; Alt+X is the ONLY quit; every other key is forwarded to the host. Enter is
+; sent as the keyboard CR after TRANSMIT-BINARY is accepted, or as NVT CR,LF
+; before that. Any other ASCII (including control codes such as Esc 0x1B, Tab,
+; Backspace) is sent as-is, so BBSes that navigate with Esc work. Keys with no ASCII
 ; (E=0) carry a scancode in D - arrows and Home/End/PgUp/PgDn/Del are mapped to
 ; their ANSI sequences (SEND_SPECIAL_KEY); anything else is consumed.
 ; ------------------------------------------------------
@@ -295,7 +300,7 @@ HANDLE_KEY
 	AND	A
 	JR	Z,.SPECIAL			; no ASCII -> arrow/navigation key (scancode in D)
 	CP	CR
-	JR	Z,.SEND_CRLF
+	JR	Z,.SEND_ENTER
 	LD	(TX_BUF),A
 	LD	HL,TX_BUF
 	LD	BC,1
@@ -306,13 +311,18 @@ HANDLE_KEY
 	CALL	SEND_SPECIAL_KEY		; D = scancode; sends an ANSI seq if known
 	CALL	NOTE_TX_RESULT
 	JR	.HANDLED
-.SEND_CRLF
+.SEND_ENTER
 	LD	A,CR
 	LD	(TX_BUF),A
+	LD	BC,1
+	LD	A,(TX_BINARY)
+	OR	A
+	JR	NZ,.SEND_ENTER_BYTES		; binary mode has no NVT CR translation
 	LD	A,LF
 	LD	(TX_BUF+1),A
+	INC	BC				; default NVT newline is CR,LF
+.SEND_ENTER_BYTES
 	LD	HL,TX_BUF
-	LD	BC,2
 	CALL	WIFI.UART_TX_BUFFER
 	CALL	NOTE_TX_RESULT
 .HANDLED
@@ -578,6 +588,24 @@ PROCESS_RX_BYTE
 ; Reply bytes are appended to NEG_BUF and sent later by FLUSH_NEG.
 ; ------------------------------------------------------
 NEGOTIATE
+	; Our initial WILL BINARY takes effect only when the peer answers DO.
+	; In binary mode RFC 1123 forbids NVT CR translation, so HANDLE_KEY must
+	; know whether Enter is a literal keyboard CR or an NVT CR,LF newline.
+	LD	A,C
+	CP	TNOPT_BINARY
+	JR	NZ,.DISPATCH
+	LD	A,(TN_CMD)
+	CP	TN_DO
+	JR	Z,.TX_BINARY_ON
+	CP	TN_DONT
+	JR	NZ,.DISPATCH
+	XOR	A
+	LD	(TX_BINARY),A
+	JR	.DISPATCH
+.TX_BINARY_ON
+	LD	A,1
+	LD	(TX_BINARY),A
+.DISPATCH
 	LD	A,(TN_CMD)
 	CP	TN_WILL
 	JR	Z,.ON_WILL
@@ -706,7 +734,7 @@ TN_BINARY_INIT_LEN	EQU $-TN_BINARY_INIT
 ; (CUR_ROW 0..TERM_ROWS-1, CUR_COL 0..TERM_COLS-1) and colour (CUR_ATTR,
 ; derived from FG/BG/BOLD/REV) are tracked here and characters are written at
 ; absolute positions. The status row (SCREEN_ROWS-1) is never touched.
-; PROCESS_RX runs with the ISA window closed (TCP.RECEIVE closed it) and RTS
+; PROCESS_RX runs with the ISA window closed (RX_DRAIN closed it) and RTS
 ; deasserted, so DSS calls are safe and the ESP is paused while we render.
 ; ======================================================
 
@@ -717,6 +745,10 @@ OUTPUT_BYTE
 	JR	Z,.IN_ESC
 	CP	O_CSI
 	JP	Z,.IN_CSI
+	CP	O_OSC
+	JR	Z,.IN_OSC
+	CP	O_OSC_ESC
+	JR	Z,.IN_OSC_ESC
 ; --- O_NORMAL ---
 	LD	A,C
 	CP	0x1B				; ESC -> start an escape sequence
@@ -726,17 +758,50 @@ OUTPUT_BYTE
 	LD	A,O_ESC
 	LD	(OUT_STATE),A
 	RET
-; --- O_ESC: expect '[' for a CSI; any other ESC<x> is ignored ---
+; --- O_ESC: '[' starts CSI, ']' starts an OSC metadata string ---
 .IN_ESC
 	LD	A,C
 	CP	'['
 	JR	Z,.TO_CSI
+	CP	']'
+	JR	Z,.TO_OSC
 	LD	A,O_NORMAL			; ESC <x>: drop the single byte
 	LD	(OUT_STATE),A
 	RET
 .TO_CSI
 	CALL	CSI_RESET
 	LD	A,O_CSI
+	LD	(OUT_STATE),A
+	RET
+; OSC carries window titles, hyperlinks and macOS OSC 7 current-directory
+; metadata. It has no visual representation on DSS, so consume it through
+; BEL or the two-byte ST terminator ESC '\\'.
+.TO_OSC
+	LD	A,O_OSC
+	LD	(OUT_STATE),A
+	RET
+.IN_OSC
+	LD	A,C
+	CP	0x07				; BEL terminator
+	JR	Z,.OSC_END
+	CP	0x1B				; possible ST (ESC '\\')
+	RET	NZ
+	LD	A,O_OSC_ESC
+	LD	(OUT_STATE),A
+	RET
+.IN_OSC_ESC
+	LD	A,C
+	CP	92				; '\\'
+	JR	Z,.OSC_END
+	CP	0x07
+	JR	Z,.OSC_END
+	CP	0x1B
+	RET	Z				; repeated ESC: still waiting for '\\'
+	LD	A,O_OSC			; not ST: continue consuming OSC
+	LD	(OUT_STATE),A
+	RET
+.OSC_END
+	LD	A,O_NORMAL
 	LD	(OUT_STATE),A
 	RET
 ; --- O_CSI: collect parameters, dispatch on the final byte ---
@@ -1294,7 +1359,8 @@ WRITE_GLYPH
 	RET
 
 ; SCROLL_TERM: scroll rows 0..TERM_ROWS-1 up by one and clear the new bottom
-; row in the current attribute (so the scrolled-in line uses the right paper).
+; row. Dss.Scroll -> BIOS.WIN_MOVE temporarily repages WIN1, where TELNET's
+; normal stack lives, so run only that call on a temporary stack in WIN2.
 SCROLL_TERM
 	PUSH	BC,DE,HL
 	LD	D,0
@@ -1303,14 +1369,27 @@ SCROLL_TERM
 	LD	L,TERM_COLS
 	LD	B,1				; scroll up
 	XOR	A
-	LD	C,DSS_SCROLL
-	RST	DSS
+	CALL	SCROLL_DSS_SAFE
 	LD	D,TERM_ROWS-1
 	LD	E,0
 	LD	H,1
 	LD	L,TERM_COLS
 	CALL	CLEAR_RECT
 	POP	HL,DE,BC
+	RET
+
+; Preserve the WIN1 return stack while DSS/BIOS uses WIN1 for its VRAM block
+; move. WIN2 is the page allocated and mapped at startup for Zmodem buffers;
+; its upper area is reserved here as a small syscall stack.
+SCROLL_DSS_SAFE
+	DI
+	LD	(SCROLL_SAVED_SP),SP
+	LD	SP,SCROLL_STACK_TOP
+	LD	C,DSS_SCROLL
+	RST	DSS
+	DI
+	LD	SP,(SCROLL_SAVED_SP)
+	EI
 	RET
 
 ; SYNC_CURSOR: position the hardware text cursor at CUR_ROW/CUR_COL.
@@ -1618,43 +1697,6 @@ INIT_MEMORY_ERROR
 ; Transparent-mode (CIPMODE=1) raw transport
 ; ======================================================
 
-; ZM_TO_CMDMODE: leave transparent passthrough (send "+++" with the required
-; ~1 s silence guard before and after) so the socket data arrives as +IPD,
-; which TCP.RECEIVE handles with proper TCP backpressure (the raw transparent
-; drain loses bytes whenever we pause RTS for a disk write). The connection
-; stays open; we reset the +IPD parser for a fresh receive.
-ZM_TO_CMDMODE
-	CALL	QUIET_2S
-	LD	HL,STR_PLUS3
-	CALL	WIFI.UART_TX_STRING
-	CALL	QUIET_2S
-	; In command mode the connection only emits +IPD in normal (CIPMODE=0) mode,
-	; so switch it; the TCP connection itself stays open.
-	LD	HL,CMD_CIPMODE_0
-	CALL	ZM_SEND_CMD_IGNORE
-	LD	HL,0
-	LD	(TCP.PAYLOAD_LEFT),HL
-	XOR	A
-	LD	(TCP.LSR_ACCUM),A
-	JP	WIFI.UART_EMPTY_RS
-
-; ZM_RESUME_TRANSPARENT: after a Zmodem transfer re-enable transparent mode and
-; re-enter passthrough so the terminal resumes.
-ZM_RESUME_TRANSPARENT
-	LD	HL,CMD_CIPMODE_1
-	CALL	ZM_SEND_CMD_IGNORE
-	JP	ENTER_TRANSPARENT
-
-; AT replies obey RTS/CTS too. Zmodem normally keeps RTS low outside receive
-; calls, so temporarily raise it around a command-mode transaction.
-ZM_SEND_CMD_IGNORE
-	CALL	WIFI.UART_RX_RESUME
-	CALL	SEND_CMD_IGNORE
-	PUSH	AF
-	CALL	WIFI.UART_RX_PAUSE
-	POP	AF
-	RET
-
 ; ENTER_TRANSPARENT: AT+CIPSEND -> wait for the ">" prompt. The socket then
 ; becomes a raw full-duplex UART pipe. CF=1 on failure.
 ENTER_TRANSPARENT
@@ -1762,6 +1804,21 @@ RX_DRAIN
 	RET
 
 ; ------------------------------------------------------
+; RX_DRAIN_WAIT: wait up to DE ms for at least one raw transparent-mode byte,
+; then drain the current UART burst. Out: BC=count, CF=1 on timeout.
+; ------------------------------------------------------
+RX_DRAIN_WAIT
+	PUSH	HL
+	PUSH	BC
+	LD	B,D
+	LD	C,E
+	CALL	WIFI.UART_WAIT_RS
+	POP	BC
+	POP	HL
+	RET	C
+	JP	RX_DRAIN
+
+; ------------------------------------------------------
 ; WATCH_CLOSED: scan a received batch for the "\r\nCLOSED" token the ESP emits
 ; when the peer drops the socket (it then returns to command mode). Anchored on
 ; CR/LF so ordinary text containing "CLOSED" does not trip it. Sets LINK_DOWN.
@@ -1818,11 +1875,13 @@ CLOSED_TOK
 CLOSED_TOK_LEN	EQU $-CLOSED_TOK
 
 ; ------------------------------------------------------
-; Command line: TELNET.EXE host [port]   (default port 23)
+; Command line: TELNET.EXE host[:port] or TELNET.EXE host [port]
+; Default port is 23.
 ; ------------------------------------------------------
 INIT_DEFAULT_ARGS
 	XOR	A
 	LD	(HOST_BUFF),A			; empty host -> usage error if missing
+	LD	(INLINE_PORT),A
 	LD	HL,DEFAULT_PORT
 	LD	DE,PORT_BUFF
 	JP	COPY_ASCIIZ_DE
@@ -1842,11 +1901,20 @@ PARSE_CMD_LINE
 	LD	C,HOST_SIZE-1
 	CALL	COPY_ARG
 	JR	C,.ERR
+	PUSH	BC				; B/HL still track the remaining command line
+	PUSH	HL
+	CALL	SPLIT_HOST_PORT
+	POP	HL
+	POP	BC
+	JR	C,.ERR
 	CALL	SKIP_SPACES
 	JR	NC,.PORT
 	AND	A			; clear CF: host-only is valid -> keep default port
 	RET
 .PORT
+	LD	A,(INLINE_PORT)
+	OR	A
+	JR	NZ,.ERR			; reject ambiguous "host:port port"
 	LD	DE,PORT_BUFF
 	LD	C,PORT_SIZE-1
 	CALL	COPY_ARG
@@ -1854,6 +1922,61 @@ PARSE_CMD_LINE
 	CALL	VALIDATE_PORT
 	JR	C,.ERR
 	AND	A
+	RET
+.ERR
+	SCF
+	RET
+
+; SPLIT_HOST_PORT: split HOST_BUFF at ':' and copy the inline decimal port to
+; PORT_BUFF. Out: CF=0 when absent/valid; CF=1 on empty host/port, repeated ':'
+; or an overlong/non-numeric port.
+SPLIT_HOST_PORT
+	LD	HL,HOST_BUFF
+	LD	A,(HL)
+	OR	A
+	JR	Z,.ERR
+	CP	':'
+	JR	Z,.ERR				; empty host in ":port"
+.SCAN
+	LD	A,(HL)
+	OR	A
+	RET	Z				; no inline port
+	CP	':'
+	JR	Z,.FOUND
+	INC	HL
+	JR	.SCAN
+.FOUND
+	LD	(HL),0				; terminate host
+	INC	HL
+	LD	A,(HL)
+	OR	A
+	JR	Z,.ERR				; empty port
+	LD	DE,PORT_BUFF
+	LD	C,PORT_SIZE-1
+.COPY
+	LD	A,(HL)
+	OR	A
+	JR	Z,.DONE
+	CP	':'
+	JR	Z,.ERR				; only host:port is supported
+	LD	B,A
+	LD	A,C
+	OR	A
+	JR	Z,.ERR
+	LD	A,B
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DEC	C
+	JR	.COPY
+.DONE
+	XOR	A
+	LD	(DE),A
+	CALL	VALIDATE_PORT
+	JR	C,.ERR
+	LD	A,1
+	LD	(INLINE_PORT),A
+	OR	A
 	RET
 .ERR
 	SCF
@@ -1939,7 +2062,8 @@ MSG_START
 	DB " - ESP-AT telnet client"
 	DB 0
 MSG_USAGE
-	DB "Usage: TELNET.EXE host [port]   (default port 23)",13,10
+	DB "Usage: TELNET.EXE host[:port] | host [port]",13,10
+	DB "  Default port is 23.",13,10
 	DB "  Alt+X quits; Zmodem download/upload is detected automatically.",0
 MSG_TARGET
 	DB "Target ",0
@@ -2002,7 +2126,9 @@ DEFAULT_PORT
 ; Small initialised state (kept in the EXE image; tiny).
 ; ------------------------------------------------------
 ARG_LEN		DB 0
+INLINE_PORT	DB 0			; first argument supplied host:port
 CMDLINE_PTR	DW 0			; arg buffer ptr captured from IX at entry
+SCROLL_SAVED_SP	DW 0			; real WIN1 stack while Dss.Scroll uses WIN2 stack
 TCP_LAST_STATUS	DB 0			; last TCP result code (RES_NOT_CONN etc.)
 OPEN_LEFT	DB 0
 TN_STATE	DB 0
@@ -2011,6 +2137,7 @@ SB_IDX		DB 0			; bytes captured so far in the current subnegotiation
 SB_OPT		DB 0			; SB option byte (SB_OPT, SB_SUB must stay consecutive)
 SB_SUB		DB 0			; SB subcommand byte
 OUT_STATE	DB 0
+TX_BINARY	DB 0			; peer accepted our WILL TRANSMIT-BINARY
 NEG_LEN		DB 0
 TX_BUF		DB 0,0
 NEG_BUF		DS NEG_BUF_SIZE,0
@@ -2058,6 +2185,7 @@ RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
 	MODULE MAIN
 
 	ASSERT	$ < STACK_TOP - 0x0100
+	ASSERT	ZM.ZM_BSS_END < SCROLL_STACK_TOP - 0x0100
 
 ; App receive buffer above the (overlapping) NETCFG/TCP BSS chains.
 HOST_BUFF	EQU NETCFG.NETCFG_BSS_END
