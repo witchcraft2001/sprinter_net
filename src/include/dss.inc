@@ -40,6 +40,8 @@ DSS_GETMEM			EQU 0x3D
 DSS_FREEMEM			EQU	0x3E
 DSS_SETMEM			EQU DSS_SETWIN			; Backward-compatible alias.
 DSS_EXIT            EQU 0x41
+DSS_APPINFO         EQU 0x47
+APPINFO_EXE_HOMEDIR EQU 0x01			; ASCIIZ directory of the running EXE
 ; Environment variables (PAGE 2 @ 0xE400), persist across program runs in a
 ; session. Names are auto-uppercased. Sub-function in B.
 DSS_ENVIRON			EQU 0x46

@@ -8,6 +8,7 @@ DEFAULT_TIMEOUT		EQU 2000
 JOIN_TIMEOUT		EQU 30000
 UART_SWITCH_SETTLE	EQU 300
 UART_VERIFY_RETRIES	EQU 6		; AT attempts after a baud switch before giving up
+EXE_DIR_SIZE		EQU 272		; APPINFO path (up to 256) + "NET.CFG",0
 
 	DEVICE NOSLOT64K
 
@@ -40,7 +41,7 @@ START
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN MSG_START
 
-	CALL	NETCFG.LOAD
+	CALL	LOAD_CONFIG_FROM_EXE_DIR
 	JR	NC,.CFG_LOADED
 	CP	E_FILE_NOT_FOUND
 	JR	NZ,.DSS_ERROR
@@ -123,6 +124,61 @@ NO_WIFI
 	PRINTLN MSG_WIFI_NOT_FOUND
 	LD	B,2
 	JP	WCOMMON.EXIT
+
+; ------------------------------------------------------
+; NETUP may be invoked through PATH from any current directory. DSS APPINFO
+; returns the directory of the loaded EXE, so open NET.CFG beside NETUP.EXE
+; instead of resolving a bare name against the caller's current directory.
+; Some DSS versions reject APPINFO when the EXE was launched by a bare name;
+; then the current directory is necessarily the EXE directory, so use it.
+; Out: CF/A as NETCFG.LOAD or NETCFG.LOAD_PATH.
+; ------------------------------------------------------
+LOAD_CONFIG_FROM_EXE_DIR
+	LD	HL,NETUP_CFG_PATH
+	LD	B,APPINFO_EXE_HOMEDIR
+	LD	C,DSS_APPINFO
+	RST	DSS
+	JR	C,.FALLBACK
+
+	LD	HL,NETUP_CFG_PATH
+	LD	BC,EXE_DIR_SIZE-8		; reserve NET.CFG plus zero terminator
+.FIND_END
+	LD	A,(HL)
+	OR	A
+	JR	Z,.HAVE_END
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,.FIND_END
+	JR	.FALLBACK			; malformed/too-long APPINFO result
+.HAVE_END
+	LD	A,(NETUP_CFG_PATH)
+	OR	A
+	JR	Z,.FALLBACK
+	DEC	HL
+	LD	A,(HL)
+	INC	HL
+	CP	92			; '\\'
+	JR	Z,.APPEND_NAME
+	CP	'/'
+	JR	Z,.APPEND_NAME
+	LD	A,92			; '\\'
+	LD	(HL),A
+	INC	HL
+.APPEND_NAME
+	LD	DE,NETUP_CFG_NAME
+.COPY_NAME
+	LD	A,(DE)
+	LD	(HL),A
+	INC	DE
+	INC	HL
+	OR	A
+	JR	NZ,.COPY_NAME
+	LD	HL,NETUP_CFG_PATH
+	JP	NETCFG.LOAD_PATH
+.FALLBACK
+	JP	NETCFG.LOAD			; bare name in the EXE's current directory
 
 ; ------------------------------------------------------
 ; Print NET.CFG DSS load error without letting DSS_ERROR.EPRINT choose the exit
@@ -996,12 +1052,15 @@ CMD_QUOTE_COMMA_QUOTE
 	DB 34,",",34,0
 CMD_QUOTE_CRLF
 	DB 34,13,10,0
+NETUP_CFG_NAME
+	DB "NET.CFG",0
 
 	ENDMODULE
 
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"
+	DEFINE NETCFG_ENABLE_LOAD_PATH
 	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esplib.asm"
 
@@ -1016,7 +1075,9 @@ NET_MASK_BUF	EQU NET_GW_BUF + 24		; parsed netmask
 EXT_PAT		EQU NET_MASK_BUF + 24		; EXTRACT_QUOTED_FIELD: keyword ptr
 EXT_DEST	EQU EXT_PAT + 2			; EXTRACT_QUOTED_FIELD: dest ptr
 ESP_HW_BUF	EQU EXT_DEST + 2		; "<slot>/#<base>" (NET_ESP_HW)
-NETUP_BSS_END	EQU ESP_HW_BUF + 16
+NETUP_CFG_PATH	EQU ESP_HW_BUF + 16	; DSS APPINFO executable directory + NET.CFG
+NETUP_BSS_END	EQU NETUP_CFG_PATH + EXE_DIR_SIZE
+	ASSERT	NETUP_BSS_END < 0xC000
 
 	ENDMODULE
 

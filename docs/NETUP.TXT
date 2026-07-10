@@ -16,6 +16,10 @@ Typical sequence
   PING.EXE example.com
 
 Behavior
+  NETUP loads NET.CFG from the directory that contains NETUP.EXE. This also
+  works when NETUP.EXE is started through PATH while another directory is
+  current. Keep the runtime configuration beside NETUP.EXE.
+
   NETUP prefers ESP-AT _CUR commands so normal operation changes only the
   current ESP session and does not write settings to ESP flash. Legacy commands
   are used only as fallback.

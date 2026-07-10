@@ -413,6 +413,38 @@ Done when:
 - Re-running `netup.exe` does not ask for credentials when already connected.
 - Normal startup does not reset ESP unnecessarily.
 
+### Stage 3a - Runtime Configuration Handoff
+
+- [ ] Make `NETUP.EXE` the sole runtime reader of `NET.CFG`; it must publish
+  every value needed by clients through DSS environment variables after a
+  successful bring-up.
+- [ ] Keep `NETCFG.EXE` as the sole reader/writer used to inspect or edit
+  `NET.CFG`. It must not be required by normal network clients at run time.
+- [ ] Remove `NETCFG.LOAD` and direct `NET.CFG` file access from every utility
+  other than `NETUP.EXE` and `NETCFG.EXE`, including `FTP`, `WGET`, `TFTP`,
+  `PING`, `NTP`, `TCPTEST`, `UDPTEST`, `NETPROBE`, `NETRESET` and `WTERM`.
+- [ ] Add shared environment readers for the published values. At minimum,
+  clients must consume `NET`, `NET_ESP_HW`, `NET_BAUD`, `NET_IP_SRC`, `NET_IP`,
+  `NET_MASK`, `NET_GW`, `NET_DNS1`, `NET_DNS2`, `NET_NTP` and `NET_TZ` as
+  applicable to their protocol.
+- [ ] Make UART-using clients obtain their divisor from `NET_BAUD`, with a
+  clear "run NETUP" error when the required network environment is absent;
+  do not silently reload `NET.CFG` or fall back to a configuration file.
+- [ ] Keep recovery/diagnostic utilities usable when appropriate, but they
+  must use either published environment values or an explicitly documented
+  fixed recovery UART mode; they must never open `NET.CFG`.
+- [ ] Update user documentation so it states that `NETUP.EXE` publishes the
+  session configuration and all other utilities consume that session state.
+
+Done when:
+
+- Starting any client from a directory with no `NET.CFG` succeeds after a
+  successful `NETUP.EXE` in the same DSS session.
+- Removing or changing `NET.CFG` after `NETUP.EXE` does not affect clients in
+  that session.
+- A fresh DSS session or missing required `NET_*` variable produces the
+  standard configuration error and tells the user to run `NETUP.EXE`.
+
 ### Stage 4 - TCP Client Core
 
 - [x] Implement initial single-connection TCP open/send/receive/close.

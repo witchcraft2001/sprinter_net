@@ -17,7 +17,6 @@ DSS_CREATE_OVERWRITE	EQU 0x0A
 ; ------------------------------------------------------
 LOAD
 	CALL	SET_DEFAULTS
-
 	LD	HL,CFG_FILE
 	LD	A,FM_READ
 	LD	C,DSS_OPEN_FILE
@@ -54,6 +53,51 @@ LOAD
 	POP	AF
 	SCF
 	RET
+
+; Load and parse the ASCIIZ configuration path in HL. This is needed only by
+; NETUP to keep its configuration beside NETUP.EXE. Keep it conditional so
+; legacy utilities do not grow their already-tight code/BSS image.
+	IFDEF NETCFG_ENABLE_LOAD_PATH
+LOAD_PATH
+	PUSH	HL
+	CALL	SET_DEFAULTS
+	POP	HL
+
+	LD	A,FM_READ
+	LD	C,DSS_OPEN_FILE
+	RST	DSS
+	RET	C
+
+	LD	(CFG_FH),A
+	LD	HL,CFG_BUFF
+	LD	DE,CFG_BUFF_SIZE-1
+	LD	C,DSS_READ_FILE
+	RST	DSS
+	JR	C,.READ_ERROR
+
+	LD	HL,CFG_BUFF
+	ADD	HL,DE
+	LD	(HL),0
+
+	LD	A,(CFG_FH)
+	LD	C,DSS_CLOSE_FILE
+	RST	DSS
+	RET	C
+
+	LD	HL,CFG_BUFF
+	CALL	PARSE
+	XOR	A
+	RET
+
+.READ_ERROR
+	PUSH	AF
+	LD	A,(CFG_FH)
+	LD	C,DSS_CLOSE_FILE
+	RST	DSS
+	POP	AF
+	SCF
+	RET
+	ENDIF
 
 ; ------------------------------------------------------
 ; Save current config values to NET.CFG.
