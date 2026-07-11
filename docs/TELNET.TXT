@@ -1,11 +1,11 @@
-TELNET.EXE - ANSI Telnet client with Zmodem
-===========================================
+TELNET.EXE - ANSI Telnet client with Zmodem and Ymodem
+======================================================
 
 Purpose
 -------
   Opens an interactive ANSI/VT100 Telnet session through SprinterESP. The
   client negotiates an 8-bit Telnet BINARY path and automatically detects
-  Zmodem downloads and uploads.
+  Zmodem downloads/uploads and explicitly started Ymodem transfers.
 
 Usage
 -----
@@ -22,8 +22,11 @@ Usage
 Controls
 --------
   Alt+X  close the Telnet session.
+  Alt+D  start Ymodem download after the remote side runs "sb file".
+  Alt+G  start Ymodem-G download when a BBS explicitly requests that mode.
+  Alt+U  start Ymodem upload after the remote side runs "rb".
   Esc    is sent to the remote application during normal terminal use.
-  Esc    aborts while a Zmodem transfer is active.
+  Esc    aborts while a Zmodem or Ymodem transfer is active.
 
 Terminal compatibility
 ----------------------
@@ -53,15 +56,47 @@ Zmodem upload (Sprinter to remote)
   an existing destination, but the remote server may apply its own policy and
   skip the file.
 
+Ymodem download (remote to Sprinter)
+------------------------------------
+  Run "lsb --ymodem remote-file" on a Homebrew/macOS remote host (or
+  "sb remote-file" where that command exists). The sender then waits silently
+  for its receiver. Press Alt+D in TELNET to send the initial CRC request and
+  receive the file. Existing local files with the same name are overwritten.
+  Ymodem batch download accepts multiple files from one sender command.
+
+Ymodem-G download
+------------------
+  When a BBS says it is waiting for "Ymodem-G", press Alt+G instead of Alt+D.
+  TELNET requests streaming mode with "G", verifies every CRC block and uses
+  SprinterESP RTS/CTS while writing to disk. Ymodem-G cannot retransmit a bad
+  block; a CRC or sequence error therefore aborts the transfer.
+
+Ymodem upload (Sprinter to remote)
+----------------------------------
+  Run "lrb --ymodem" on a Homebrew/macOS remote host (or "rb" where available),
+  then press Alt+U in TELNET. At the "Local file:" prompt enter one DSS path
+  and press Enter. TELNET sends the basename and file size in Ymodem block 0,
+  transfers acknowledged 1 KB CRC blocks, and closes the batch with an empty
+  block 0.
+
+  Ymodem sends its block number as an unescaped binary byte. A remote PTY must
+  therefore be fully raw; otherwise block 15 contains Ctrl-O and may be eaten
+  as the terminal VDISCARD character. If transfer always stops after 14 blocks,
+  start the receiver with:
+
+    stty raw -echo; lrb --ymodem; stty sane
+
 Transfer behavior
 -----------------
   - CRC-16 is checked for every header and data subpacket.
   - Downloads buffer and verify up to 8 KB before writing to disk.
-  - Uploads use acknowledged 1 KB chunks and honor ZRPOS retransmit requests.
+  - Zmodem uploads use acknowledged 1 KB chunks and honor ZRPOS requests.
   - Telnet IAC quoting and Zmodem control-byte escaping are both handled.
   - A successful session uses the standard ZFIN / ZFIN / "OO" shutdown.
-  - On failure, TELNET prints a short "Zmodem aborted." message and returns to
-    the open terminal session.
+  - On failure, TELNET prints a short protocol-specific aborted message and
+    returns to the open terminal session.
+  - Ymodem uses CRC-16, accepts 128-byte and 1 KB blocks, validates block
+    numbers/complements, handles duplicates, and supports Telnet IAC quoting.
 
 Exit status
 -----------
@@ -70,4 +105,4 @@ Exit status
   2  Sprinter-WiFi hardware was not found.
   3  ESP/TCP communication or connection error.
 
-  A canceled or failed Zmodem transfer returns to the open terminal session.
+  A canceled or failed Zmodem/Ymodem transfer returns to the terminal session.

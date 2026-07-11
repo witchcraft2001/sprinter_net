@@ -31,4 +31,4 @@ if [ "$result" != 0 ]; then
   exit 1
 fi
 
-echo "Zmodem CRC/header/subpacket/metadata vectors: OK"
+echo "Zmodem/Ymodem protocol vectors: OK"

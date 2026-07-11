@@ -1763,26 +1763,49 @@ CLOSE_OUTPUT
 	LD	(FH_OPEN),A
 	RET
 
-; ABORT_TRANSFER: send the Zmodem cancel sequence and close any open file.
+; ABORT_TRANSFER: send ZCAN and discard TCP/UART data until the sender has
+; remained quiet for one second (bounded to ten seconds). A fixed delay left
+; large in-flight transfers queued in ESP/TCP and they leaked onto the screen.
 ABORT_TRANSFER
 	LD	HL,CANSEQ
 	LD	BC,CANSEQ_LEN
 	CALL	SEND_TCP_WAIT
-	; The sender keeps streaming for a while before it processes the ZCAN, so
-	; drain+discard ~2 s of in-flight +IPD data; otherwise it floods the terminal
-	; as garbage when we return.
-	LD	B,20
+	XOR	A
+	LD	(ABORT_QUIET),A
+	LD	A,100
+	LD	(ABORT_LEFT),A
 .drain
-	PUSH	BC
 	CALL	WIFI.UART_RX_RESUME
 	LD	HL,RXBUF
 	LD	BC,ZM_RXBUF_SIZE
 	CALL	MAIN.RX_DRAIN
 	CALL	WIFI.UART_RX_PAUSE
+	LD	A,B
+	OR	C
+	JR	Z,.quiet
+	XOR	A
+	LD	(ABORT_QUIET),A
+	JR	.delay
+.quiet
+	LD	A,(ABORT_QUIET)
+	INC	A
+	LD	(ABORT_QUIET),A
+	CP	10
+	JR	NC,.done
+.delay
 	LD	HL,100
 	CALL	UTIL.DELAY
-	POP	BC
-	DJNZ	.drain
+	LD	A,(ABORT_LEFT)
+	DEC	A
+	LD	(ABORT_LEFT),A
+	JR	Z,.done
+	AND	0x0F			; repeat ZCAN periodically while data still arrives
+	JR	NZ,.drain
+	LD	HL,CANSEQ
+	LD	BC,CANSEQ_LEN
+	CALL	SEND_TCP_WAIT
+	JR	.drain
+.done
 	CALL	WIFI.UART_RX_PAUSE
 	JP	CLOSE_OUTPUT
 
@@ -2150,6 +2173,8 @@ DEC_DIGIT	DB 0
 PROGRESS_STARTED DB 0
 PROGRESS_NUM	DS 11,0
 PROGRESS_SHOWN	DB 0
+ABORT_QUIET	DB 0
+ABORT_LEFT	DB 0
 
 RXBUF		EQU WIN2_BASE
 DATA_BUF	EQU RXBUF + ZM_RXBUF_SIZE

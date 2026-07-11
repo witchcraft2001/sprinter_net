@@ -81,7 +81,7 @@ WGET.EXE url [-o output] [-y|-f] [-r]
                  download an http:// URL to a local file (-y/-f overwrite, -r resume)
 NTP.EXE          set DSS time using NET.CFG TZ/NTP values
 TELNET.EXE host[:port] | host [port]
-                 ANSI Telnet client with automatic Zmodem download/upload
+                 ANSI Telnet client with Zmodem and Ymodem download/upload
 ```
 
 Example batch files are included in the package root:

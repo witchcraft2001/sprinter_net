@@ -279,6 +279,173 @@ TEST_START
 	INC	HL
 	INC	DE
 	DJNZ	.compare_progress
+
+	; Ymodem block 0: SOH, block/complement, 128 data bytes and XMODEM CRC.
+	; CRC16/XMODEM("123456789" + 119 zeroes) is independently known as D053.
+	LD	HL,ZM.DATA_BUF
+	LD	DE,ZM.DATA_BUF+1
+	LD	BC,YM_META_SIZE-1
+	LD	(HL),0
+	LDIR
+	LD	HL,YM_TEST_DATA
+	LD	DE,ZM.DATA_BUF
+	LD	BC,YM_TEST_DATA_LEN
+	LDIR
+	LD	HL,CAPTURE
+	LD	(TEST.CAPTURE_PTR),HL
+	XOR	A
+	LD	(MAIN.TN_PEER_SEEN),A
+	LD	(YM.TX_BLOCK),A
+	LD	A,YM_SOH
+	LD	DE,YM_META_SIZE
+	CALL	YM.SEND_CURRENT_PACKET
+	JP	C,.failed
+	LD	HL,(TEST.CAPTURE_PTR)
+	LD	DE,CAPTURE+133
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+	LD	A,(CAPTURE)
+	CP	YM_SOH
+	JP	NZ,.failed
+	LD	A,(CAPTURE+1)
+	OR	A
+	JP	NZ,.failed
+	LD	A,(CAPTURE+2)
+	CP	0xFF
+	JP	NZ,.failed
+	LD	A,(CAPTURE+131)
+	CP	0xD0
+	JP	NZ,.failed
+	LD	A,(CAPTURE+132)
+	CP	0x53
+	JP	NZ,.failed
+	LD	HL,CAPTURE
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,133
+	LD	(ZM.SRC_CNT),HL
+	CALL	YM.RECV_PACKET
+	JP	C,.failed
+	OR	A
+	JP	NZ,.failed
+	LD	A,(YM.RX_BLOCK)
+	OR	A
+	JP	NZ,.failed
+	LD	HL,(YM.RX_LENGTH)
+	LD	DE,YM_META_SIZE
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+	LD	HL,ZM.DATA_BUF
+	LD	DE,YM_TEST_DATA
+	LD	B,YM_TEST_DATA_LEN
+.compare_ym_data
+	LD	A,(DE)
+	CP	(HL)
+	JP	NZ,.failed
+	INC	HL
+	INC	DE
+	DJNZ	.compare_ym_data
+
+	; Block 15 contains the control-valued sequence byte 0x0F. Verify that the
+	; real encoder emits 0F/F0 unchanged and that the decoder accepts it; some
+	; remote terminal bridges incorrectly consume Ctrl-O unless their PTY is raw.
+	LD	HL,CAPTURE
+	LD	(TEST.CAPTURE_PTR),HL
+	XOR	A
+	LD	(MAIN.TN_PEER_SEEN),A
+	LD	A,15
+	LD	(YM.TX_BLOCK),A
+	LD	A,YM_SOH
+	LD	DE,YM_META_SIZE
+	CALL	YM.SEND_CURRENT_PACKET
+	JP	C,.failed
+	LD	A,(CAPTURE+1)
+	CP	0x0F
+	JP	NZ,.failed
+	LD	A,(CAPTURE+2)
+	CP	0xF0
+	JP	NZ,.failed
+	LD	HL,CAPTURE
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,133
+	LD	(ZM.SRC_CNT),HL
+	CALL	YM.RECV_PACKET
+	JP	C,.failed
+	LD	A,(YM.RX_BLOCK)
+	CP	15
+	JP	NZ,.failed
+
+	; A real Telnet peer doubles IAC in both the block complement and payload.
+	LD	HL,ZM.DATA_BUF
+	LD	DE,ZM.DATA_BUF+1
+	LD	BC,YM_META_SIZE-1
+	LD	(HL),0xFF
+	LDIR
+	LD	HL,CAPTURE
+	LD	(TEST.CAPTURE_PTR),HL
+	LD	A,1
+	LD	(MAIN.TN_PEER_SEEN),A
+	XOR	A
+	LD	(YM.TX_BLOCK),A
+	LD	A,YM_SOH
+	LD	DE,YM_META_SIZE
+	CALL	YM.SEND_CURRENT_PACKET
+	JP	C,.failed
+	LD	HL,(TEST.CAPTURE_PTR)
+	LD	DE,CAPTURE
+	OR	A
+	SBC	HL,DE
+	LD	(ZM.SRC_CNT),HL
+	LD	HL,CAPTURE
+	LD	(ZM.SRC_PTR),HL
+	CALL	YM.RECV_PACKET
+	JP	C,.failed
+	LD	A,(ZM.DATA_BUF)
+	CP	0xFF
+	JP	NZ,.failed
+
+	; Standard Ymodem metadata begins with basename NUL and decimal byte size.
+	LD	HL,YM_TEST_META
+	LD	DE,ZM.DATA_BUF
+	LD	BC,YM_TEST_META_LEN
+	LDIR
+	CALL	YM.PARSE_FILE_SIZE
+	LD	A,(YM.SIZE_KNOWN)
+	OR	A
+	JP	Z,.failed
+	LD	HL,(YM.FILE_LEFT)
+	LD	DE,2030
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+	LD	HL,(YM.FILE_LEFT+2)
+	LD	A,H
+	OR	L
+	JP	NZ,.failed
+
+	; Explicit receiver starts must put the correct mode request on the wire.
+	LD	HL,CAPTURE
+	LD	(TEST.CAPTURE_PTR),HL
+	LD	A,1
+	LD	(YM.G_MODE),A
+	CALL	YM.SEND_RX_REQUEST
+	LD	A,(CAPTURE)
+	CP	YM_G_REQ
+	JP	NZ,.failed
+	LD	HL,(TEST.CAPTURE_PTR)
+	LD	DE,CAPTURE+1
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+	LD	HL,CAPTURE
+	LD	(TEST.CAPTURE_PTR),HL
+	XOR	A
+	LD	(YM.G_MODE),A
+	CALL	YM.SEND_RX_REQUEST
+	LD	A,(CAPTURE)
+	CP	YM_CRC_REQ
+	JP	NZ,.failed
 	JR	TEST_DONE
 .failed
 	LD	A,1
@@ -351,9 +518,17 @@ EXPECTED_INFO_LEN	EQU $-EXPECTED_INFO
 EXPECTED_PROGRESS
 	DB "1165",0
 EXPECTED_PROGRESS_LEN	EQU $-EXPECTED_PROGRESS
+YM_TEST_DATA
+	DB "123456789"
+YM_TEST_DATA_LEN	EQU $-YM_TEST_DATA
+YM_TEST_META
+	DB "readme.md",0,"2030 15174033562 100644",0
+YM_TEST_META_LEN	EQU $-YM_TEST_META
 
 	MODULE MAIN
 TN_PEER_SEEN
+	DB 0
+YM_C_PENDING
 	DB 0
 OUTPUT_BYTE
 	RET
@@ -430,5 +605,6 @@ REFILL_LEFT	DW 0
 	ENDMODULE
 
 	INCLUDE "zmodem.asm"
+	INCLUDE "ymodem.asm"
 
 	END TEST_START

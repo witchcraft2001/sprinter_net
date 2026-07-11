@@ -11,9 +11,10 @@
 ; with a status row (clock/state/idle). RTS/CTS brackets the slow render. The
 ; peer drop is caught via the "\r\nCLOSED" token; exit restores CIPMODE=0.
 ; Zmodem download/upload auto-starts on a "**"+ZDLE header (see zmodem.asm).
+; Ymodem uses Alt+D download / Alt+U upload; Alt+G receives Ymodem-G.
 ; ZRQINIT selects download; ZRINIT prompts for a local file and selects upload.
 ;
-; Quit with Alt+X. Every other key (incl. Esc and arrows) is forwarded.
+; Quit with Alt+X. Alt+D/Alt+U/Alt+G start Ymodem; other keys are forwarded.
 ; ======================================================
 
 EXE_VERSION		EQU 1
@@ -281,16 +282,43 @@ USAGE
 ; ------------------------------------------------------
 HANDLE_KEY
 	DSS_EXEC	DSS_SCANKEY
-	JR	Z,.NO_KEY			; no key pressed
+	JP	Z,.NO_KEY			; no key pressed
 	; Alt+X quits (scancode in D, same check as WTERM).
 	LD	A,D
 	CP	0xAB
-	JR	NZ,.SEND
+	JR	NZ,.CHECK_YMODEM
 	LD	A,B
 	AND	KB_ALT
 	JR	Z,.SEND
 	SCF					; quit
 	RET
+.CHECK_YMODEM
+	LD	A,B
+	AND	KB_ALT
+	JR	Z,.SEND
+	LD	A,D
+	AND	0x7F				; DSS sets bit 7 on a pressed positional code
+	CP	0x1F				; D position code -> Alt+D: receive from remote sb
+	JR	Z,.YMODEM_DOWNLOAD
+	CP	0x21				; G position code -> Alt+G: receive Ymodem-G
+	JR	Z,.YMODEM_G_DOWNLOAD
+	CP	0x16				; U position code -> Alt+U: send to remote rb
+	JR	NZ,.SEND
+	CALL	YM.SEND
+	JR	.YMODEM_DONE
+.YMODEM_DOWNLOAD
+	CALL	YM.RECEIVE
+	JR	.YMODEM_DONE
+.YMODEM_G_DOWNLOAD
+	CALL	YM.RECEIVE_G
+.YMODEM_DONE
+	XOR	A
+	LD	(ZTRIG),A
+	LD	(TN_STATE),A
+	LD	(OUT_STATE),A
+	LD	(NEG_LEN),A
+	CALL	SYNC_CURSOR
+	JR	.HANDLED
 .SEND
 	LD	A,E
 	AND	A
@@ -414,7 +442,17 @@ PROCESS_RX
 	INC	HL
 	DEC	BC
 	LD	(ZM_BYTE),A			; keep the raw byte for Zmodem auto-detect
+	CP	'C'				; remember rb's CRC request if Alt+U follows
+	JR	NZ,.NOT_YM_C
+	LD	A,1
+	LD	(YM_C_PENDING),A
+	JR	.YM_C_TRACKED
+.NOT_YM_C
+	XOR	A
+	LD	(YM_C_PENDING),A
+.YM_C_TRACKED
 	PUSH	BC,HL
+	LD	A,(ZM_BYTE)
 	LD	C,A				; C = current byte
 	CALL	PROCESS_RX_BYTE
 	POP	HL,BC
@@ -2081,7 +2119,7 @@ MSG_START
 MSG_USAGE
 	DB "Usage: TELNET.EXE host[:port] | host [port]",13,10
 	DB "  Default port is 23.",13,10
-	DB "  Alt+X quits; Zmodem download/upload is detected automatically.",0
+	DB "  Alt+X quit; Zmodem auto; Ymodem Alt+D/Alt+U; Ymodem-G Alt+G.",0
 MSG_TARGET
 	DB "Target ",0
 MSG_COLON
@@ -2093,7 +2131,7 @@ MSG_RESETTING_ESP
 MSG_CONNECTING
 	DB "Connecting to ",0
 MSG_CONNECTED
-	DB "Connected. Alt+X to quit; Zmodem is automatic.",13,10,0
+	DB "Connected. Alt+X quit; Ymodem D/U/G; Zmodem auto.",13,10,0
 MSG_CLOSED
 	DB "Remote host closed the connection.",0
 MSG_NO_CONNECT
@@ -2190,8 +2228,17 @@ ZTRIG		DB 0			; Zmodem "*" "*" ZDLE detector state
 ZM_BYTE		DB 0			; last raw RX byte (for the detector)
 CM		DB 0			; WATCH_CLOSED rolling match count
 RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
+YM_C_PENDING	DB 0			; final terminal byte was rb's possible CRC request
 
 	ENDMODULE
+
+	; NETCFG and ESP TCP command scratch are used during startup/connection,
+	; before Y/Zmodem owns WIN2. Their lifetimes do not overlap; placing both in
+	; the allocated page keeps the expanded terminal code and live stack in WIN1.
+	DEFINE NETCFG_BSS_BASE_OVERRIDE
+NETCFG_BSS_BASE	EQU WIN2_BASE
+	DEFINE ESP_TCP_BSS_BASE_OVERRIDE
+ESP_TCP_BSS_BASE	EQU WIN2_BASE
 
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
@@ -2199,6 +2246,7 @@ RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
 	INCLUDE "netcfg_lib.asm"
 	INCLUDE "esp_tcp.asm"
 	INCLUDE "zmodem.asm"
+	INCLUDE "ymodem.asm"
 	INCLUDE "esplib.asm"
 
 	MODULE MAIN
@@ -2206,8 +2254,8 @@ RXD_SPIN	DB 0			; RX_DRAIN inter-byte spin counter
 	ASSERT	$ < STACK_TOP - 0x0100
 	ASSERT	ZM.ZM_BSS_END < SCROLL_STACK_TOP - 0x0100
 
-; App receive buffer above the (overlapping) NETCFG/TCP BSS chains.
-HOST_BUFF	EQU NETCFG.NETCFG_BSS_END
+; Persistent terminal buffers follow the ESP response scratch in WIN1.
+HOST_BUFF	EQU WIFI.RS_BUFF + RS_BUFF_SIZE
 PORT_BUFF	EQU HOST_BUFF + HOST_SIZE
 RECV_BUFFER	EQU PORT_BUFF + PORT_SIZE
 TELNET_BSS_END	EQU RECV_BUFFER + RECV_BUFFER_SIZE

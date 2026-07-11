@@ -41,8 +41,14 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   Telnet or raw TCP/PTY session. For a Telnet peer it negotiates BINARY mode;
   raw services receive no IAC control bytes. It automatically receives files
   when the remote side starts `sz`, or prompts for one local file to upload
-  when the remote side starts `rz`. Alt+X closes the session; Esc aborts only
-  an active transfer. Progress is shown as confirmed transferred kilobytes.
+  when the remote side starts `rz`. For Ymodem with Homebrew lrzsz, run
+  `lsb --ymodem file` remotely and press Alt+D to download, or run
+  `lrb --ymodem` and press Alt+U to upload. If upload always stops after block
+  14, force the remote PTY to binary mode with
+  `stty raw -echo; lrb --ymodem; stty sane`; block 15 contains the otherwise
+  terminal-significant Ctrl-O byte. Alt+X closes the session; Esc
+  aborts only an active transfer. For a BBS explicitly waiting for Ymodem-G,
+  press Alt+G instead of Alt+D. Progress shows confirmed transferred KB.
 
 Planned utilities include `CHAT.EXE` and `IRC.EXE`.
 
