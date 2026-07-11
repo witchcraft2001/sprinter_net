@@ -38,7 +38,8 @@ Zmodem download (remote to Sprinter)
 ------------------------------------
   Select Download in the BBS or run "sz remote-file" on the remote host.
   TELNET detects ZRQINIT, creates the offered local filename and receives the
-  file. An existing local file with the same name is overwritten.
+  file. An existing local file with the same name is overwritten. Transfer
+  progress shows the confirmed number of kilobytes already written to disk.
 
 Zmodem upload (Sprinter to remote)
 ----------------------------------
@@ -59,11 +60,8 @@ Transfer behavior
   - Uploads use acknowledged 1 KB chunks and honor ZRPOS retransmit requests.
   - Telnet IAC quoting and Zmodem control-byte escaping are both handled.
   - A successful session uses the standard ZFIN / ZFIN / "OO" shutdown.
-  - On failure, "stage X, error Y, byte ZZ" remains visible. Stage H/N is
-    header receive, I initialization reply, M metadata, O output open,
-    P position reply, D data, E end-of-file, F finish, and S sender init.
-    Header error T is timeout, S is a truncated stream, F is an unknown
-    format, C is bad CRC, and 3 is an unexpected CRC-32 header.
+  - On failure, TELNET prints a short "Zmodem aborted." message and returns to
+    the open terminal session.
 
 Exit status
 -----------

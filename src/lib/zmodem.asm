@@ -125,6 +125,8 @@ RECEIVE
 	LD	HL,0
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
+	XOR	A
+	LD	(PROGRESS_SHOWN),A
 	CALL	SET_SAFE_RX_TRIGGER
 	CALL	ZNEWLINE
 	LD	HL,MSG_DETECT
@@ -256,6 +258,8 @@ RECEIVE
 	CALL	CLOSE_OUTPUT
 	LD	HL,MSG_FILE_OK
 	CALL	ZPRINTLN
+	XOR	A
+	LD	(PROGRESS_SHOWN),A	; MSG_FILE_OK already completed the progress line
 	JP	.RX_SESSION		; ready for the next file or ZFIN
 
 .RX_ZFIN
@@ -271,6 +275,7 @@ RECEIVE
 	CALL	CLOSE_OUTPUT
 	CALL	WIFI.UART_RX_PAUSE
 	CALL	RESTORE_RX_TRIGGER
+	CALL	END_PROGRESS_LINE
 	LD	HL,MSG_DONE
 	CALL	ZPRINTLN
 	RET				; connection is still in transparent mode
@@ -278,26 +283,9 @@ RECEIVE
 .GIVEUP
 	CALL	ABORT_TRANSFER
 	CALL	RESTORE_RX_TRIGGER
+	CALL	END_PROGRESS_LINE
 	LD	HL,MSG_ABORT
-	CALL	ZPRINT
-	LD	A,(FAIL_STAGE)
-	CALL	ZPUTC
-	LD	HL,MSG_ERROR
-	CALL	ZPRINT
-	LD	A,(HDR_DIAG)
-	OR	A
-	JR	NZ,.SHOW_DIAG
-	LD	A,'-'
-.SHOW_DIAG
-	CALL	ZPUTC
-	LD	HL,MSG_BYTE
-	CALL	ZPRINT
-	LD	A,(LAST_RAW)
-	CALL	ZPUTHEX8
-	CALL	ZNEWLINE
-	CALL	ZPRINT_CRC_DIAG
-	CALL	ZPRINT_SP_DIAG
-	CALL	ZPRINT_RAW_DIAG
+	CALL	ZPRINTLN
 	RET				; connection is still in transparent mode
 
 ; ======================================================
@@ -380,7 +368,6 @@ SEND_FILE
 	JP	C,.fail
 	LD	DE,(TX_COUNT)
 	CALL	ADD_FPOS
-	CALL	SHOW_PROGRESS
 .wait_ack
 	CALL	RECV_HEADER
 	JR	C,.retry_chunk
@@ -403,7 +390,9 @@ SEND_FILE
 	JP	.fail
 .ack
 	CALL	HDR_POS_MATCHES
-	JR	NC,.next_chunk
+	JR	C,.reposition
+	CALL	SHOW_PROGRESS
+	JR	.next_chunk
 	; A stale/different ZACK is treated like an explicit reposition request.
 .reposition
 	CALL	SEEK_TO_HDR_POS
@@ -1822,16 +1811,96 @@ CHECK_ABORT
 	OR	A
 	RET
 
-; SHOW_PROGRESS: one dot per subpacket (KB counter is a later polish).
+; SHOW_PROGRESS: redraw one compact line using the confirmed file position.
+; Downloads call this only after CRC verification and DSS_WRITE succeeds.
 SHOW_PROGRESS
-	PUSH	BC
-	PUSH	DE
-	PUSH	HL
-	LD	A,'.'
+	PUSH	AF,BC,DE,HL,IX
+	CALL	PREP_PROGRESS_KB
+	CALL	FORMAT_PROGRESS_KB
+	LD	A,0x0D
 	CALL	ZPUTC
-	POP	HL
-	POP	DE
-	POP	BC
+	LD	HL,MSG_PROGRESS
+	CALL	ZPRINT
+	LD	HL,PROGRESS_NUM
+	CALL	ZPRINT
+	LD	HL,MSG_KB
+	CALL	ZPRINT
+	LD	A,1
+	LD	(PROGRESS_SHOWN),A
+	POP	IX,HL,DE,BC,AF
+	RET
+
+; A progress redraw ends with CR only. Complete that line before any ordinary
+; status message, but avoid an extra blank line when no progress was printed.
+END_PROGRESS_LINE
+	LD	A,(PROGRESS_SHOWN)
+	OR	A
+	RET	Z
+	XOR	A
+	LD	(PROGRESS_SHOWN),A
+	JP	ZNEWLINE
+
+; Convert the little-endian 32-bit byte position to whole kilobytes.
+; U32_WORK = FPOS >> 10.
+PREP_PROGRESS_KB
+	LD	HL,FPOS
+	LD	DE,U32_WORK
+	LD	BC,4
+	LDIR
+	LD	B,10
+.shift
+	LD	HL,(U32_WORK+2)
+	SRL	H
+	RR	L
+	LD	(U32_WORK+2),HL
+	LD	HL,(U32_WORK)
+	RR	H
+	RR	L
+	LD	(U32_WORK),HL
+	DJNZ	.shift
+	RET
+
+; Format U32_WORK as an unpadded decimal ASCIIZ string.
+FORMAT_PROGRESS_KB
+	LD	IX,U32_POW10
+	LD	HL,PROGRESS_NUM
+	LD	B,10
+	XOR	A
+	LD	(PROGRESS_STARTED),A
+.power
+	XOR	A
+	LD	(DEC_DIGIT),A
+.subtract
+	CALL	U32_WORK_GE_IX
+	JR	C,.consider
+	CALL	U32_WORK_SUB_IX
+	LD	A,(DEC_DIGIT)
+	INC	A
+	LD	(DEC_DIGIT),A
+	JR	.subtract
+.consider
+	LD	A,(DEC_DIGIT)
+	OR	A
+	JR	NZ,.emit
+	LD	A,(PROGRESS_STARTED)
+	OR	A
+	JR	NZ,.emit_zero
+	LD	A,B
+	CP	1
+	JR	NZ,.next
+.emit_zero
+	XOR	A
+.emit
+	ADD	A,'0'
+	LD	(HL),A
+	INC	HL
+	LD	A,1
+	LD	(PROGRESS_STARTED),A
+.next
+	LD	DE,4
+	ADD	IX,DE
+	DJNZ	.power
+	LD	(HL),0
 	RET
 
 ; ======================================================
@@ -1959,7 +2028,7 @@ ZPRINT_SP_DIAG
 ; Messages
 ; ======================================================
 MSG_DETECT
-	DB "Zmodem detected r13 (Esc aborts)...",0
+	DB "Zmodem detected (Esc aborts)...",0
 MSG_DOWNLOAD
 	DB "Zmodem download.",0
 MSG_UPLOAD
@@ -1970,12 +2039,16 @@ MSG_SENDING
 	DB "Sending ",0
 MSG_RECV
 	DB "Receiving ",0
+MSG_PROGRESS
+	DB "Transferred: ",0
+MSG_KB
+	DB " KB",0
 MSG_FILE_OK
 	DB " OK",0
 MSG_DONE
 	DB "Zmodem done.",0
 MSG_ABORT
-	DB "Zmodem aborted, stage ",0
+	DB "Zmodem aborted.",0
 MSG_ERROR
 	DB ", error ",0
 MSG_BYTE
@@ -2074,6 +2147,9 @@ INPUT_PTR	DW 0
 INPUT_LEN	DB 0
 U32_WORK	DS 4,0
 DEC_DIGIT	DB 0
+PROGRESS_STARTED DB 0
+PROGRESS_NUM	DS 11,0
+PROGRESS_SHOWN	DB 0
 
 RXBUF		EQU WIN2_BASE
 DATA_BUF	EQU RXBUF + ZM_RXBUF_SIZE

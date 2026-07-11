@@ -42,7 +42,7 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
   raw services receive no IAC control bytes. It automatically receives files
   when the remote side starts `sz`, or prompts for one local file to upload
   when the remote side starts `rz`. Alt+X closes the session; Esc aborts only
-  an active transfer.
+  an active transfer. Progress is shown as confirmed transferred kilobytes.
 
 Planned utilities include `CHAT.EXE` and `IRC.EXE`.
 
