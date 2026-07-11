@@ -5,7 +5,7 @@
 ; the terminal when a Zmodem header start ("*" "*" ZDLE) is seen.
 ;
 ; Depends on: transparent-mode WIFI.UART_TX_* / WIFI.UART_RX_* helpers,
-; DSS file funcs, the PRINT/PRINTLN macros, and one allocated WIN2 page.
+; DSS file funcs, MAIN.OUTPUT_BYTE, and one allocated WIN2 page.
 ; Include after esp_tcp and before esplib.
 ; ======================================================
 
@@ -22,6 +22,8 @@ ZM_TXDATA_SIZE		EQU ZM_TX_CHUNK*2+16	; worst-case escaped upload subpacket
 ZM_RECV_TMO		EQU 10000		; ms to wait for the next stream byte
 ZM_HDR_RETRIES		EQU 10			; header re-scans before giving up
 ZM_SEND_RETRIES		EQU 10
+ZM_FCR_FIFO		EQU 0x01
+ZM_FCR_TR8		EQU 0x80		; normal terminal receive trigger
 
 DSS_CREATE_OVERWRITE	EQU 0x0A		; create, truncating an existing file
 
@@ -117,12 +119,18 @@ RECEIVE
 	LD	(IO_ERROR),A
 	LD	(SP_TO_FILE),A
 	LD	(HDR_WAIT),A
+	LD	(HDR_DIAG),A
+	LD	A,'H'
+	LD	(FAIL_STAGE),A
 	LD	HL,0
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
-	PRINT	WCOMMON.LINE_END
-	PRINTLN	MSG_DETECT
-	CALL	WIFI.UART_RX_RESUME
+	CALL	SET_SAFE_RX_TRIGGER
+	CALL	ZNEWLINE
+	LD	HL,MSG_DETECT
+	CALL	ZPRINTLN
+	; PROCESS_RX handed control over with RTS already dropped. Keep it dropped
+	; while consuming the saved batch; FILL raises it only while draining UART.
 .WAIT_ROLE
 	CALL	RECV_HEADER
 	JP	C,.GIVEUP
@@ -138,11 +146,16 @@ RECEIVE
 	JP	.DONE
 
 .RX_START
-	PRINTLN	MSG_DOWNLOAD
+	LD	HL,MSG_DOWNLOAD
+	CALL	ZPRINTLN
 .RX_SESSION
+	LD	A,'I'
+	LD	(FAIL_STAGE),A
 	CALL	SEND_ZRINIT		; advertise CRC16 / full duplex
 	JP	C,.GIVEUP
 .RX_NEXT_HDR
+	LD	A,'N'
+	LD	(FAIL_STAGE),A
 	LD	A,(ABORTED)		; Esc pressed during a read -> stop now
 	OR	A
 	JP	NZ,.GIVEUP
@@ -163,6 +176,8 @@ RECEIVE
 	JR	.RX_NEXT_HDR		; ZSKIP/ZNAK/unknown -> keep listening
 
 .RX_ZSINIT
+	LD	A,'S'
+	LD	(FAIL_STAGE),A
 	XOR	A
 	LD	(SP_TO_FILE),A
 	CALL	RECV_SUBPACKET		; attention string; currently ignored
@@ -172,16 +187,22 @@ RECEIVE
 	JP	.RX_NEXT_HDR
 
 .RX_ZFILE
+	LD	A,'M'
+	LD	(FAIL_STAGE),A
 	CALL	CLOSE_OUTPUT		; a repeated offer replaces any partial prior file
 	XOR	A
 	LD	(SP_TO_FILE),A		; metadata stays in DATA_BUF; no file is open yet
 	CALL	RECV_SUBPACKET		; name+info -> DATA_BUF, DE=len
-	JR	C,.RX_SESSION		; bad subpacket -> resend ZRINIT
+	JP	C,.GIVEUP		; preserve stage M and the first metadata failure
+	LD	A,'O'
+	LD	(FAIL_STAGE),A
 	CALL	OPEN_OUTPUT
 	JP	C,.GIVEUP
 	LD	HL,0
 	LD	(FPOS),HL
 	LD	(FPOS+2),HL
+	LD	A,'P'
+	LD	(FAIL_STAGE),A
 	CALL	SEND_ZRPOS
 	JP	C,.GIVEUP
 	JP	.RX_NEXT_HDR
@@ -191,6 +212,8 @@ RECEIVE
 	JR	NC,.RX_DATA_LOOP
 	JP	.RX_RESYNC
 .RX_DATA_LOOP
+	LD	A,'D'
+	LD	(FAIL_STAGE),A
 	LD	A,1
 	LD	(SP_TO_FILE),A
 	CALL	RECV_SUBPACKET		; DATA_BUF/DE=len, A=terminator
@@ -224,15 +247,20 @@ RECEIVE
 	JP	.RX_NEXT_HDR
 
 .RX_ZEOF
+	LD	A,'E'
+	LD	(FAIL_STAGE),A
 	CALL	HDR_POS_MATCHES		; all bytes received?
 	JR	NC,.RX_EOF_OK
 	JP	.RX_RESYNC
 .RX_EOF_OK
 	CALL	CLOSE_OUTPUT
-	PRINTLN	MSG_FILE_OK
+	LD	HL,MSG_FILE_OK
+	CALL	ZPRINTLN
 	JP	.RX_SESSION		; ready for the next file or ZFIN
 
 .RX_ZFIN
+	LD	A,'F'
+	LD	(FAIL_STAGE),A
 	CALL	SEND_ZFIN
 	JP	C,.GIVEUP
 	CALL	WAIT_OO			; sender closes a successful session with "OO"
@@ -241,14 +269,35 @@ RECEIVE
 
 .DONE
 	CALL	CLOSE_OUTPUT
-	PRINTLN	MSG_DONE
-	CALL	WIFI.UART_RX_RESUME
+	CALL	WIFI.UART_RX_PAUSE
+	CALL	RESTORE_RX_TRIGGER
+	LD	HL,MSG_DONE
+	CALL	ZPRINTLN
 	RET				; connection is still in transparent mode
 
 .GIVEUP
 	CALL	ABORT_TRANSFER
-	PRINTLN	MSG_ABORT
-	CALL	WIFI.UART_RX_RESUME
+	CALL	RESTORE_RX_TRIGGER
+	LD	HL,MSG_ABORT
+	CALL	ZPRINT
+	LD	A,(FAIL_STAGE)
+	CALL	ZPUTC
+	LD	HL,MSG_ERROR
+	CALL	ZPRINT
+	LD	A,(HDR_DIAG)
+	OR	A
+	JR	NZ,.SHOW_DIAG
+	LD	A,'-'
+.SHOW_DIAG
+	CALL	ZPUTC
+	LD	HL,MSG_BYTE
+	CALL	ZPRINT
+	LD	A,(LAST_RAW)
+	CALL	ZPUTHEX8
+	CALL	ZNEWLINE
+	CALL	ZPRINT_CRC_DIAG
+	CALL	ZPRINT_SP_DIAG
+	CALL	ZPRINT_RAW_DIAG
 	RET				; connection is still in transparent mode
 
 ; ======================================================
@@ -256,7 +305,8 @@ RECEIVE
 ; ======================================================
 
 SEND_FILE
-	PRINTLN	MSG_UPLOAD
+	LD	HL,MSG_UPLOAD
+	CALL	ZPRINTLN
 	CALL	PROMPT_FILENAME
 	RET	C
 	CALL	OPEN_INPUT
@@ -398,7 +448,8 @@ SEND_FILE
 	JR	.fail
 
 .skipped
-	PRINTLN	MSG_SKIPPED
+	LD	HL,MSG_SKIPPED
+	CALL	ZPRINTLN
 .finish
 	CALL	CLOSE_OUTPUT
 	CALL	SEND_ZFIN
@@ -431,9 +482,11 @@ SEND_FILE
 	RET
 
 ; Ask for a local file after the remote rz/ZRINIT is detected. Empty input or
-; Esc cancels the transfer. DSS_ECHOKEY provides the visible line editing.
+; Esc cancels the transfer. Echo through the terminal emulator so editing can
+; never scroll or overwrite the reserved DSS status row.
 PROMPT_FILENAME
-	PRINT	MSG_FILE_PROMPT
+	LD	HL,MSG_FILE_PROMPT
+	CALL	ZPRINT
 	LD	C,DSS_KCLEAR
 	RST	DSS
 	LD	HL,FNAME
@@ -441,8 +494,10 @@ PROMPT_FILENAME
 	XOR	A
 	LD	(INPUT_LEN),A
 .key
-	LD	C,DSS_ECHOKEY
+	LD	C,DSS_SCANKEY
 	RST	DSS
+	JR	Z,.idle
+	LD	A,E
 	CP	0x1B
 	JR	Z,.cancel
 	CP	13
@@ -464,6 +519,8 @@ PROMPT_FILENAME
 	LD	A,(INPUT_LEN)
 	INC	A
 	LD	(INPUT_LEN),A
+	LD	A,C
+	CALL	ZPUTC
 	JR	.key
 .backspace
 	LD	A,(INPUT_LEN)
@@ -474,25 +531,37 @@ PROMPT_FILENAME
 	LD	HL,(INPUT_PTR)
 	DEC	HL
 	LD	(INPUT_PTR),HL
+	LD	A,0x08
+	CALL	ZPUTC
+	LD	A,' '
+	CALL	ZPUTC
+	LD	A,0x08
+	CALL	ZPUTC
+	JR	.key
+.idle
+	LD	HL,4
+	CALL	UTIL.DELAY
 	JR	.key
 .done
 	LD	HL,(INPUT_PTR)
 	LD	(HL),0
-	PRINT	WCOMMON.LINE_END
+	CALL	ZNEWLINE
 	LD	A,(INPUT_LEN)
 	OR	A
 	JR	Z,.cancel_no_line
 	RET
 .cancel
-	PRINT	WCOMMON.LINE_END
+	CALL	ZNEWLINE
 .cancel_no_line
 	SCF
 	RET
 
 OPEN_INPUT
-	PRINT	MSG_SENDING
-	PRINT	FNAME
-	PRINT	WCOMMON.LINE_END
+	LD	HL,MSG_SENDING
+	CALL	ZPRINT
+	LD	HL,FNAME
+	CALL	ZPRINT
+	CALL	ZNEWLINE
 	LD	HL,FNAME
 	LD	A,FM_READ
 	LD	C,DSS_OPEN_FILE
@@ -525,7 +594,8 @@ OPEN_INPUT
 .error_close
 	CALL	CLOSE_OUTPUT
 .error
-	PRINTLN	MSG_FILE_ERROR
+	LD	HL,MSG_FILE_ERROR
+	CALL	ZPRINTLN
 	SCF
 	RET
 
@@ -693,10 +763,16 @@ WAIT_OO
 ; removed from the Zmodem stream. Out: A=byte, CF=0; CF=1 on timeout/close.
 GETBYTE
 .again
+	LD	A,(MAIN.TN_PEER_SEEN)
+	OR	A
+	JP	Z,GET_RAWBYTE		; raw TCP/PTY has no IAC quoting or option commands
 	CALL	GET_RAWBYTE
 	RET	C
 	CP	ZM_IAC
-	RET	NZ
+	JR	Z,.iac
+	OR	A			; ordinary data: explicitly return CF=0 after CP 0xFF
+	RET
+.iac
 	CALL	GET_RAWBYTE
 	RET	C
 	CP	ZM_IAC
@@ -734,12 +810,16 @@ GET_RAWBYTE
 	OR	L
 	JR	NZ,.have
 	PUSH	BC			; FILL clobbers BC; preserve it so DJNZ loop
+	PUSH	IX			; DSS/ISA calls inside FILL do not preserve IX
 	CALL	FILL			; counters in callers survive a mid-read refill
+	POP	IX
 	POP	BC
 	RET	C
 .have
 	LD	HL,(SRC_PTR)
 	LD	A,(HL)
+	LD	(LAST_RAW),A
+	CALL	CAPTURE_RAW_DIAG
 	INC	HL
 	LD	(SRC_PTR),HL
 	PUSH	AF
@@ -750,12 +830,35 @@ GET_RAWBYTE
 	OR	A			; CF=0
 	RET
 
+; Preserve the first raw bytes consumed by each RECV_HEADER call. This runs
+; before Telnet/ZDLE decoding and therefore exposes actual UART loss/order.
+CAPTURE_RAW_DIAG
+	PUSH	AF,BC,DE,HL
+	LD	C,A
+	LD	A,(RAW_DIAG_LEN)
+	CP	32
+	JR	NC,.done
+	LD	E,A
+	LD	D,0
+	LD	HL,RAW_DIAG
+	ADD	HL,DE
+	LD	(HL),C
+	INC	A
+	LD	(RAW_DIAG_LEN),A
+.done
+	POP	HL,DE,BC,AF
+	RET
+
 ; FILL: pull a fresh raw transparent-mode UART batch into RXBUF. CF=1 on
-; timeout/close/abort. RTS is raised only while waiting/draining; it is lowered
-; before decoding, CRC work or disk I/O so the ESP pauses cleanly at the UART.
+; timeout/close/abort. Keep RTS raised while the fast decoder consumes a batch;
+; hardware auto-flow stops the ESP at the FIFO threshold. Disk writes pause it.
 FILL
-	; DSS_SCANKEY is slow, so poll it with RTS dropped before accepting a batch.
-	CALL	WIFI.UART_RX_PAUSE
+	IFDEF ZM_TEST_REFILL
+	JP	@MAIN.TEST_FILL
+	ENDIF
+	; Keep manual RTS unchanged between refills. If a disk write left it paused,
+	; RX_RESUME below restarts the stream; otherwise auto-flow alone brackets the
+	; eight-byte FIFO bursts without a destructive pause/resume per byte.
 	CALL	CHECK_ABORT
 	JR	C,.fail
 	CALL	WIFI.UART_RX_RESUME
@@ -763,9 +866,6 @@ FILL
 	LD	BC,ZM_RXBUF_SIZE
 	LD	DE,ZM_RECV_TMO
 	CALL	MAIN.RX_DRAIN_WAIT
-	PUSH	AF
-	CALL	WIFI.UART_RX_PAUSE
-	POP	AF
 	JR	C,.fail
 	LD	A,B
 	OR	C
@@ -776,8 +876,22 @@ FILL
 	OR	A
 	RET
 .fail
+	LD	A,1
+	LD	(STREAM_FAIL),A
 	SCF
 	RET
+
+; Use the normal eight-byte trigger during Zmodem. The decoder is fast enough
+; to drain each burst; manual RTS is reserved for slow DSS/file operations.
+SET_SAFE_RX_TRIGGER
+	LD	E,ZM_FCR_FIFO | ZM_FCR_TR8
+	LD	HL,REG_FCR
+	JP	WIFI.UART_WRITE
+
+RESTORE_RX_TRIGGER
+	LD	E,ZM_FCR_FIFO | ZM_FCR_TR8
+	LD	HL,REG_FCR
+	JP	WIFI.UART_WRITE
 
 ; GET_UNESC: next ZDLE-decoded element.
 ; Out: A=value, B=0 (data) or B=1 (terminator; A=ZCRC* char), CF=1 on error.
@@ -824,8 +938,8 @@ GET_UNESC
 	PUSH	AF
 	AND	0x60
 	CP	0x40
-	POP	AF
-	JR	NZ,.bad
+	JR	NZ,.bad_esc
+	POP	AF			; restore A only after testing flags from CP 0x40
 	XOR	0x40			; ZDLEE etc.
 	LD	B,0
 	OR	A
@@ -847,6 +961,9 @@ GET_UNESC
 .bad
 	SCF
 	RET
+.bad_esc
+	POP	AF
+	JR	.bad
 
 ; ======================================================
 ; Header receive
@@ -855,6 +972,9 @@ GET_UNESC
 ; RECV_HEADER: find "*"["*"...] ZDLE <fmt>, decode it into HDR_TYPE/HDR_P0..3.
 ; Out: A=type, CF=0; CF=1 on too many failures / close.
 RECV_HEADER
+	XOR	A
+	LD	(HDR_DIAG),A
+	LD	(RAW_DIAG_LEN),A
 	LD	A,ZM_HDR_RETRIES
 	LD	(HDR_TRY),A
 .again
@@ -862,12 +982,18 @@ RECV_HEADER
 	JR	C,.timeout
 	CALL	GETBYTE			; format byte
 	JR	C,.timeout
+	LD	(HDR_FMT),A
+	XOR	A
+	LD	(STREAM_FAIL),A
+	LD	A,(HDR_FMT)
 	CP	ZHEX
 	JR	Z,.hex
 	CP	ZBIN
 	JR	Z,.bin
 	CP	ZBIN32
 	JR	Z,.bin32
+	LD	A,'F'
+	CALL	SET_HDR_DIAG
 	JR	.retry
 .hex
 	CALL	RECV_HEX
@@ -879,12 +1005,20 @@ RECV_HEADER
 	JR	.ok
 .bin32
 	CALL	RECV_BIN32
-	JR	C,.crcfail
+	LD	A,'3'
+	CALL	SET_HDR_DIAG
+	JR	.retry
 .ok
 	LD	A,(HDR_TYPE)
 	OR	A			; CF=0
 	RET
 .crcfail
+	LD	A,(STREAM_FAIL)
+	OR	A
+	JR	NZ,.streamfail
+	CALL	CAPTURE_CRC_DIAG
+	LD	A,'C'
+	CALL	SET_HDR_DIAG
 .retry
 	LD	A,(HDR_TRY)
 	DEC	A
@@ -893,8 +1027,49 @@ RECV_HEADER
 .fail
 	SCF
 	RET
-.timeout
+.streamfail
+	LD	A,'S'
+	CALL	SET_HDR_DIAG
 	SCF
+	RET
+.timeout
+	LD	A,'T'
+	CALL	SET_HDR_DIAG
+	SCF
+	RET
+
+; Keep the first useful header failure: later timeout retries must not hide an
+; earlier malformed format or CRC error.
+SET_HDR_DIAG
+	PUSH	AF
+	LD	A,(HDR_DIAG)
+	OR	A
+	JR	NZ,.done
+	POP	AF
+	LD	(HDR_DIAG),A
+	RET
+.done
+	POP	AF
+	RET
+
+; Snapshot the first CRC failure before retry scanning overwrites the decoded
+; header fields. The compact report is enough to compare with an sz trace.
+CAPTURE_CRC_DIAG
+	LD	A,(HDR_DIAG)
+	OR	A
+	RET	NZ
+	LD	A,(HDR_FMT)
+	LD	(DIAG_FMT),A
+	LD	HL,HDR_TYPE
+	LD	DE,DIAG_HDR
+	LD	BC,5
+	LDIR
+	LD	HL,(HCRC)
+	LD	(DIAG_CALC),HL
+	LD	A,(RX_CRC_HI)
+	LD	(DIAG_RX_HI),A
+	LD	A,(RX_CRC_LO)
+	LD	(DIAG_RX_LO),A
 	RET
 
 ; SCAN_ZDLE: read until ZPAD(one or more) immediately followed by ZDLE.
@@ -918,23 +1093,28 @@ SCAN_ZDLE
 
 ; RECV_HEX: 14 hex chars -> type,p0..3,crchi,crclo; verify CRC16. Swallow CR/LF.
 RECV_HEX
-	LD	IX,HDR_TYPE
+	LD	HL,HDR_TYPE
+	LD	(HDR_DST),HL
 	LD	B,5
 .rb
 	CALL	GET_HEXBYTE
 	RET	C
-	LD	(IX+0),A
-	INC	IX
+	LD	HL,(HDR_DST)
+	LD	(HL),A
+	INC	HL
+	LD	(HDR_DST),HL
 	DJNZ	.rb
 	CALL	HDR_CRC			; HL = computed crc
 	LD	(HCRC),HL		; save it - GET_HEXBYTE/GETBYTE clobber HL
 	CALL	GET_HEXBYTE		; received crc hi
 	RET	C
+	LD	(RX_CRC_HI),A
 	LD	HL,HCRC+1		; computed hi
 	CP	(HL)
 	JR	NZ,.bad
 	CALL	GET_HEXBYTE		; received crc lo
 	RET	C
+	LD	(RX_CRC_LO),A
 	LD	HL,HCRC			; computed lo
 	CP	(HL)
 	JR	NZ,.bad
@@ -952,24 +1132,29 @@ RECV_HEX
 ; Counter is in C (GET_UNESC returns its data/terminator flag in B, so B cannot
 ; be used as the DJNZ counter here); GET_UNESC leaves C untouched.
 RECV_BIN
-	LD	IX,HDR_TYPE
+	LD	HL,HDR_TYPE
+	LD	(HDR_DST),HL
 	LD	C,5
 .rb
 	CALL	GET_UNESC
 	RET	C
-	LD	(IX+0),A
-	INC	IX
+	LD	HL,(HDR_DST)
+	LD	(HL),A
+	INC	HL
+	LD	(HDR_DST),HL
 	DEC	C
 	JR	NZ,.rb
 	CALL	HDR_CRC			; HL = computed crc
 	LD	(HCRC),HL		; save it - GET_UNESC/GETBYTE clobber HL
 	CALL	GET_UNESC		; received crc hi
 	RET	C
+	LD	(RX_CRC_HI),A
 	LD	HL,HCRC+1		; computed hi
 	CP	(HL)
 	JR	NZ,.bad
 	CALL	GET_UNESC		; received crc lo
 	RET	C
+	LD	(RX_CRC_LO),A
 	LD	HL,HCRC			; computed lo
 	CP	(HL)
 	JR	NZ,.bad
@@ -982,13 +1167,16 @@ RECV_BIN
 ; RECV_BIN32: CRC32 is deliberately unsupported and never advertised. Consume
 ; the complete header to keep framing aligned, then reject it.
 RECV_BIN32
-	LD	IX,HDR_TYPE
+	LD	HL,HDR_TYPE
+	LD	(HDR_DST),HL
 	LD	C,5			; counter in C (GET_UNESC clobbers B)
 .rb
 	CALL	GET_UNESC
 	RET	C
-	LD	(IX+0),A
-	INC	IX
+	LD	HL,(HDR_DST)
+	LD	(HL),A
+	INC	HL
+	LD	(HDR_DST),HL
 	DEC	C
 	JR	NZ,.rb
 	LD	C,4
@@ -1010,7 +1198,7 @@ HDR_CRC
 	INC	IX
 	CALL	CRC_UPD
 	DJNZ	.l
-	JP	CRC_FINISH
+	RET
 
 ; GET_HEXBYTE: two hex chars -> A=byte. CF=1 on stream error.
 GET_HEXBYTE
@@ -1041,6 +1229,8 @@ GET_HEXBYTE
 ; beyond the eventual EOF. ZRINIT advertises the matching 8 KB maximum.
 ; Out: A=terminator, CF=0 on success; CF=1 on CRC/stream error.
 RECV_SUBPACKET
+	XOR	A
+	LD	(SP_DIAG),A
 	LD	HL,(FPOS)		; remember where this subpacket starts
 	LD	(SP_START),HL
 	LD	HL,(FPOS+2)
@@ -1083,7 +1273,6 @@ RECV_SUBPACKET
 	LD	(SP_TERM),A		; terminator char
 	LD	HL,(SP_CRC)
 	CALL	CRC_UPD			; terminator is part of the CRC (A = terminator)
-	CALL	CRC_FINISH		; Zmodem CRC-16 appends two zero bytes
 	LD	(SP_CRC),HL
 	; Read + verify the 2 CRC bytes FIRST, while the stream is still flowing fast.
 	; They arrive immediately after the terminator; if we did the slow buffer-tail
@@ -1091,11 +1280,13 @@ RECV_SUBPACKET
 	; lost and every subpacket CRC would fail. Flush only AFTER the CRC checks out.
 	CALL	GET_UNESC		; received CRC hi
 	JR	C,.streamerr
+	LD	(SP_RX_HI),A
 	LD	HL,SP_CRC+1		; computed hi
 	CP	(HL)
 	JR	NZ,.crcbad
 	CALL	GET_UNESC		; received CRC lo
 	JR	C,.streamerr
+	LD	(SP_RX_LO),A
 	LD	HL,SP_CRC		; computed lo
 	CP	(HL)
 	JR	NZ,.crcbad
@@ -1112,15 +1303,23 @@ RECV_SUBPACKET
 	OR	A			; CF=0
 	RET
 .crcbad
+	LD	A,'C'
+	LD	(SP_DIAG),A
 	SCF
 	RET
 .streamerr
+	LD	A,'S'
+	LD	(SP_DIAG),A
 	SCF
 	RET
 .writeerr
+	LD	A,'W'
+	LD	(SP_DIAG),A
 	SCF
 	RET
 .overflow
+	LD	A,'O'
+	LD	(SP_DIAG),A
 	SCF
 	RET
 
@@ -1259,7 +1458,6 @@ SEND_HDR
 	CALL	EMIT_CRC_HEX
 	DJNZ	.p
 	LD	HL,(SEND_CRC)
-	CALL	CRC_FINISH
 	LD	A,H
 	CALL	PUTHEX
 	LD	A,L
@@ -1334,7 +1532,6 @@ SEND_SUBPACKET
 	CALL	PUT
 	LD	HL,(SEND_CRC)
 	CALL	CRC_UPD
-	CALL	CRC_FINISH
 	LD	(SEND_CRC),HL
 	LD	A,H
 	CALL	PUT_ESCAPED
@@ -1475,14 +1672,6 @@ CRC_UPD
 	POP	BC
 	RET
 
-; Zmodem transmits the CRC-16 remainder after advancing it with two zero bytes
-; (unlike the shorter CRC calculation previously used here).
-CRC_FINISH
-	XOR	A
-	CALL	CRC_UPD
-	XOR	A
-	JP	CRC_UPD
-
 ; ======================================================
 ; Position / file
 ; ======================================================
@@ -1544,9 +1733,11 @@ OPEN_OUTPUT
 	XOR	A
 	LD	(DE),A
 .named
-	PRINT	MSG_RECV
-	PRINT	FNAME
-	PRINT	WCOMMON.LINE_END
+	LD	HL,MSG_RECV
+	CALL	ZPRINT
+	LD	HL,FNAME
+	CALL	ZPRINT
+	CALL	ZNEWLINE
 	LD	HL,FNAME
 	LD	A,FA_ARCHIVE
 	LD	C,DSS_CREATE_OVERWRITE
@@ -1637,18 +1828,138 @@ SHOW_PROGRESS
 	PUSH	DE
 	PUSH	HL
 	LD	A,'.'
-	LD	C,DSS_PUTCHAR
-	RST	DSS
+	CALL	ZPUTC
 	POP	HL
 	POP	DE
 	POP	BC
 	RET
 
 ; ======================================================
+; Transfer UI through the terminal emulator. DSS console output scrolls the
+; complete 32-row screen and would move the reserved status row; OUTPUT_BYTE
+; confines wrapping and scrolling to TERM_ROWS.
+; ======================================================
+
+ZPUTC
+	LD	C,A
+	JP	MAIN.OUTPUT_BYTE
+
+ZPRINT
+.loop
+	LD	A,(HL)
+	INC	HL
+	OR	A
+	RET	Z
+	PUSH	HL
+	CALL	ZPUTC
+	POP	HL
+	JR	.loop
+
+ZPRINTLN
+	CALL	ZPRINT
+ZNEWLINE
+	LD	A,0x0D
+	CALL	ZPUTC
+	LD	A,0x0A
+	JP	ZPUTC
+
+ZPUTHEX8
+	PUSH	AF
+	RRCA
+	RRCA
+	RRCA
+	RRCA
+	CALL	HEXCHR
+	CALL	ZPUTC
+	POP	AF
+	CALL	HEXCHR
+	JP	ZPUTC
+
+ZPRINT_CRC_DIAG
+	LD	A,(HDR_DIAG)
+	CP	'C'
+	RET	NZ
+	LD	HL,MSG_FRAME
+	CALL	ZPRINT
+	LD	A,(DIAG_FMT)
+	CALL	ZPUTC
+	LD	A,' '
+	CALL	ZPUTC
+	LD	HL,DIAG_HDR
+	LD	B,5
+.header
+	LD	A,(HL)
+	INC	HL
+	PUSH	BC,HL
+	CALL	ZPUTHEX8
+	POP	HL,BC
+	DJNZ	.header
+	LD	HL,MSG_CRC
+	CALL	ZPRINT
+	LD	A,(DIAG_RX_HI)
+	CALL	ZPUTHEX8
+	LD	A,(DIAG_RX_LO)
+	CALL	ZPUTHEX8
+	LD	A,'/'
+	CALL	ZPUTC
+	LD	A,(DIAG_CALC+1)
+	CALL	ZPUTHEX8
+	LD	A,(DIAG_CALC)
+	CALL	ZPUTHEX8
+	JP	ZNEWLINE
+
+ZPRINT_RAW_DIAG
+	LD	HL,MSG_RAW
+	CALL	ZPRINT
+	LD	A,(RAW_DIAG_LEN)
+	CALL	ZPUTHEX8
+	LD	A,':'
+	CALL	ZPUTC
+	LD	HL,RAW_DIAG
+	LD	A,(RAW_DIAG_LEN)
+	LD	B,A
+	OR	A
+	JP	Z,ZNEWLINE
+.byte
+	LD	A,' '
+	PUSH	BC,HL
+	CALL	ZPUTC
+	POP	HL,BC
+	LD	A,(HL)
+	INC	HL
+	PUSH	BC,HL
+	CALL	ZPUTHEX8
+	POP	HL,BC
+	DJNZ	.byte
+	JP	ZNEWLINE
+
+ZPRINT_SP_DIAG
+	LD	A,(SP_DIAG)
+	OR	A
+	RET	Z
+	LD	HL,MSG_SUBPACKET
+	CALL	ZPRINT
+	LD	A,(SP_DIAG)
+	CALL	ZPUTC
+	LD	HL,MSG_CRC
+	CALL	ZPRINT
+	LD	A,(SP_RX_HI)
+	CALL	ZPUTHEX8
+	LD	A,(SP_RX_LO)
+	CALL	ZPUTHEX8
+	LD	A,'/'
+	CALL	ZPUTC
+	LD	A,(SP_CRC+1)
+	CALL	ZPUTHEX8
+	LD	A,(SP_CRC)
+	CALL	ZPUTHEX8
+	JP	ZNEWLINE
+
+; ======================================================
 ; Messages
 ; ======================================================
 MSG_DETECT
-	DB "Zmodem detected (Esc aborts)...",0
+	DB "Zmodem detected r13 (Esc aborts)...",0
 MSG_DOWNLOAD
 	DB "Zmodem download.",0
 MSG_UPLOAD
@@ -1664,7 +1975,19 @@ MSG_FILE_OK
 MSG_DONE
 	DB "Zmodem done.",0
 MSG_ABORT
-	DB "Zmodem aborted.",0
+	DB "Zmodem aborted, stage ",0
+MSG_ERROR
+	DB ", error ",0
+MSG_BYTE
+	DB ", byte ",0
+MSG_FRAME
+	DB "frame ",0
+MSG_CRC
+	DB " crc received/calculated ",0
+MSG_RAW
+	DB "raw ",0
+MSG_SUBPACKET
+	DB "subpacket error ",0
 MSG_SKIPPED
 	DB "Remote skipped the file.",0
 MSG_FILE_ERROR
@@ -1698,6 +2021,20 @@ CANSEQ_LEN	EQU $-CANSEQ
 SRC_PTR		DW 0
 SRC_CNT		DW 0
 HDR_TRY		DB 0
+HDR_DIAG	DB 0			; first header error: T timeout, F format, C CRC
+STREAM_FAIL	DB 0			; decoder ran out of UART bytes inside a frame
+LAST_RAW	DB 0			; last byte consumed, shown on hardware failure
+HDR_FMT	DB 0
+RX_CRC_HI	DB 0
+RX_CRC_LO	DB 0
+DIAG_FMT	DB 0
+DIAG_HDR	DS 5,0
+DIAG_CALC	DW 0
+DIAG_RX_HI	DB 0
+DIAG_RX_LO	DB 0
+RAW_DIAG_LEN	DB 0
+RAW_DIAG	DS 32,0
+HDR_DST	DW 0			; next decoded header byte; survives UART refills
 HDR_TYPE	DB 0
 HDR_P0		DB 0
 HDR_P1		DB 0
@@ -1705,6 +2042,9 @@ HDR_P2		DB 0
 HDR_P3		DB 0
 HCRC		DW 0			; computed header CRC, saved across the received-CRC read
 SP_CRC		DW 0
+SP_DIAG	DB 0
+SP_RX_HI	DB 0
+SP_RX_LO	DB 0
 SP_PTR		DW 0
 SP_LEN		DW 0
 SP_START	DS 4,0			; file offset at the current subpacket's start
@@ -1712,6 +2052,7 @@ SP_TERM		DB 0
 LAST_TERM	DB 0
 SEND_T		DB 0
 HDR_WAIT	DB 0
+FAIL_STAGE	DB 'H'			; visible failure stage for hardware diagnostics
 HDR_TYPE_OUT	DB 0
 SEND_CRC	DW 0
 TXP_DST		DW 0

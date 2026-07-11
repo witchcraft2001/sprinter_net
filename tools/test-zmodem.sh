@@ -19,7 +19,10 @@ if [ -z "$end_addr" ]; then
   exit 1
 fi
 
-z88dk-ticks -l 4000 -pc 4000 -end "$end_addr" -output "$ram_file" \
+# z88dk-ticks parses -pc/-end as hexadecimal, but its -l argument as decimal.
+# Passing "4000" here used to load the program at decimal 4000 while starting
+# execution at hexadecimal 0x4000, so the harness only ran zero-filled RAM.
+z88dk-ticks -l 16384 -pc 4000 -end "$end_addr" -output "$ram_file" \
   "$raw_file" >/dev/null
 
 result=$(od -An -tu1 -j 49152 -N 1 "$ram_file" | tr -d ' ')

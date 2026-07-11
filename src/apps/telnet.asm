@@ -1,5 +1,5 @@
 ; ======================================================
-; TELNET / ANSI-BBS client for Sprinter DSS over ESP-AT
+; TELNET / raw ANSI-BBS client for Sprinter DSS over ESP-AT
 ;
 ; Connects to a telnet host (default port 23) and runs the session in ESP-AT
 ; TRANSPARENT mode (AT+CIPMODE=1): after CIPSTART the socket is a raw, full-
@@ -165,12 +165,6 @@ START
 	; nothing is lost to the half-duplex send/discard window.
 	CALL	ENTER_TRANSPARENT
 	JP	C,CONNECT_FAILED
-	; Negotiate both Telnet BINARY directions before any file transfer. Literal
-	; IAC bytes are still doubled by Telnet and decoded inside zmodem.asm.
-	LD	HL,TN_BINARY_INIT
-	LD	BC,TN_BINARY_INIT_LEN
-	CALL	WIFI.UART_TX_BUFFER
-
 	PRINTLN	MSG_CONNECTED
 
 	; Reset session state machines.
@@ -179,6 +173,8 @@ START
 	LD	(OUT_STATE),A
 	LD	(NEG_LEN),A
 	LD	(TX_BINARY),A
+	LD	(TN_PEER_SEEN),A
+	LD	(TN_BINARY_SENT),A
 	; Hand the screen over to the emulator: clear the terminal region and paint
 	; the status row. From here output goes through WrChar, not the DSS console.
 	CALL	INIT_SCREEN
@@ -315,6 +311,9 @@ HANDLE_KEY
 	LD	A,CR
 	LD	(TX_BUF),A
 	LD	BC,1
+	LD	A,(TN_PEER_SEEN)
+	OR	A
+	JR	Z,.SEND_ENTER_BYTES		; raw TCP/PTY: Enter is one keyboard CR
 	LD	A,(TX_BINARY)
 	OR	A
 	JR	NZ,.SEND_ENTER_BYTES		; binary mode has no NVT CR translation
@@ -426,17 +425,19 @@ PROCESS_RX
 	JR	C,.ZMODEM
 	JR	.NEXT
 .ZMODEM
+	PUSH	BC,HL
+	CALL	FLUSH_NEG			; finish pending Telnet BINARY replies before raw data
+	POP	HL,BC
 	CALL	ZM.RECEIVE			; HL=tail ptr, BC=remaining count
 	; The binary Zmodem stream (or an aborted transfer) can leave the IAC and
-	; ANSI state machines mid-sequence; reset them and repaint so the terminal
-	; recovers cleanly instead of mis-parsing every following byte.
+	; ANSI state machines mid-sequence; reset parser state, preserving the
+	; transfer log and status row rendered through the terminal emulator.
 	XOR	A
 	LD	(ZTRIG),A
 	LD	(TN_STATE),A
 	LD	(OUT_STATE),A
 	LD	(NEG_LEN),A
-	CALL	INIT_SCREEN
-	CALL	DRAW_STATUS
+	CALL	SYNC_CURSOR
 	RET					; batch consumed by Zmodem; resume terminal
 
 ; ZM_TRIGGER: feed one stream byte (A) to the "*" "*" ZDLE detector.
@@ -495,6 +496,7 @@ PROCESS_RX_BYTE
 	RET
 ; --- S_IAC: byte after an IAC ---
 .ST_IAC
+	CALL	ENSURE_TELNET_BINARY		; a real IAC stream distinguishes Telnet from raw TCP
 	LD	A,C
 	CP	TN_IAC
 	JR	Z,.IAC_LITERAL			; IAC IAC -> literal 0xFF
@@ -574,6 +576,21 @@ PROCESS_RX_BYTE
 	LD	B,TTYPE_REPLY_LEN
 	JP	QUEUE_BYTES
 
+; A raw TCP/PTY service must never receive proactive IAC bytes: they become
+; visible shell input. Once the peer itself sends IAC, identify it as Telnet
+; and request an 8-bit-clean path in both directions exactly once.
+ENSURE_TELNET_BINARY
+	LD	A,1
+	LD	(TN_PEER_SEEN),A
+	LD	A,(TN_BINARY_SENT)
+	OR	A
+	RET	NZ
+	LD	A,1
+	LD	(TN_BINARY_SENT),A
+	LD	HL,TN_BINARY_INIT
+	LD	B,TN_BINARY_INIT_LEN
+	JP	QUEUE_BYTES
+
 ; ------------------------------------------------------
 ; NEGOTIATE: respond to an option demand. In: TN_CMD = WILL/WONT/DO/DONT,
 ; C = option. Minimal converging policy (only demands get a reply):
@@ -582,7 +599,7 @@ PROCESS_RX_BYTE
 ;   WILL <x>   -> DONT <x>
 ;   DO   SGA   -> WILL SGA   (we will suppress go-ahead)
 ;   DO   TTYPE -> WILL TTYPE (then answer SB SEND with "ANSI" -> full ANSI art)
-;   DO   NAWS  -> WILL NAWS  + send our 80x25 window size via SB
+;   DO   NAWS  -> WILL NAWS  + send our 80x31 window size via SB
 ;   DO   <x>   -> WONT <x>
 ;   WONT/DONT  -> ignored    (acks; replying would risk a negotiation loop)
 ; Reply bytes are appended to NEG_BUF and sent later by FLUSH_NEG.
@@ -2138,6 +2155,8 @@ SB_OPT		DB 0			; SB option byte (SB_OPT, SB_SUB must stay consecutive)
 SB_SUB		DB 0			; SB subcommand byte
 OUT_STATE	DB 0
 TX_BINARY	DB 0			; peer accepted our WILL TRANSMIT-BINARY
+TN_PEER_SEEN	DB 0			; peer emitted IAC: Telnet rather than raw TCP/PTY
+TN_BINARY_SENT	DB 0			; binary negotiation queued once after first peer IAC
 NEG_LEN		DB 0
 TX_BUF		DB 0,0
 NEG_BUF		DS NEG_BUF_SIZE,0

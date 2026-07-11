@@ -2,11 +2,13 @@
 ; ZM.SEND_SUBPACKET routines. Run through tools/test-zmodem.sh.
 
 	DEVICE NOSLOT64K
+	DEFINE ZM_TEST_REFILL
 
 	INCLUDE "macro.inc"
 	INCLUDE "dss.inc"
 
 WIN2_BASE	EQU 0x8000
+REG_FCR		EQU 0
 CAPTURE		EQU 0xC100
 TEST_RESULT	EQU 0xC000
 
@@ -60,6 +62,122 @@ TEST_START
 	SBC	HL,DE
 	JP	NZ,.failed
 
+	; Independent lrzsz 0.12.20 vector emitted by `rz`: unlike the generated
+	; frame above, this catches a shared encoder/decoder CRC mistake.
+	LD	HL,LRZSZ_ZRINIT
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,LRZSZ_ZRINIT_LEN
+	LD	(ZM.SRC_CNT),HL
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZRINIT
+	JP	NZ,.failed
+	LD	A,(ZM.HDR_P3)
+	CP	0x23
+	JP	NZ,.failed
+
+	; Actual raw-TCP VERSION transfer emitted by lrzsz `sz -o` after accepting
+	; our ZRINIT/ZRPOS. It covers ZFILE, metadata, ZDATA, data and ZEOF parsing.
+	LD	HL,LRZSZ_VERSION_STREAM
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,LRZSZ_VERSION_STREAM_LEN
+	LD	(ZM.SRC_CNT),HL
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZFILE
+	JP	NZ,.failed
+	XOR	A
+	LD	(ZM.SP_TO_FILE),A
+	CALL	ZM.RECV_SUBPACKET
+	JP	C,.failed
+	LD	HL,ZM.DATA_BUF
+	LD	DE,LRZSZ_VERSION_NAME
+	LD	B,LRZSZ_VERSION_NAME_LEN
+.compare_lrzsz_name
+	LD	A,(DE)
+	CP	(HL)
+	JP	NZ,.failed
+	INC	HL
+	INC	DE
+	DJNZ	.compare_lrzsz_name
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZDATA
+	JP	NZ,.failed
+	XOR	A
+	LD	(ZM.SP_TO_FILE),A
+	CALL	ZM.RECV_SUBPACKET
+	JP	C,.failed
+	CP	ZCRCE
+	JP	NZ,.failed
+	LD	A,D
+	OR	A
+	JP	NZ,.failed
+	LD	A,E
+	CP	4
+	JP	NZ,.failed
+	LD	HL,ZM.DATA_BUF
+	LD	DE,LRZSZ_VERSION_DATA
+	LD	B,4
+.compare_lrzsz_data
+	LD	A,(DE)
+	CP	(HL)
+	JP	NZ,.failed
+	INC	HL
+	INC	DE
+	DJNZ	.compare_lrzsz_data
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZEOF
+	JP	NZ,.failed
+	LD	A,(ZM.HDR_P0)
+	CP	4
+	JP	NZ,.failed
+
+	; Exact ZFILE+metadata captured from the user's 192.168.1.36:2323 server.
+	; Its metadata CRC is A4B0 and must pass before any DSS file operation.
+	LD	HL,REMOTE_README_STREAM
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,REMOTE_README_STREAM_LEN
+	LD	(ZM.SRC_CNT),HL
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZFILE
+	JP	NZ,.failed
+	XOR	A
+	LD	(ZM.SP_TO_FILE),A
+	CALL	ZM.RECV_SUBPACKET
+	JP	C,.failed
+	LD	HL,(ZM.SP_CRC)
+	LD	DE,0xA4B0
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+
+	; Repeat the remote frame one byte per FILL and deliberately clobber IX in
+	; every refill, matching DSS/ISA behavior on hardware.
+	XOR	A
+	LD	(MAIN.TN_PEER_SEEN),A
+	LD	HL,0
+	LD	(ZM.SRC_CNT),HL
+	LD	HL,REMOTE_README_STREAM
+	LD	(TEST.REFILL_PTR),HL
+	LD	HL,REMOTE_README_STREAM_LEN
+	LD	(TEST.REFILL_LEFT),HL
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZFILE
+	JP	NZ,.failed
+	XOR	A
+	LD	(ZM.SP_TO_FILE),A
+	CALL	ZM.RECV_SUBPACKET
+	JP	C,.failed
+	LD	HL,(ZM.SP_CRC)
+	LD	DE,0xA4B0
+	OR	A
+	SBC	HL,DE
+	JP	NZ,.failed
+
 	; Decode and CRC-check the generated "hello" subpacket.
 	LD	HL,EXPECTED+EXPECTED_HDR_LEN
 	LD	(ZM.SRC_PTR),HL
@@ -79,7 +197,19 @@ TEST_START
 	JP	NZ,.failed
 
 	; Telnet doubles a literal IAC. The Zmodem decoder must collapse FF FF to
-	; one data byte before checking the standard CRC 0x2039.
+	; one data byte before checking the standard CRC 0xDE32. First decode an
+	; ordinary binary header through the Telnet branch: CP 0xFF must not leak
+	; Carry for every non-IAC byte.
+	LD	A,1
+	LD	(MAIN.TN_PEER_SEEN),A
+	LD	HL,LRZSZ_VERSION_STREAM
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,LRZSZ_VERSION_STREAM_LEN
+	LD	(ZM.SRC_CNT),HL
+	CALL	ZM.RECV_HEADER
+	JP	C,.failed
+	CP	ZFILE
+	JP	NZ,.failed
 	LD	HL,IAC_SUBPACKET
 	LD	(ZM.SRC_PTR),HL
 	LD	HL,IAC_SUBPACKET_LEN
@@ -132,22 +262,56 @@ TEST_DATA
 	DB "hello"
 TEST_DATA_LEN	EQU $-TEST_DATA
 
-; ZRINIT(type=1, rxlen=0x2000, flags=CANFDX|ESCCTL), CRC=0x9A48.
-; "hello" + ZCRCW, CRC=0x7975.
+; ZRINIT(type=1, rxlen=0x2000, flags=CANFDX|ESCCTL), CRC=0x7472.
+; "hello" + ZCRCW, CRC=0x56E2.
 EXPECTED
 	DB 0x2A,0x2A,0x18,'B'
-	DB "01002000419a48"
+	DB "01002000417472"
 	DB 0x0D,0x8A,0x11
 EXPECTED_HDR_LEN	EQU $-EXPECTED
-	DB "hello",0x18,'k',0x79,0x75,0x11
+	DB "hello",0x18,'k',0x56,0xE2,0x11
 EXPECTED_SUB_LEN	EQU $-EXPECTED-EXPECTED_HDR_LEN
 EXPECTED_LEN	EQU $-EXPECTED
 
+LRZSZ_ZRINIT
+	DB 0x2A,0x2A,0x18,'B',"0100000023be50",0x0D,0x8A,0x11
+LRZSZ_ZRINIT_LEN	EQU $-LRZSZ_ZRINIT
+
+LRZSZ_VERSION_STREAM
+	DB 0x2A,0x18,'A'
+	DB 0x18,0x44,0x18,0x40,0x18,0x40,0x18,0x40,0x18,0x40
+	DB 0x18,0xC9,0x18,0x46
+	DB "VERSION",0x18,0x40
+	DB "4 15210261416 100644 0 1 4",0x18,0x40
+	DB 0x18,'k',0x18,0xDA,0x76,0x11
+	DB 0x2A,0x18,'A'
+	DB 0x18,0x4A,0x18,0x40,0x18,0x40,0x18,0x40,0x18,0x40
+	DB 0x46,0xAE
+	DB "0.1",0x18,0x4A,0x18,'h',0x69,0x18,0x4A
+	DB 0x2A,0x18,'A'
+	DB 0x18,0x4B,0x18,0x44,0x18,0x40,0x18,0x40,0x18,0x40
+	DB 0x26,0x18,0x4E
+LRZSZ_VERSION_STREAM_LEN	EQU $-LRZSZ_VERSION_STREAM
+LRZSZ_VERSION_NAME
+	DB "VERSION",0
+LRZSZ_VERSION_NAME_LEN	EQU $-LRZSZ_VERSION_NAME
+LRZSZ_VERSION_DATA
+	DB "0.1",0x0A
+
+REMOTE_README_STREAM
+	DB 0x2A,0x18,'A'
+	DB 0x18,0x44,0x18,0x40,0x18,0x40,0x18,0x40,0x18,0x40
+	DB 0x18,0xC9,0x18,0x46
+	DB "readme.md",0x18,0x40
+	DB "2030 15174033562 100644 0 1 2030",0x18,0x40
+	DB 0x18,'k',0xA4,0xB0,0x11
+REMOTE_README_STREAM_LEN	EQU $-REMOTE_README_STREAM
+
 IAC_SUBPACKET
-	DB 0xFF,0xFF,0x18,'k',0x20,0x39
+	DB 0xFF,0xFF,0x18,'k',0xDE,0x32
 IAC_SUBPACKET_LEN	EQU $-IAC_SUBPACKET
 BAD_CRC_SUBPACKET
-	DB 0xFF,0xFF,0x18,'k',0x20,0x38
+	DB 0xFF,0xFF,0x18,'k',0xDE,0x33
 BAD_CRC_SUBPACKET_LEN	EQU $-BAD_CRC_SUBPACKET
 
 LOCAL_PATH
@@ -158,6 +322,32 @@ EXPECTED_INFO
 EXPECTED_INFO_LEN	EQU $-EXPECTED_INFO
 
 	MODULE MAIN
+TN_PEER_SEEN
+	DB 0
+OUTPUT_BYTE
+	RET
+TEST_FILL
+	LD	HL,(TEST.REFILL_LEFT)
+	LD	A,H
+	OR	L
+	JR	Z,.empty
+	DEC	HL
+	LD	(TEST.REFILL_LEFT),HL
+	LD	HL,(TEST.REFILL_PTR)
+	LD	A,(HL)
+	INC	HL
+	LD	(TEST.REFILL_PTR),HL
+	LD	(ZM.RXBUF),A
+	LD	HL,ZM.RXBUF
+	LD	(ZM.SRC_PTR),HL
+	LD	HL,1
+	LD	(ZM.SRC_CNT),HL
+	LD	IX,0xDEAD		; prove decoder state does not live in IX
+	OR	A
+	RET
+.empty
+	SCF
+	RET
 RX_DRAIN_WAIT
 RX_DRAIN
 	SCF
@@ -165,6 +355,8 @@ RX_DRAIN
 	ENDMODULE
 
 	MODULE WIFI
+UART_WRITE
+	RET
 UART_RX_PAUSE
 	RET
 UART_RX_RESUME
@@ -202,6 +394,8 @@ RECEIVE
 
 	MODULE TEST
 CAPTURE_PTR	DW CAPTURE
+REFILL_PTR	DW 0
+REFILL_LEFT	DW 0
 	ENDMODULE
 
 	INCLUDE "zmodem.asm"
