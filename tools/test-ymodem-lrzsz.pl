@@ -123,7 +123,8 @@ sub test_lsb_g {
     write_all($pty, "\x06G");
     my $last = check_packet(read_exact($pty, 133), 0x01, 0, 128);
     die "lsb-g final block" unless substr($last, 0, 1) eq "\0";
-    write_all($pty, "\x06");
+    # Ymodem-G does not wait for ACK on sectors, including the empty final
+    # block 0. An ACK here leaks into the application input after lsb exits.
     waitpid($pid, 0);
     die "lsb-g failed" if $?;
 }

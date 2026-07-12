@@ -30,6 +30,7 @@ YM_ERR_CANCEL	EQU 2
 YM_ERR_NAK	EQU 3
 YM_ERR_TX	EQU 4
 YM_ERR_FILE	EQU 5
+YM_ERR_SIZE	EQU 6
 
 YM_EV_PACKET	EQU 0
 YM_EV_EOT	EQU 1
@@ -159,15 +160,27 @@ RECEIVE_START
 	JR	.data_wait
 .first_eot
 .file_done
+	CALL	FLUSH_UNKNOWN_LAST_BLOCK
+	JP	C,SESSION_ABORT
+	CALL	CHECK_FILE_COMPLETE
+	JP	C,SESSION_ABORT
+	CALL	CLOSE_RECEIVED_FILE
+	JR	NC,.file_closed
+	LD	A,YM_ERR_FILE
+	LD	(ABORT_REASON),A
+	JP	SESSION_ABORT
+.file_closed
 	LD	A,YM_ACK
 	CALL	SEND_BYTE
-	CALL	ZM.CLOSE_OUTPUT
 	LD	HL,ZM.MSG_FILE_OK
 	CALL	ZM.ZPRINTLN
 	XOR	A
 	LD	(ZM.PROGRESS_SHOWN),A
 	JP	.next_file
 .batch_done
+	LD	A,(G_MODE)
+	OR	A
+	JP	NZ,SESSION_DONE		; Ymodem-G sender never waits ACK for a sector
 	LD	A,YM_ACK
 	CALL	SEND_BYTE
 	JP	SESSION_DONE
@@ -323,6 +336,7 @@ SESSION_INIT
 	LD	(ZM.SRC_PTR+1),A
 	LD	(ZM.SRC_CNT),A
 	LD	(ZM.SRC_CNT+1),A
+	LD	(PENDING_UNKNOWN),A
 	CALL	RESET_FILE_POS
 	CALL	ZM.SET_SAFE_RX_TRIGGER
 	CALL	ZM.ZNEWLINE
@@ -361,8 +375,7 @@ SESSION_CANCEL
 SESSION_ABORT
 	XOR	A
 	LD	(MAIN.YM_C_PENDING),A
-	CALL	SEND_CANCEL
-	CALL	ZM.CLOSE_OUTPUT
+	CALL	ZM.ABORT_TRANSFER	; cancel and drain queued file bytes before terminal mode
 	CALL	WIFI.UART_RX_PAUSE
 	CALL	ZM.RESTORE_RX_TRIGGER
 	CALL	ZM.END_PROGRESS_LINE
@@ -381,6 +394,9 @@ SESSION_ABORT
 	JR	Z,.print_abort
 	CP	YM_ERR_FILE
 	LD	HL,MSG_ABORT_FILE
+	JR	Z,.print_abort
+	CP	YM_ERR_SIZE
+	LD	HL,MSG_ABORT_SIZE
 	JR	Z,.print_abort
 	LD	HL,MSG_ABORT
 .print_abort
@@ -562,7 +578,7 @@ WRITE_BLOCK
 	LD	DE,(RX_LENGTH)
 	LD	A,(SIZE_KNOWN)
 	OR	A
-	JR	Z,.count_ready
+	JP	Z,QUEUE_UNKNOWN_BLOCK
 	LD	HL,(FILE_LEFT+2)
 	LD	A,H
 	OR	L
@@ -582,7 +598,15 @@ WRITE_BLOCK
 	LD	HL,ZM.DATA_BUF
 	LD	C,DSS_WRITE
 	RST	DSS
-	RET	C
+	JR	NC,.write_ok
+	LD	A,YM_ERR_FILE
+	LD	(ABORT_REASON),A
+	SCF
+	RET
+.write_ok
+	; Real DSS variants do not consistently preserve/report the written count
+	; in DE on success. The requested count is authoritative when CF is clear;
+	; exact final length is verified against Ymodem metadata at EOT.
 	LD	DE,(WRITE_COUNT)
 	CALL	ZM.ADD_FPOS
 	LD	A,(SIZE_KNOWN)
@@ -591,6 +615,118 @@ WRITE_BLOCK
 	CALL	SUB_FILE_LEFT
 .written
 	OR	A
+	RET
+
+; If block 0 omitted the exact byte size, retain one block instead of writing
+; it immediately. Once another block arrives the retained one is known not to
+; be final and can be written in full. At EOT the final block is trimmed using
+; the Ymodem CPMEOF (0x1A) padding convention.
+QUEUE_UNKNOWN_BLOCK
+	LD	(CURRENT_UNKNOWN_LEN),DE
+	LD	A,(PENDING_UNKNOWN)
+	OR	A
+	JR	Z,.store_current
+	LD	DE,(PENDING_UNKNOWN_LEN)
+	LD	HL,ZM.TXDATA_BUF
+	CALL	WRITE_TRACKED
+	RET	C
+.store_current
+	LD	HL,ZM.DATA_BUF
+	LD	DE,ZM.TXDATA_BUF
+	LD	BC,(CURRENT_UNKNOWN_LEN)
+	LDIR
+	LD	HL,(CURRENT_UNKNOWN_LEN)
+	LD	(PENDING_UNKNOWN_LEN),HL
+	LD	A,1
+	LD	(PENDING_UNKNOWN),A
+	OR	A
+	RET
+
+FLUSH_UNKNOWN_LAST_BLOCK
+	LD	A,(PENDING_UNKNOWN)
+	OR	A
+	RET	Z
+	LD	DE,(PENDING_UNKNOWN_LEN)
+	LD	HL,ZM.TXDATA_BUF
+	LD	A,D
+	OR	E
+	JR	Z,.clear
+	ADD	HL,DE
+.trim
+	DEC	HL
+	LD	A,(HL)
+	CP	YM_PAD
+	JR	NZ,.write
+	DEC	DE
+	LD	A,D
+	OR	E
+	JR	NZ,.trim
+	JR	.clear
+.write
+	LD	HL,ZM.TXDATA_BUF
+	CALL	WRITE_TRACKED
+	RET	C
+	CALL	ZM.SHOW_PROGRESS
+.clear
+	XOR	A
+	LD	(PENDING_UNKNOWN),A
+	OR	A
+	RET
+
+; Write DE bytes from HL and account them in the displayed file position.
+WRITE_TRACKED
+	LD	(WRITE_COUNT),DE
+	LD	A,D
+	OR	E
+	RET	Z
+	CALL	WIFI.UART_RX_PAUSE
+	LD	A,(ZM.FH)
+	LD	C,DSS_WRITE
+	RST	DSS
+	JR	NC,.ok
+	LD	A,YM_ERR_FILE
+	LD	(ABORT_REASON),A
+	SCF
+	RET
+.ok
+	LD	DE,(WRITE_COUNT)
+	CALL	ZM.ADD_FPOS
+	OR	A
+	RET
+
+; A known metadata size must reach exactly zero before EOT. Without this check
+; a truncated archive was reported as OK and only failed at its final member.
+CHECK_FILE_COMPLETE
+	LD	A,(SIZE_KNOWN)
+	OR	A
+	RET	Z
+	LD	HL,(FILE_LEFT)
+	LD	A,H
+	OR	L
+	JR	NZ,.incomplete
+	LD	HL,(FILE_LEFT+2)
+	LD	A,H
+	OR	L
+	RET	Z
+.incomplete
+	LD	A,YM_ERR_SIZE
+	LD	(ABORT_REASON),A
+	SCF
+	RET
+
+; Preserve DSS_CLOSE_FILE status: ZM.CLOSE_OUTPUT intentionally ignores it for
+; cleanup paths, but a successful Ymodem receive must not hide a flush error.
+CLOSE_RECEIVED_FILE
+	LD	A,(ZM.FH_OPEN)
+	OR	A
+	RET	Z
+	LD	A,(ZM.FH)
+	LD	C,DSS_CLOSE_FILE
+	RST	DSS
+	PUSH	AF
+	XOR	A
+	LD	(ZM.FH_OPEN),A
+	POP	AF
 	RET
 
 SUB_FILE_LEFT
@@ -799,6 +935,7 @@ MSG_ABORT_CANCEL DB "Ymodem aborted: receiver cancelled.",0
 MSG_ABORT_NAK	DB "Ymodem aborted: receiver rejected the block.",0
 MSG_ABORT_TX	DB "Ymodem aborted: UART send timeout.",0
 MSG_ABORT_FILE	DB "Ymodem aborted: file read/write error.",0
+MSG_ABORT_SIZE	DB "Ymodem aborted: file ended before advertised size.",0
 
 RX_BLOCK	DB 0
 EXPECT_BLOCK	DB 0
@@ -816,6 +953,9 @@ RX_CRC		DW 0
 FILE_LEFT	DS 4,0
 SIZE_OLD	DS 4,0
 WRITE_COUNT	DW 0
+PENDING_UNKNOWN DB 0
+PENDING_UNKNOWN_LEN DW 0
+CURRENT_UNKNOWN_LEN DW 0
 TX_COUNT	DW 0
 PACKET_START	DB 0
 PACKET_PTR	DW 0

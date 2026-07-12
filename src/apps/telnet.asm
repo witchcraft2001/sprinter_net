@@ -355,6 +355,7 @@ HANDLE_KEY
 .HANDLED
 	OR	1				; ZF=0 (key handled), CF=0
 	RET
+
 .NO_KEY
 	XOR	A				; ZF=1 (no key), CF=0
 	RET

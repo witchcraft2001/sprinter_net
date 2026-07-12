@@ -26,10 +26,14 @@ GETTING STARTED
   1. Unpack the package to C:\WIFI and switch to it:
          C:
          CD \WIFI
-  2. Configure Wi-Fi (once):       NETCFG /W
+  2. Add the package directory to PATH in C:\SYSTEM.BAT so the tools can be
+     run from any directory. Add this line, preserving the existing PATH:
+         SET PATH=%PATH%;C:\WIFI
+     Reboot DSS or run C:\SYSTEM.BAT once to apply the change.
+  3. Configure Wi-Fi (once):       NETCFG /W
          your SSID and password, DHCP=1, BAUD=115200
-  3. Bring the connection up:      NETUP
-  4. Check connectivity:           PING 8.8.8.8
+  4. Bring the connection up:      NETUP
+  5. Check connectivity:           PING 8.8.8.8
 
   Full quick-start guide ..... see DOCS\HOWTO.TXT
   Per-tool help .............. DOCS\<NAME>.TXT  or  <NAME> /?

@@ -9,8 +9,14 @@ What you need
   - The name and password of your Wi-Fi network.
 
 1. Install
-  Unpack the package to C:\WIFI (or use the preinstalled copy). Then add C:\WIFI
-  to PATH and switch to it before running the tools:
+  Unpack the package to C:\WIFI (or use the preinstalled copy). Add the package
+  directory to PATH in C:\SYSTEM.BAT so all tools can be run from any location.
+  Add this line without removing the existing PATH entries:
+
+      SET PATH=%PATH%;C:\WIFI
+
+  Reboot DSS or run C:\SYSTEM.BAT once to apply the change. Then switch to the
+  package directory for the initial configuration:
 
       C:
       CD \WIFI
