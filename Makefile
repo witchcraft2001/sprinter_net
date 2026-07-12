@@ -11,4 +11,4 @@ image:
 
 clean:
 	rm -rf build
-	rm -f distr/sprinter-net.zip distr/sprinter-net.img
+	rm -f distr/sprinter-net.zip distr/sprinter-esp_v.*.zip distr/sprinter-net.img

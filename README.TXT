@@ -7,7 +7,7 @@
 ================================================================
   Sprinter ESP Network Kit
   Network utility package for Sprinter DSS and the SprinterESP
-  Wi-Fi card (ESP12-F / ESP8266, ESP-AT firmware).   Version 0.1
+  Wi-Fi card (ESP12-F / ESP8266, ESP-AT firmware). Version 0.1.1
 ================================================================
 
 Utilities that put Sprinter on the network through the

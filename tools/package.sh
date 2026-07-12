@@ -19,15 +19,28 @@ fi
 "$script_dir/build.sh"
 
 package_root="$repo_root/build/package/$DIST_NAME"
-zip_path="$repo_root/distr/$DIST_NAME.zip"
+version_file="$repo_root/VERSION"
+
+if [ ! -f "$version_file" ]; then
+  echo "Error: VERSION file not found" >&2
+  exit 1
+fi
+
+package_version="$(tr -d '\r\n' < "$version_file")"
+if ! [[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: VERSION must use major.minor.patch format, got: $package_version" >&2
+  exit 1
+fi
+
+zip_path="$repo_root/distr/sprinter-esp_v.$package_version.zip"
 
 mkdir -p "$repo_root/distr" "$repo_root/build/package"
+rm -f "$repo_root/distr/$DIST_NAME.zip"
 rm -rf "$package_root"
 mkdir -p "$package_root"
 
 copy_optional_file() {
   local rel_path="$1"
-  local dest_name="${2:-}"
   local src="$repo_root/$rel_path"
 
   if [ ! -f "$src" ]; then
@@ -35,12 +48,8 @@ copy_optional_file() {
     return
   fi
 
-  if [ -n "$dest_name" ]; then
-    cp "$src" "$package_root/$dest_name"
-  else
-    mkdir -p "$package_root/$(dirname "$rel_path")"
-    cp "$src" "$package_root/$rel_path"
-  fi
+  mkdir -p "$package_root/$(dirname "$rel_path")"
+  cp "$src" "$package_root/$rel_path"
 }
 
 is_zip_excluded_app() {
@@ -86,7 +95,6 @@ for rel_path in "${DIST_DOC_CP866_FILES[@]}"; do
 done
 
 for rel_path in "${DIST_CONFIG_FILES[@]}"; do
-  # config/NETSMPL.CFG already has an 8.3-valid basename, so copy it verbatim.
   copy_optional_file "$rel_path"
 done
 
@@ -94,8 +102,20 @@ for rel_path in "${DIST_EXTRA_FILES[@]}"; do
   copy_optional_file "$rel_path"
 done
 
+while IFS= read -r -d '' entry; do
+  rel_path="${entry#$package_root/}"
+  IFS=/ read -r -a path_parts <<< "$rel_path"
+  for part in "${path_parts[@]}"; do
+    upper_part="$(printf '%s' "$part" | tr '[:lower:]' '[:upper:]')"
+    if ! [[ "$upper_part" =~ ^[A-Z0-9_]{1,8}(\.[A-Z0-9_]{1,3})?$ ]]; then
+      echo "Error: ZIP distribution name is not 8.3: $rel_path" >&2
+      exit 1
+    fi
+  done
+done < <(find "$package_root" -mindepth 1 -print0)
+
 rm -f "$zip_path"
-cd "$repo_root/build/package"
-zip -qr "$zip_path" "$DIST_NAME"
+cd "$package_root"
+zip -qr "$zip_path" ./*
 
 echo "Created $zip_path"
