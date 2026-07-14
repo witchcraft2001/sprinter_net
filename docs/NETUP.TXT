@@ -1,8 +1,7 @@
 NETUP.EXE - Bring the network up
 
 Purpose
-  Initializes the SprinterESP / Sprinter-WiFi UART path, configures the ESP-AT
-  module for station mode, applies NET.CFG settings and connects to Wi-Fi.
+  Applies NET.CFG settings and connects SprinterESP / Sprinter-WiFi to Wi-Fi.
 
 Usage
   NETUP.EXE
@@ -20,65 +19,15 @@ Behavior
   works when NETUP.EXE is started through PATH while another directory is
   current. Keep the runtime configuration beside NETUP.EXE.
 
-  NETUP prefers ESP-AT _CUR commands so normal operation changes only the
-  current ESP session and does not write settings to ESP flash. Legacy commands
-  are used only as fallback.
-
   DHCP is enabled when DHCP=1. Static IP, gateway and netmask are applied when
-  DHCP=0. DNS settings are optional because ESP-AT firmware variants differ.
+  DHCP=0.
 
   BAUD controls the UART speed used by automated tools. Supported values are
-  230400, 115200, 57600, 38400, 19200 and 9600. 230400 is valid for the
-  TL16C550C/14.7456 MHz UART clock, but should be treated as a fast
-  hardware-test mode until verified on your card. Use 57600 or 38400 if
-  115200 loses bytes on your setup.
-  BAUD=115200 is the ESP reset default, so NETUP does not send AT+UART_CUR in
-  this case. This avoids breaking modules or emulators that do not reliably
-  accept runtime UART flow-control changes.
-  When BAUD is not 115200, NETUP verifies the new speed by switching the local
-  16550 UART to the configured divisor and sending AT again. If verification
-  fails, NETUP exits with an ESP communication error instead of leaving later
-  tools configured for a speed that ESP did not accept.
+  230400, 115200, 57600, 38400, 19200 and 9600. Use 57600 or 38400 if 115200
+  loses bytes on your setup.
 
-  After applying UART settings, NETUP queries AT+UART_CUR? and prints the
-  current ESP UART configuration. The last value must be 3 for hardware
-  RTS/CTS flow control. For example: +UART_CUR:115200,8,1,0,3.
-  NETUP only uses AT+UART_CUR for runtime UART changes and does not use
-  persistent UART commands such as AT+UART_DEF or legacy AT+UART. If ESP rejects
-  the RTS/CTS form of AT+UART_CUR, NETUP resets the module and tries the same
-  speed without ESP-side flow control. If neither form verifies at the requested
-  speed, NETUP resets ESP back to 115200 and reports a fatal communication
-  error instead of leaving the UART link half-switched.
-
-Environment variables
-  After a successful bring-up, NETUP publishes the connection parameters to DSS
-  environment variables (function ENVIRON #46), so other programs can read them
-  for the rest of the session without re-querying the ESP. This mirrors the
-  rtl8019as package. The variables are:
-
-  Names match the rtl8019as package so programs read the same variables on
-  either card. NET=WIFI is this package's network-type marker; NET_BAUD and
-  NET_SSID are Wi-Fi-specific additions.
-
-    NET         Network type marker. Always WIFI for this package.
-    NET_ESP_HW  ESP card location: ISA slot + UART I/O base, "S/#HHH" form
-                (e.g. 1/#3E8), same format as the rtl8019as NET_RTL_HW
-                variable (ESP = the card; WIFI is only the link type).
-    NET_IP_SRC  STATIC or DHCP        (from NET.CFG).
-    NET_IP      Station IP address   (from AT+CIFSR).
-    NET_MASK    Network mask         (from AT+CIPSTA).
-    NET_GW      Gateway address      (from AT+CIPSTA).
-    NET_MAC     Station MAC address  (from AT+CIFSR).
-    NET_DNS1    Primary DNS          (from NET.CFG).
-    NET_DNS2    Secondary DNS        (from NET.CFG).
-    NET_NTP     NTP server           (from NET.CFG).
-    NET_TZ      Timezone             (from NET.CFG).
-    NET_BAUD    UART speed           (from NET.CFG).
-    NET_SSID    Wi-Fi SSID           (from NET.CFG).
-
-  A parameter that is unavailable (e.g. the ESP did not report it, or the
-  NET.CFG field is empty) is written empty, which deletes that variable.
-  Publishing is best-effort and never fails the bring-up.
+  After a successful connection, the package utilities can use the current
+  network settings until DSS is restarted.
 
 Exit status
   0  Network bring-up completed.

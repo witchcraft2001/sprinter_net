@@ -25,8 +25,7 @@ Output
 
   If the output file already exists, WGET asks: [R]esume / [O]verwrite /
   [C]ancel. Use -y (or -f) to overwrite without asking, or -r to resume
-  (append) without asking - handy in batch files. This matches the RTL8019AS
-  network kit command-line style.
+  (append) without asking - handy in batch files.
 
   If the URL does not start with http://, WGET treats it as a plain HTTP URL
   and prints a warning that http:// was assumed.
@@ -43,32 +42,16 @@ Current limitations
   Chunked transfer and gzip content are detected and reported as unsupported.
   Unsupported responses print the received HTTP status line when it is present.
 
-Testing notes
-  WGET uses ESP-AT active +IPD receive. The target ESP-AT V2.2.1 firmware used
-  by SprinterESP does not expose AT+CIPRECVMODE or AT+CIPRECVDATA, so passive
-  TCP receive must not be assumed.
-  The receive buffer is 16 KB and kept below the 0xC000 ISA window. This lets
-  WGET drain several active +IPD frames from UART before doing slow DSS file
-  writes, reducing the chance that ESP-AT closes the TCP stream before WGET has
-  consumed the final bytes.
-
+Transfer reliability
   When a Content-Length header is present, WGET verifies that the downloaded
   body size matches it. If the TCP connection closes before the expected body
   length is reached, WGET retries the same URL with an HTTP Range request
   (Range: bytes=<downloaded>-) and appends the missing tail to the same output
   file. Range retries require an HTTP 206 response; a server that ignores Range
   is rejected instead of appending a duplicate full file.
-  WGET depends on TCP receive behavior and is currently the most sensitive tool
-  when running under MAME with jesperl. Prefer a local HTTP server known to
-  return a simple HTTP/1.0-compatible response while debugging.
-  If WGET prints "UART overrun detected", the 16550 UART reported lost input
-  bytes. The downloaded file must be treated as corrupted; lower BAUD, run
-  NETUP again, and check that NETUP reports UART flow control value 3.
-  The TCP core is expected to preserve +IPD payloads that are larger than the
-  WGET receive buffer and return them across multiple receive calls.
-  WGET keeps its receive buffer below the 0xC000 memory window because DSS file
-  writes switch memory pages internally. Buffers crossing that boundary may
-  produce files with correct size but corrupted zero-filled blocks.
+
+  If WGET prints "UART overrun detected", input data were lost. Download the
+  file again after lowering BAUD and running NETUP.
 
 Exit status
   0  File body downloaded.

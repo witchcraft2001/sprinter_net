@@ -3,9 +3,8 @@ FTP.EXE - FTP passive file transfer and directory listing
 
 Purpose
 -------
-  Opens an FTP control connection through SprinterESP, logs in, enters passive
-  mode and downloads a remote file with RETR or uploads a local file with STOR.
-  Directory listing is available explicitly with LIST or NLST flags.
+  Downloads or uploads files through an FTP server. Directory listing is
+  available with the -l and -n flags.
 
 Usage
 -----
@@ -24,8 +23,8 @@ Flags
   When the local file exists, FTP asks [R]esume / [O]verwrite / [C]ancel;
   -y (or -f) forces overwrite and -r forces resume, with no prompt.
 
-Run NETUP first. FTP.EXE does not join Wi-Fi by itself; it only opens the
-FTP control connection after the shared ESP/UART configuration is ready.
+Run NETUP first. FTP.EXE uses the active network connection and does not join
+Wi-Fi by itself.
 
 Examples
 --------
@@ -38,35 +37,12 @@ Examples
   FTP.EXE 192.168.1.36:2121 -l -u test -p secret
   FTP.EXE ftp.example.org / -l -u anonymous -p anonymous@
 
-What It Does
-------------
-  1. Initializes the Sprinter-WiFi UART using NET.CFG.
-  2. Applies the configured ESP UART speed and RTS/CTS flow control.
-  3. Uses ESP-AT multi-connection mode with AT+CIPMUX=1.
-  4. Opens the FTP control TCP connection as link 0.
-  5. Reads and prints FTP reply lines.
-  6. Sends USER, PASS if needed, TYPE I and PASV.
-  7. Parses the 227 passive endpoint and prints host:port.
-  8. Opens the passive data TCP connection as link 1.
-  9. Sends RETR file, STOR file, LIST path, or NLST path.
-  10. Transfers file data or prints directory listing.
-      For downloads, if the local output exists, asks before overwriting. Use
-      -y to overwrite without prompting.
-  11. Sends QUIT and closes the control connection.
-
 Current Limits
 --------------
-  - file download is implemented with RETR;
-  - file upload is implemented with STOR;
-  - directory listing modes are implemented with explicit -l and -n flags;
-  - FTP.EXE uses the same flag style as the RTL8019AS network kit for the
-    implemented GET/PUT/listing modes;
+  - FTP works in passive mode;
   - password is passed on the command line;
-  - use a simple test FTP server first.
 
-If startup fails with ESP communication error #1/#4 before "Connecting to",
-the failure is in ESP-AT/UART initialization, not in the FTP server. Run
-NETRESET, NETUP, then retry FTP.EXE.
+If FTP cannot start, run NETRESET, NETUP, then retry the command.
 
 Exit Codes
 ----------

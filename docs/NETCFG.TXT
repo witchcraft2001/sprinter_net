@@ -27,7 +27,8 @@ Important fields
   GATEWAY    Static gateway when DHCP=0.
   NETMASK    Static netmask when DHCP=0.
   DNS1/DNS2  DNS servers.
-  TZ/NTP     Reserved for future time tools.
+  TZ         Time zone offset for NTP.EXE, for example +6 or +5:30.
+  NTP        Time server for NTP.EXE.
   BAUD       UART speed after NETUP configures ESP. Supported values:
              230400, 115200, 57600, 38400, 19200, 9600.
 

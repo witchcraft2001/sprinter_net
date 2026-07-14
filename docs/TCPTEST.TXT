@@ -1,8 +1,8 @@
 TCPTEST.EXE - TCP smoke test
 
 Purpose
-  Opens a TCP connection through ESP-AT and prints a short HTTP response. This
-  verifies that basic TCP open/send/receive works after NETUP.
+  Opens a TCP connection and prints a short HTTP response. Use it to check the
+  connection after NETUP.
 
 Notes
   TCPTEST is a smoke test, not a downloader. Console output is intentionally
@@ -26,12 +26,8 @@ Typical sequence
   TCPTEST.EXE
 
 Role
-  TCPTEST is a diagnostic utility. It is useful before testing higher-level
-  clients such as WGET, FTP, TFTP or IRC.
-
-  It builds a simple HTTP/1.0 GET request and prints a limited number of
-  receive blocks to the console. Use a small local HTTP file when checking
-  emulator pacing or UART receive reliability.
+  TCPTEST is a diagnostic utility, not a downloader. It is useful before using
+  WGET, FTP or TFTP.
 
 Exit status
   0  Test completed.

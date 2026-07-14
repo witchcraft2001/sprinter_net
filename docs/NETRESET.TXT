@@ -8,7 +8,7 @@ Usage
   NETRESET.EXE
 
 When to use
-  Use NETRESET when the ESP-AT stream is confused, after manual WTERM testing,
+  Use NETRESET when the ESP-AT stream is confused, after a manual WTERM session,
   or before repeating diagnostics after a failed network command.
 
 Typical recovery sequence
@@ -22,10 +22,4 @@ Exit status
   2  Sprinter-WiFi hardware was not found.
   3  ESP communication error.
 
-Notes
-  In MAME with jesperl, some emulator-side TCP operations may block the emulator
-  process. In that case NETRESET may not get an answer until jesperl finishes
-  the pending host-side operation.
-
-  NETRESET is a recovery tool and uses the default ESP startup UART speed
-  115200 after reset. Run NETUP again to apply BAUD from NET.CFG.
+After NETRESET, run NETUP again before using network utilities.

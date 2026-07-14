@@ -1,7 +1,7 @@
 NTP.EXE - network time setup
 
 Purpose
-  Configures ESP-AT SNTP and sets the DSS system time from the ESP response.
+  Gets the current network time and sets the DSS system clock.
 
 Usage
   NTP.EXE
@@ -9,30 +9,12 @@ Usage
 Configuration
   NTP reads these values from NET.CFG:
 
-  TZ   Time zone offset used by ESP SNTP, for example +6.
-  NTP  SNTP server name, for example pool.ntp.org.
+  TZ   Time zone offset, for example +6, +5:30 or -3:30.
+  NTP  Time server name, for example pool.ntp.org.
 
 Typical sequence
   NETUP.EXE
   NTP.EXE
-
-Notes
-  NTP uses ESP-AT commands:
-
-  AT+CIPSNTPCFG=1,<tz>,"server"
-  AT+CIPSNTPTIME?
-
-  The response must contain a line like:
-
-  +CIPSNTPTIME:Wed Apr 29 09:49:36 2026
-
-  Current MAME/jesperl builds may not support these commands yet. If NTP.EXE
-  reports that SNTP is unsupported in the emulator, test on real ESP-AT
-  firmware or update jesperl according to the project emulator requirements.
-
-  If the ESP command succeeds but the time line cannot be parsed, NTP prints the
-  raw ESP response after the error. Use that output to distinguish missing
-  emulator support, an unexpected ESP-AT response format or a time sync failure.
 
 Exit status
   0  Time was received and DSS SETTIME succeeded.

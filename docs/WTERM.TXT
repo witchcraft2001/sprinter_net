@@ -2,7 +2,7 @@ WTERM.EXE - ESP-AT terminal
 
 Purpose
   Opens an interactive terminal for manual ESP-AT commands through the
-  SprinterESP / Sprinter-WiFi UART path.
+  SprinterESP / Sprinter-WiFi card.
 
 Usage
   WTERM.EXE
@@ -12,8 +12,7 @@ Controls
   Use Alt+X to exit the terminal.
 
 Typical use
-  WTERM is useful when checking firmware behavior, trying commands that are not
-  yet wrapped by a network kit utility, or comparing real hardware with jesperl.
+  WTERM is useful for commands that are not available as separate utilities.
 
 After use
   Run NETRESET.EXE before automated utilities if the ESP stream looks confused

@@ -1,9 +1,7 @@
 TFTP.EXE - TFTP client
 
 Purpose
-  Downloads or uploads one file through a TFTP server over ESP-AT UDP. This is
-  a minimal RFC 1350 RRQ/WRQ implementation intended to validate the UDP core
-  before adding protocol options.
+  Downloads or uploads one file through a TFTP server.
 
 Usage
   TFTP.EXE host[:port] GET remote-file [-o local-name] [-y|-f]
@@ -24,41 +22,11 @@ Typical sequence
   NETUP.EXE
   TFTP.EXE 192.168.1.36 GET test.bin -o TEST.BIN -y
 
-Testing with macOS
-  macOS includes a TFTP server. Put test files into /private/tftpboot and
-  start the system daemon from Terminal:
-
-    sudo mkdir -p /private/tftpboot
-    sudo cp test.bin /private/tftpboot/test.bin
-    sudo chmod 644 /private/tftpboot/test.bin
-    sudo launchctl load -w /System/Library/LaunchDaemons/tftp.plist
-
-  Then run from DSS:
-
-    TFTP.EXE 192.168.1.36 GET test.bin -o TEST.BIN -y
-
-  For upload tests, many TFTP servers require the destination file to exist
-  and be writable before WRQ is accepted:
-
-    sudo touch /private/tftpboot/upload.bin
-    sudo chmod 666 /private/tftpboot/upload.bin
-
-  Then run from DSS:
-
-    TFTP.EXE 192.168.1.36 PUT TEST.BIN -o upload.bin
-
-  Stop the macOS server after testing:
-
-    sudo launchctl unload -w /System/Library/LaunchDaemons/tftp.plist
-
 Notes
   Without -o, GET saves to the basename of remote-file and PUT sends the
   basename of local-file as the remote filename. If GET output already exists,
   TFTP asks for overwrite confirmation. Use -y (or -f) to overwrite without
-  prompting, matching the RTL8019AS network kit command-line style.
-
-  The client opens ESP-AT UDP mode 2. This is required because a TFTP server
-  normally replies from a transfer-specific UDP port instead of port 69.
+  prompting.
 
   Current limitations:
   - octet mode only;

@@ -4,8 +4,7 @@ Sprinter ESP Network Kit - Quick Start (HOWTO)
 What you need
   - Sprinter DSS with the SprinterESP / Sprinter-Wi-Fi card (ESP8266, ESP-AT).
   - ESP-AT firmware version 2.2.1. This is the only tested version; other
-    versions are not guaranteed. Check it with NETPROBE (the AT+GMR line) or
-    by typing AT+GMR in WTERM.
+    versions are not guaranteed. Check it with NETPROBE.
   - The name and password of your Wi-Fi network.
 
 1. Install
@@ -37,8 +36,7 @@ What you need
       NETUP
 
   On success it prints the assigned IP (for example 192.168.1.138) and
-  "NETUP done", and publishes NET_* environment variables (NET=WIFI, NET_IP,
-  NET_GW, ...) for other programs.
+  "NETUP done". The package utilities can then use the active connection.
 
 4. Check that it works
       PING 8.8.8.8
@@ -81,5 +79,5 @@ Tips
 
 More detail
   README.TXT   - overview, full command list, batch examples.
-  USAGE.TXT    - full reference, config keys, workflow, exit codes.
+  USAGE.MD     - full reference, config keys, workflow, exit codes.
   <TOOL>.TXT   - one page per tool (NETUP.TXT, WGET.TXT, FTP.TXT, ...).
