@@ -75,6 +75,8 @@ EXAMPLES  (EXAMPLES\ directory)
 -------------------------------
   TFTPGET.BAT   receive a file over TFTP
   TFTPPUT.BAT   send a file over TFTP
+  WGETTRD.BAT   download KLAD026.ZIP from tr-dos.ru
+  FTPLIST.BAT   show an FTP directory listing
 
   CONNECT.BAT   bring the connection up and test it (package root)
 

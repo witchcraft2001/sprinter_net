@@ -73,4 +73,6 @@ DIST_EXTRA_FILES=(
   CONNECT.BAT
   examples/TFTPGET.BAT
   examples/TFTPPUT.BAT
+  examples/WGETTRD.BAT
+  examples/FTPLIST.BAT
 )

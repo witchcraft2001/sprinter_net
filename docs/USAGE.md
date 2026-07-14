@@ -147,6 +147,8 @@ Bundled batch examples:
 - `CONNECT.BAT` runs `NETRESET.EXE`, `NETUP.EXE` and `PING.EXE 8.8.8.8`.
 - `TFTPGET.BAT` and `TFTPPUT.BAT` show TFTP download/upload forms for
   `192.168.1.36`.
+- `WGETTRD.BAT` downloads `KLAD026.zip` from tr-dos.ru.
+- `FTPLIST.BAT` shows a directory listing on an FTP server at `192.168.1.1`.
 
 Use this order when something is stuck:
 
