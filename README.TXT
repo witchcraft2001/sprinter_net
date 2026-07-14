@@ -73,9 +73,10 @@ CONFIGURATION  (CONFIG\ directory)
 
 EXAMPLES  (EXAMPLES\ directory)
 -------------------------------
-  CONNECT.BAT   bring the connection up and test it
   TFTPGET.BAT   receive a file over TFTP
   TFTPPUT.BAT   send a file over TFTP
+
+  CONNECT.BAT   bring the connection up and test it (package root)
 
 
 OTHER

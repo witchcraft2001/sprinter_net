@@ -70,7 +70,7 @@ DIST_CONFIG_FILES=(
 # runtime files that are neither docs nor configs.
 DIST_EXTRA_FILES=(
   VERSION
-  examples/CONNECT.BAT
+  CONNECT.BAT
   examples/TFTPGET.BAT
   examples/TFTPPUT.BAT
 )
