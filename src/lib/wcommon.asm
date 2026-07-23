@@ -14,11 +14,14 @@ ENABLE_RTS_CTR	EQU 1
 	MODULE WCOMMON
 
 ; ------------------------------------------------------
-; Ckeck for error (CF=1) print message and exit
+; Check UART result (A=RES_*): print message and exit when A is non-zero.
+; UART_TX_CMD also mirrors this state in Carry, but testing A keeps this
+; handler correct for callers which preserve only the documented result code.
 ; ------------------------------------------------------
 	;;IFUSED CHECK_ERROR
 CHECK_ERROR
-	RET		NC
+	OR		A
+	RET		Z
 	ADD		A,'0'
 	LD		(COMM_ERROR_NO), A
 	PRINTLN	MSG_COMM_ERROR

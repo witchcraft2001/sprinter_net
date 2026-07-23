@@ -491,7 +491,9 @@ ESP_RESET
 ;	Inp: HL - ptr to command, 
 ;		 DE - ptr to receive buffer, 
 ;		 BC - wait ms
-;	Out: CF=1 if Error
+;	Out: A = RES_* result, CF=1 exactly when A is non-zero.
+;	      Both forms are part of the contract: old callers commonly test A,
+;	      while the SEND_CMD macro tests Carry through WCOMMON.CHECK_ERROR.
 ; ------------------------------------------------------
 	;IFUSED	UART_TX_CMD
 UART_TX_CMD
@@ -529,6 +531,8 @@ UTC_RCV_NXT
 	CALL	UART_WAIT_RS1_INT
 	JR		NC, UTC_NO_RT
 	; error, read timeout
+	XOR		A
+	LD		(DE),A								; preserve a safe ASCIIZ partial response
 	LD		A, RES_RS_TIMEOUT
 	JR		UTC_RET
 	; no receive timeout
@@ -585,6 +589,9 @@ UTC_RET
 	CALL	ISA.ISA_CLOSE
 UTC_RET_NO_CLOSE
 	POP		HL, DE, BC
+	OR		A							; CF=0 for RES_OK
+	RET		Z
+	SCF								; CF=1 for every RES_* error
 	RET
 	;ENDIF
 
