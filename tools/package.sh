@@ -79,6 +79,16 @@ for app in "${BUILD_APPS[@]}"; do
   fi
 done
 
+for dll in "${BUILD_DLLS[@]}"; do
+  upper="$(printf '%s' "$dll" | tr '[:lower:]' '[:upper:]')"
+  dll_path="$repo_root/build/$upper.DLL"
+  if [ -f "$dll_path" ]; then
+    cp "$dll_path" "$package_root/$upper.DLL"
+  else
+    echo "Warning: build/$upper.DLL not found, skipping" >&2
+  fi
+done
+
 for rel_path in "${DIST_DOC_FILES[@]}"; do
   copy_optional_file "$rel_path"
 done

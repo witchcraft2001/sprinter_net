@@ -11,3 +11,4 @@
 *.sna
 specs.md
 test/
+.claude/

@@ -207,6 +207,22 @@ Current utility-specific notes:
   invalid command line, `2` when hardware is not found, `3` on ESP/TCP
   communication errors, `4` on FTP server errors and `5` for local DSS file
   errors.
+- `UNETTEST.EXE` (diagnostic; ships on the floppy, not the ZIP) returns `0`
+  after the full DLL walk, `1` for invalid command line, `2` when hardware is
+  not found or the DLL cannot load, `3` on communication/connect/send errors
+  and `4` when the network is not configured.
+
+## UNET network DLL
+
+`UNETESP.DLL` exposes the network stack as a libman 1.3 / L1 dynamic library so
+programs written in asm, C or Pascal can do TCP, UDP, resolve and ping through
+one backend-agnostic interface (the same contract a future `UNETRTL.DLL` will
+implement for the RTL8019A card). Bring the network up first (`NETUP`), then a
+consumer loads the DLL with libman and calls the numbered functions. The full
+contract - function numbers, register ABI, error and capability codes, and the
+window/buffer rules - is in `UNETAPI.TXT` (`docs/UNETAPI.md`); the asm include
+`src/include/unet.inc` and the C/Pascal bindings under `bindings/` are the
+starting points for a consumer. `UNETTEST.EXE` is a ready smoke-test consumer.
 
 Current `WGET.EXE` limitations:
 

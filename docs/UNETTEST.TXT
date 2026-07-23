@@ -1,0 +1,44 @@
+UNETTEST.EXE - Universal network DLL smoke test
+
+Purpose
+  Exercises a UNET network DLL (UNETESP.DLL for Sprinter-WiFi, or a UNETRTL.DLL
+  for the RTL8019A card) through libman. Because every step goes through the
+  DLL, the same tool validates either backend - the network card is chosen by
+  the DLL name, not by rebuilding.
+
+  UNETTEST is a diagnostic tool. It is shipped on the floppy image but not in
+  the ZIP package.
+
+Usage
+  UNETTEST [-d FILE.DLL] [host [port]]
+
+  -d FILE.DLL   Load this DLL instead of the default UNETESP.DLL.
+  host          Host name or IP address to test (default example.com).
+  port          TCP port for the connect/send/receive step (default 80).
+
+  An unknown flag, or -d without a file name, prints this usage line and
+  exits with status 1.
+
+Examples
+  UNETTEST example.com
+  UNETTEST -d UNETRTL.DLL 192.168.1.10 80
+  UNETTEST example.com 80
+
+Behavior
+  Brings up nothing itself - run NETUP (Sprinter-WiFi) or NETCFG -i / IFUP
+  (RTL) first. UNETTEST then loads the DLL into window 1 and walks the API:
+  library info, capabilities, network status, NETINIT, station IP, host
+  resolve (may report "unsupported" on firmware/emulator without CIPDOMAIN),
+  ping, TCP connect, an HTTP HEAD request and a short reply read, then close
+  and unload. It prints each result so a failing step is easy to spot.
+
+Exit status
+  0  The full sequence completed.
+  1  Invalid command line.
+  2  Network hardware not found, or the DLL could not be loaded.
+  3  ESP/driver communication, connect or send error.
+  4  Network not configured - run NETUP (or NETCFG -i / IFUP) first.
+
+Notes
+  The full DLL contract (function numbers, register ABI, error and capability
+  codes, window and buffer rules) is documented in UNETAPI.TXT.
