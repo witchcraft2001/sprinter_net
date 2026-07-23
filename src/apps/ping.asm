@@ -59,11 +59,23 @@ START
 	CALL	WIFI.UART_INIT
 	PRINTLN MSG_UART_READY
 
-	LD	HL,CMD_AT
-	CALL	SEND_CMD_RECOVER
+	; NETUP uses session-only Wi-Fi settings. A diagnostic must not reset ESP:
+	; that would invalidate NET_* and turn a transient UART probe into a lost
+	; association. Retry only the harmless AT probe.
+	CALL	WCOMMON.SYNC_ESP_COMMAND
+	AND	A
+	JP	NZ,COMMAND_ERROR_EXIT
 
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
+
+	; Every executable owns the 16550 state. Mirror its AFE+RTS configuration
+	; on the ESP before network traffic, including the default 115200 baud.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JR	Z,.UART_FLOW_OK
+	JP	COMMAND_ERROR_EXIT
+.UART_FLOW_OK
 
 	PRINT MSG_PINGING
 	PRINT HOST_BUFF
@@ -218,38 +230,29 @@ PARSE_HOST
 ; Send command in HL with default timeout.
 ; ------------------------------------------------------
 SEND_CMD
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
+	CALL	SEND_CMD_STATUS
 	AND	A
 	RET	Z
+	JP	COMMAND_ERROR_EXIT
+
+; Send command in HL with default timeout.
+; Out: A = RES_* result, zero on ESP OK.
+SEND_CMD_STATUS
+	LD	DE,WIFI.RS_BUFF
+	LD	BC,DEFAULT_TIMEOUT
+	JP	WIFI.UART_TX_CMD
+
+; Print the actual ESP response before terminating a command-mode failure.
+; In: A = RES_* result, WIFI.RS_BUFF = complete or partial ESP response.
+COMMAND_ERROR_EXIT
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
 	LD	B,3
 	JP	WCOMMON.EXIT
-
-; ------------------------------------------------------
-; Send command in HL. Reset ESP once if it does not answer.
-; ------------------------------------------------------
-SEND_CMD_RECOVER
-	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
-	POP	HL
-	JP	SEND_CMD
-
-.OK
-	POP	HL
-	RET
 
 ; ------------------------------------------------------
 ; Build AT+PING command from HOST_BUFF.
@@ -365,6 +368,11 @@ PRINT_ESP_RESPONSE
 	LD	A,10
 	JP	PUT_CHAR
 
+PRINT_ESP_FAILURE
+	PRINTLN MSG_ESP_RESPONSE
+	LD	HL,WIFI.RS_BUFF
+	JP	PRINT_ESP_RESPONSE
+
 PRINT_DECIMAL_FIELD
 	LD	A,(HL)
 	CP	' '
@@ -424,8 +432,8 @@ MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 	DB "UART initialized.",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
+MSG_ESP_RESPONSE
+	DB "ESP response:",0
 MSG_PINGING
 	DB "Pinging ",0
 MSG_REPLY
@@ -446,8 +454,6 @@ MSG_COMM_ERROR
 MSG_ERROR_NO
 	DB "n!",0
 
-CMD_AT
-	DB "AT",13,10,0
 CMD_ECHO_OFF
 	DB "ATE0",13,10,0
 CMD_PING_PREFIX
@@ -460,6 +466,8 @@ LIT_BUSY
 	DB "busy",0
 LIT_TIMEOUT
 	DB "timeout",0			; ESP AT+PING failure indicator ("+timeout")
+LIT_TIMEOUT_UPPER
+	DB "TIMEOUT",0			; ESP-AT 2.2.2 form: "+PING:TIMEOUT"
 PING_DIGITS
 	DB 0
 PING_STATUS
@@ -481,6 +489,9 @@ RESP_IS_PING_TIMEOUT
 	CP	RES_RS_TIMEOUT
 	JR	Z,.YES				; no reply at all -> a timeout
 	LD	HL,LIT_TIMEOUT
+	CALL	RESP_CONTAINS
+	RET	C
+	LD	HL,LIT_TIMEOUT_UPPER
 	JP	RESP_CONTAINS			; CF per scan
 .YES
 	SCF
@@ -527,6 +538,7 @@ RESP_CONTAINS
 
 	ENDMODULE
 
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"

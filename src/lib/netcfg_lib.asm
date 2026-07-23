@@ -7,7 +7,14 @@
 
 	MODULE NETCFG
 
+; Most clients keep this parser buffer in WIN1. The forced 2.2.2 FTP backend
+; marks its include with NETCFG_COMPACT_BUFFER to retain its stack margin;
+; ordinary NET.CFG files are far smaller than either limit.
+	IFDEF	NETCFG_COMPACT_BUFFER
+CFG_BUFF_SIZE	EQU 1792
+	ELSE
 CFG_BUFF_SIZE	EQU 2048
+	ENDIF
 DSS_CREATE_OVERWRITE	EQU 0x0A
 
 ; ------------------------------------------------------

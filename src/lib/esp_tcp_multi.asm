@@ -148,6 +148,14 @@ START_SEND_BUFFER_LINK
 ;   dispatches by LAST_IPD_LINK.
 ; ------------------------------------------------------
 RECEIVE_ANY_LINK
+	; Passive receive is retained for an explicitly forced 2.2.2 diagnostic
+	; image. The universal executable uses the field-proven active path for
+	; both profiles until the control-channel passive parser is hardware-tested.
+	IFDEF	ESP_AT_FORCE_222
+	LD	A,(PASSIVE_RECEIVE_ENABLED)
+	AND	A
+	JP	NZ,RECEIVE_ANY_LINK_PASSIVE
+	ENDIF
 	LD	(RECV_PTR),HL
 	LD	(RECV_REMAIN),BC
 	LD	(RECV_TIMEOUT),DE
@@ -167,6 +175,323 @@ RECEIVE_ANY_LINK
 	CALL	READ_PAYLOAD
 .DONE
 	CALL	ISA.ISA_CLOSE
+	RET
+	; (No ENDIF here: the active body is shared by the 2.2.1 and universal
+	; branches after the optional passive jump above.)
+
+	; ------------------------------------------------------
+	; ESP-AT 2.2.2 passive receive backend.
+	;
+	; AT+CIPRECVMODE=1 makes +IPD report only the amount buffered by ESP.
+	; Read the advertised bytes with AT+CIPRECVDATA instead of accepting a
+	; full TCP burst straight into the 16550.  The ESP receive buffer then
+	; provides TCP backpressure while DSS is writing/printing a previous block.
+	; This code is selected only for a 2.2.2 profile.
+	; ------------------------------------------------------
+; ESP-AT does not report the next passive +IPD until the data announced by the
+; previous one has been read. Its documented socket buffer is 5760 bytes, and
+; FTP's WIN2 receive area is larger, so fetch the complete notification rather
+; than leaving a partial record that would stall the transfer.
+PASSIVE_READ_MAX	EQU 5760
+
+RECEIVE_ANY_LINK_PASSIVE
+	LD	(RECV_PTR),HL
+	LD	(RECV_REMAIN),BC
+	LD	(RECV_TIMEOUT),DE
+	LD	HL,0
+	LD	(RECV_STORED),HL
+	LD	(PAYLOAD_LEFT),HL
+
+	CALL	ISA.ISA_OPEN
+	CALL	WAIT_PASSIVE_IPD_OR_CLOSE
+	JR	C,.FAIL_OPEN
+	CALL	READ_PASSIVE_IPD_LINK_LEN
+	JR	C,.FAIL_OPEN
+	CALL	CHOOSE_PASSIVE_READ_LEN
+	JR	C,.FAIL_OPEN
+	CALL	ISA.ISA_CLOSE
+
+	CALL	BUILD_PASSIVE_READ_COMMAND
+	LD	HL,CMD_BUFFER
+	CALL	WIFI.UART_TX_STRING
+	JR	C,.TX_TIMEOUT
+
+	CALL	ISA.ISA_OPEN
+	CALL	WAIT_PASSIVE_DATA_HEADER
+	JR	C,.FAIL_OPEN
+	CALL	READ_PASSIVE_DATA_LEN
+	JR	C,.FAIL_OPEN
+	CALL	READ_PAYLOAD
+	JR	C,.FAIL_OPEN
+	; A partial CIPRECVDATA payload is a protocol error.  In particular, do
+	; not return partial bytes as a good FTP block and risk writing corruption.
+	LD	HL,(PAYLOAD_LEFT)
+	LD	A,H
+	OR	L
+	JR	NZ,.PROTOCOL_OPEN
+	CALL	WAIT_PASSIVE_RESULT_OPEN
+	JR	C,.FAIL_OPEN
+	CALL	ISA.ISA_CLOSE
+	LD	BC,(RECV_STORED)
+	XOR	A
+	RET
+
+.PROTOCOL_OPEN
+	LD	A,RES_ERROR
+	SCF
+.FAIL_OPEN
+	PUSH	AF
+	CALL	ISA.ISA_CLOSE
+	POP	AF
+	SCF
+	RET
+.TX_TIMEOUT
+	LD	A,RES_TX_TIMEOUT
+	SCF
+	RET
+
+; Parse the passive notification, which has no ':' or inline data:
+;     +IPD,<link>,<buffered-length>\r\n
+READ_PASSIVE_IPD_LINK_LEN
+	CALL	READ_DEC_FIELD
+	RET	C
+	LD	A,H
+	OR	L
+	JR	NZ,.ERROR
+	LD	A,L
+	LD	(LAST_IPD_LINK),A
+	LD	(PAYLOAD_LINK),A
+	LD	A,(IPD_DELIM)
+	CP	','
+	JR	NZ,.ERROR
+	CALL	READ_DEC_FIELD
+	RET	C
+	LD	(LAST_IPD_LEN),HL
+	LD	A,(IPD_DELIM)
+	CP	13
+	JR	NZ,.ERROR
+	; CR is already the complete passive +IPD delimiter. Do not block for LF:
+	; ESP-AT variants may emit it separately, and WAIT_PASSIVE_DATA_HEADER will
+	; harmlessly skip it while looking for the next response prefix.
+	XOR	A
+	RET
+.ERROR
+	LD	A,RES_ERROR
+	SCF
+	RET
+
+; Request no more than the caller can store and no more than a modest command
+; chunk. IPD_REMOTE_LEN retains that request until the reply header validates
+; its actual payload length.
+CHOOSE_PASSIVE_READ_LEN
+	LD	HL,(LAST_IPD_LEN)
+	LD	DE,(RECV_REMAIN)
+	OR	A
+	SBC	HL,DE
+	JR	NC,.REMAIN_SMALLER
+	LD	HL,(LAST_IPD_LEN)
+	JR	.LIMIT
+.REMAIN_SMALLER
+	LD	H,D
+	LD	L,E
+.LIMIT
+	LD	DE,PASSIVE_READ_MAX
+	OR	A
+	SBC	HL,DE
+	JR	NC,.MAX
+	ADD	HL,DE
+	JR	.HAVE_LEN
+.MAX
+	LD	H,D
+	LD	L,E
+.HAVE_LEN
+	LD	A,H
+	OR	L
+	JR	Z,.ERROR
+	LD	(IPD_REMOTE_LEN),HL
+	XOR	A
+	RET
+.ERROR
+	LD	A,RES_ERROR
+	SCF
+	RET
+
+BUILD_PASSIVE_READ_COMMAND
+	LD	HL,CMD_BUFFER
+	LD	DE,CMD_CIPRECVDATA_PREFIX
+	CALL	APPEND_STR
+	LD	A,(LAST_IPD_LINK)
+	CALL	APPEND_LINK_ID
+	LD	DE,CMD_COMMA
+	CALL	APPEND_STR
+	LD	HL,(IPD_REMOTE_LEN)
+	LD	DE,NUM_BUFFER
+	CALL	UTIL.UTOA
+	LD	DE,NUM_BUFFER
+	CALL	APPEND_STR
+	LD	DE,CMD_CRLF
+	JP	APPEND_STR
+
+WAIT_PASSIVE_DATA_HEADER
+	LD	IX,PASSIVE_DATA_PREFIX
+.NEXT
+	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
+	JR	C,.TIMEOUT
+	LD	E,A
+	LD	A,(IX+0)
+	CP	E
+	JR	NZ,.RESET
+	INC	IX
+	LD	A,(IX+0)
+	AND	A
+	RET	Z
+	JR	.NEXT
+.RESET
+	LD	IX,PASSIVE_DATA_PREFIX
+	LD	A,E
+	CP	'+'
+	JR	NZ,.NEXT
+	INC	IX
+	JR	.NEXT
+.TIMEOUT
+	LD	A,RES_RS_TIMEOUT
+	SCF
+	RET
+
+; Header format is "+CIPRECVDATA:<actual-length>,<raw-data>". Reject a
+; response longer than requested: otherwise it could overwrite RECV_BUFFER.
+READ_PASSIVE_DATA_LEN
+	CALL	READ_DEC_FIELD
+	RET	C
+	LD	A,(IPD_DELIM)
+	CP	','
+	JR	NZ,.ERROR
+	LD	(LAST_IPD_LEN),HL
+	LD	DE,(IPD_REMOTE_LEN)
+	OR	A
+	SBC	HL,DE
+	JR	C,.GOOD
+	LD	A,H
+	OR	L
+	JR	NZ,.ERROR
+.GOOD
+	LD	HL,(LAST_IPD_LEN)
+	LD	(PAYLOAD_LEFT),HL
+	XOR	A
+	RET
+.ERROR
+	LD	A,RES_ERROR
+	SCF
+	RET
+
+; CIPRECVDATA ends with CRLF and a final OK. Read it while ISA remains open so
+; READ_BYTE_RECV_TIMEOUT_OPEN accumulates OE/PE/FE exactly like payload bytes.
+; Keep the response boundary strict: swallowing an unexpected +IPD here would
+; lose the next TCP block.
+WAIT_PASSIVE_RESULT_OPEN
+	LD	IX,LINE_BUFFER
+	LD	A,TCP_LINE_SIZE-1
+	LD	(LINE_REMAIN),A
+.NEXT
+	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
+	JR	C,.TIMEOUT
+	CP	13
+	JR	Z,.NEXT
+	CP	10
+	JR	Z,.END
+	LD	A,(LINE_REMAIN)
+	AND	A
+	JR	Z,.NEXT
+	LD	(IX+0),C
+	INC	IX
+	DEC	A
+	LD	(LINE_REMAIN),A
+	JR	.NEXT
+.END
+	LD	(IX+0),0
+	LD	A,(LINE_BUFFER)
+	AND	A
+	JR	Z,WAIT_PASSIVE_RESULT_OPEN
+	LD	HL,MSG_OK
+	LD	DE,LINE_BUFFER
+	CALL	UTIL.STRCMP
+	RET	NC
+	LD	HL,MSG_ERROR
+	LD	DE,LINE_BUFFER
+	CALL	UTIL.STRCMP
+	JR	NC,.ERROR
+	LD	HL,MSG_FAIL
+	LD	DE,LINE_BUFFER
+	CALL	UTIL.STRCMP
+	JR	NC,.FAIL
+	LD	A,RES_ERROR
+	SCF
+	RET
+.ERROR
+	LD	A,RES_ERROR
+	SCF
+	RET
+.FAIL
+	LD	A,RES_FAIL
+	SCF
+	RET
+.TIMEOUT
+	LD	A,RES_RS_TIMEOUT
+	SCF
+	RET
+
+; In passive mode no payload follows the +IPD notification; ESP keeps it in
+; its TCP buffer until CIPRECVDATA fetches it. Therefore a CLOSED notification
+; is an unambiguous end of the current receive cycle and must not turn into a
+; full FTP_DATA_TIMEOUT pause. Active +IPD retains its separate parser because
+; it may still have queued payload frames after CLOSED.
+WAIT_PASSIVE_IPD_OR_CLOSE
+	LD	IX,IPD_PREFIX
+	LD	IY,CLOSED_PREFIX
+.NEXT
+	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
+	JR	C,.TIMEOUT
+	LD	E,A
+	LD	A,(IX+0)
+	CP	E
+	JR	NZ,.IPD_RESET
+	INC	IX
+	LD	A,(IX+0)
+	AND	A
+	JR	Z,.OK
+	JR	.CLOSED_CHECK
+.IPD_RESET
+	LD	IX,IPD_PREFIX
+	LD	A,E
+	CP	'+'
+	JR	NZ,.CLOSED_CHECK
+	INC	IX
+.CLOSED_CHECK
+	LD	A,(IY+0)
+	CP	E
+	JR	NZ,.CLOSED_RESET
+	INC	IY
+	LD	A,(IY+0)
+	AND	A
+	JR	Z,.CLOSED
+	JR	.NEXT
+.CLOSED_RESET
+	LD	IY,CLOSED_PREFIX
+	LD	A,E
+	CP	'C'
+	JR	NZ,.NEXT
+	INC	IY
+	JR	.NEXT
+.OK
+	XOR	A
+	RET
+.CLOSED
+	LD	A,RES_NOT_CONN
+	SCF
+	RET
+.TIMEOUT
+	LD	A,RES_RS_TIMEOUT
+	SCF
 	RET
 
 ; ------------------------------------------------------
@@ -214,13 +539,14 @@ WAIT_SEND_OK_LINK
 	RET
 
 ; ------------------------------------------------------
-; Wait for '+IPD,' in ESP-AT multi-connection mode.
-; Do not treat "<link>,CLOSED" as a fatal close here: control and data links
-; close independently, and a control "0,CLOSED" can arrive after "226" while
-; data-link +IPD frames are still queued.
+; Wait for '+IPD,' in ESP-AT multi-connection mode, or a CLOSED indication.
+; ESP writes UART messages in order, so an explicit CLOSED after the last +IPD
+; is the data-transfer terminator. Returning RES_NOT_CONN avoids the previous
+; full FTP_DATA_TIMEOUT pause at the end of every directory listing.
 ; ------------------------------------------------------
 WAIT_IPD_HEADER_MULTI
 	LD	IX,IPD_PREFIX
+	LD	IY,CLOSED_PREFIX
 .NEXT
 	CALL	READ_BYTE_RECV_TIMEOUT_OPEN
 	JR	C,.TIMEOUT
@@ -232,16 +558,35 @@ WAIT_IPD_HEADER_MULTI
 	LD	A,(IX+0)
 	AND	A
 	JR	Z,.OK
-	JR	.NEXT
+	JR	.CLOSED_CHECK
 .RESET
 	LD	IX,IPD_PREFIX
 	LD	A,E
 	CP	'+'
-	JR	NZ,.NEXT
+	JR	NZ,.CLOSED_CHECK
 	INC	IX
+.CLOSED_CHECK
+	LD	A,(IY+0)
+	CP	E
+	JR	NZ,.CLOSED_RESET
+	INC	IY
+	LD	A,(IY+0)
+	AND	A
+	JR	Z,.CLOSED
+	JR	.NEXT
+.CLOSED_RESET
+	LD	IY,CLOSED_PREFIX
+	LD	A,E
+	CP	'C'
+	JR	NZ,.NEXT
+	INC	IY
 	JR	.NEXT
 .OK
 	XOR	A
+	RET
+.CLOSED
+	LD	A,RES_NOT_CONN
+	SCF
 	RET
 .TIMEOUT
 	LD	A,RES_RS_TIMEOUT
@@ -291,7 +636,9 @@ READ_IPD_LINK_LEN
 	RET
 
 ; ------------------------------------------------------
-; Read decimal field until ',' or ':'.
+; Read decimal field until ',', ':' or CR. CR is used by ESP-AT passive
+; receive notifications (+IPD,<link>,<pending>\r\n); active +IPD callers
+; still validate ':' themselves.
 ; Out: HL=value, IPD_DELIM=delimiter.
 ; ------------------------------------------------------
 READ_DEC_FIELD
@@ -302,6 +649,8 @@ READ_DEC_FIELD
 	CP	','
 	JR	Z,.DELIM
 	CP	':'
+	JR	Z,.DELIM
+	CP	13
 	JR	Z,.DELIM
 	CP	'0'
 	JR	C,.ERROR
@@ -340,6 +689,14 @@ APPEND_LINK_ID
 	INC	HL
 	XOR	A
 	LD	(HL),A
+	RET
+
+; Enable or disable the runtime passive backend. The firmware profile says
+; whether passive receive is supported; this latch says that FTP successfully
+; configured it for the *current* session.
+; In: A=0 active, A!=0 passive.
+SET_PASSIVE_RECEIVE
+	LD	(PASSIVE_RECEIVE_ENABLED),A
 	RET
 
 ; Return CF=0 when ASCIIZ string at HL contains ASCIIZ substring at DE.
@@ -389,11 +746,16 @@ CMD_CIPCLOSE_LINK_PREFIX
 	DB	"AT+CIPCLOSE=",0
 CMD_COMMA
 	DB	",",0
+CMD_CIPRECVDATA_PREFIX
+	DB	"AT+CIPRECVDATA=",0
+PASSIVE_DATA_PREFIX
+	DB	"+CIPRECVDATA:",0
 
 LINK_ID		DB 0
 LAST_IPD_LINK	DB 0
 PAYLOAD_LINK	DB 0
 IPD_DELIM	DB 0
+PASSIVE_RECEIVE_ENABLED DB 0
 
 	ENDMODULE
 

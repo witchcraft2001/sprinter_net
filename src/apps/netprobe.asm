@@ -60,6 +60,18 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_PROBE_CMD_RECOVER
 
+	; Keep the diagnostic utility on the same two-sided UART flow-control
+	; contract as network clients: local AFE+RTS and ESP flow=3.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JR	Z,.UART_FLOW_OK
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+.UART_FLOW_OK
+
 	LD	HL,CMD_GMR
 	CALL	SEND_PROBE_CMD_RECOVER
 	PRINTLN MSG_GMR_RESPONSE
@@ -85,6 +97,9 @@ SEND_PROBE_CMD
 	AND	A
 	RET	Z
 
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
@@ -92,28 +107,14 @@ SEND_PROBE_CMD
 	JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
-; Send command in HL. If ESP does not answer, reset ESP once and retry.
-; This handles the common case where a previous terminal/debug session left the
-; module or UART stream in a bad state.
+; Synchronize without resetting ESP, then send the requested diagnostic
+; command. NETUP's association is session-only, so NETPROBE must not destroy it.
 ; ------------------------------------------------------
 SEND_PROBE_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_PROBE_CMD
-
-.OK
-	POP	HL
-	RET
 
 ; ------------------------------------------------------
 ; Print ESP response buffer. WIFI.UART_TX_CMD strips CR and keeps LF as a line
@@ -145,6 +146,11 @@ PUT_CHAR
 	POP	HL
 	RET
 
+PRINT_ESP_FAILURE
+	PRINTLN MSG_ESP_RESPONSE
+	LD	HL,WIFI.RS_BUFF
+	JP	PRINT_ESP_RESPONSE
+
 MSG_START
 	DB "NETPROBE "
 	PACKAGE_VERSION_TAG
@@ -162,8 +168,11 @@ MSG_WIFI_NOT_FOUND
 MSG_UART_READY
 	DB "UART initialized.",0
 
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
+MSG_FIRST_RESPONSE
+	DB "Initial ESP response before recovery:",0
+
+MSG_ESP_RESPONSE
+	DB "ESP response:",0
 
 MSG_GMR_RESPONSE
 	DB "ESP firmware response:",0
@@ -185,6 +194,7 @@ CMD_GMR
 
 	ENDMODULE
 
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"

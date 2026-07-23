@@ -215,9 +215,9 @@ A diagnostic aid, like the ESP debug tail in the fido binkp client.
   UART loops (a cancelled receive returns `NERR_CANCEL`). Default off - the DLL
   never touches the keyboard unless asked.
 - `UNET_OPT_RXTRIG` (2): DE = 1/4/8/14 sets the 16550 RX FIFO auto-RTS trigger
-  level. Default 8. Lower only for field diagnostics on specific hardware (see
-  the overrun note). Returns `NERR_STATE` before `NETINIT` (the UART base is
-  not known yet).
+  level. Default 4. Use a different value only for field diagnostics on
+  specific hardware (see the overrun note). Returns `NERR_STATE` before
+  `NETINIT` (the UART base is not known yet).
 
 ---
 
@@ -313,7 +313,7 @@ Lossless receive at speed depends on several layers; a consumer only has to
 respect the last one:
 
 1. **Hardware RTS/CTS on both sides.** `NETINIT` puts the 16550 in auto-flow
-   mode with an 8-byte RX FIFO trigger and tells the ESP `flow=3`. When the
+   mode with a 4-byte RX FIFO trigger and tells the ESP `flow=3`. When the
    FIFO fills, RTS drops in hardware and the ESP stops within a few byte-times;
    backpressure propagates through the ESP buffer and the TCP window.
 2. **Command mode (+IPD), not transparent mode.** Frame boundaries give the ESP
@@ -326,11 +326,11 @@ respect the last one:
 4. **Single owner of RTS.** The DLL never raises RTS on its own; it restores the
    pause state you set. Do not toggle RTS by any other means.
 
-The default FIFO trigger is 8 bytes. That value shipped after a deliberate
-TR8 -> TR1 -> TR8 experiment in this kit: the "safer" 1-byte trigger throttled
-throughput to ~1 KB/s and lost download tails, while 8 bytes leaves ample
-margin for the ESP to honour RTS. `SETOPT RXTRIG` can lower it for diagnostics
-on specific hardware, but 8 is the tested default.
+The default FIFO trigger is 4 bytes. The prior TR8 setting left only eight
+byte-times for the ESP to observe RTS and caused periodic overruns in
+SpecTalkZX. The "safer" 1-byte trigger throttles throughput to about 1 KB/s;
+TR4 leaves 12 byte-times of headroom and is the tested default. `SETOPT RXTRIG`
+can still select another trigger for field diagnostics.
 
 ---
 

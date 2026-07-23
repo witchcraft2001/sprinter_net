@@ -316,26 +316,13 @@ SEND_CMD
 	JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
-; Send command in HL. Reset ESP once if it does not answer.
+; Synchronize non-destructively, then send the command.
 ; ------------------------------------------------------
 SEND_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_CMD
-
-.OK
-	POP	HL
-	RET
 
 ; ------------------------------------------------------
 ; Exit on UDP helper failure.
@@ -502,8 +489,6 @@ MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 	DB "UART initialized.",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 	DB "Opening UDP endpoint to ",0
 MSG_COLON
@@ -575,6 +560,7 @@ RECV_LEN
 ESP_TCP_BSS_BASE	EQU 0xB000
 
 	INCLUDE "netcfg_lib.asm"
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"

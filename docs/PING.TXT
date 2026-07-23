@@ -18,4 +18,3 @@ Exit status
   1  Invalid command line.
   2  Sprinter-WiFi hardware was not found.
   3  ESP communication error, unsupported command or unreachable host.
-

@@ -79,6 +79,18 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
+	; Reapply ESP flow=3 because each executable reinitializes the local 16550
+	; with AFE+RTS and must keep both UART ends in the same mode.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JR	Z,.UART_FLOW_OK
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+.UART_FLOW_OK
+
 	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
@@ -324,26 +336,13 @@ SEND_CMD
 	JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
-; Send command in HL. Reset ESP once if it does not answer.
+; Synchronize non-destructively, then send the command.
 ; ------------------------------------------------------
 SEND_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_CMD
-
-.OK
-	POP	HL
-	RET
 
 ; ------------------------------------------------------
 ; Exit on TCP helper failure.
@@ -425,8 +424,6 @@ MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 	DB "UART initialized.",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 	DB "Connecting to ",0
 MSG_COLON
@@ -476,6 +473,7 @@ RECV_BLOCKS
 
 	ENDMODULE
 
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"

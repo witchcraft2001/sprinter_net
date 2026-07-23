@@ -257,6 +257,7 @@ BUFF_TEST1	DS RS_BUFF_SIZE,0
 
 	ENDMODULE
 
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	;INCLUDE "util.asm"

@@ -8,6 +8,7 @@ DEFAULT_TIMEOUT		EQU 2000
 RECV_TIMEOUT		EQU 7000
 CLOSED_DRAIN_TIMEOUT	EQU 1500
 TCP_OPEN_RETRY_DELAY	EQU 500
+MUX_RECOVERY_DELAY	EQU 250
 RECV_BUFFER_SIZE	EQU 16384
 ; Retain-tail margin: once the announced body is within this many bytes of
 ; completion we stop pausing for DSS_WRITE and instead accumulate the final
@@ -21,7 +22,10 @@ HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
 PATH_SIZE		EQU 128
 FILE_SIZE		EQU 80
-REQ_SIZE		EQU 384
+; Maximum request is below 280 bytes even with every configured URL/host/port
+; field populated and a 32-bit Range header. 304 keeps that margin while
+; preserving the required WIN1 stack headroom after the shared UART setup.
+REQ_SIZE		EQU 304
 HEADER_LINE_SIZE	EQU 80
 REDIRECT_LIMIT		EQU 5
 RESUME_LIMIT		EQU 5
@@ -124,7 +128,11 @@ START
 	AND	A
 	JP	NZ,TCP_ERROR_EXIT
 
-	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
+	; WGET is a single-connection client. Let any asynchronous link-close from
+	; a preceding FTP/Telnet run settle before selecting CIPMUX=0.
+	CALL	WCOMMON.CLEAN_ESP_LINKS
+	LD	HL,MUX_RECOVERY_DELAY
+	CALL	UTIL.DELAY
 	LD	HL,CMD_CIPMUX_0
 	CALL	SEND_CMD
 
@@ -909,27 +917,15 @@ SEND_CMD
 
 SEND_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_CMD
-.OK
-	POP	HL
-	RET
 
 PREPARE_TCP_OPEN
 	CALL	WIFI.UART_RX_RESUME
-	; Kill any stale single-connection socket left by a previous run or by
-	; a FIN-time ESP desync. Ignore ERROR: it only means no socket was open.
-	CALL	TCP.CLOSE
+	; Normalize both mux variants, not just a stale single connection. This
+	; matters after FTP, which runs CIPMUX=1 and may leave a late CLOSED event.
+	CALL	WCOMMON.CLEAN_ESP_LINKS
 	XOR	A
 	LD	(TCP_IS_OPEN),A
 	LD	HL,0
@@ -948,6 +944,7 @@ OPEN_TCP_RECOVER
 	CALL	PREPARE_TCP_OPEN
 	POP	DE
 	POP	HL
+	RET	C
 	CALL	TCP.OPEN
 	RET	NC
 	PUSH	AF
@@ -962,10 +959,7 @@ OPEN_TCP_RECOVER
 	CALL	WIFI.UART_EMPTY_RS
 	LD	HL,TCP_OPEN_RETRY_DELAY
 	CALL	UTIL.DELAY
-	LD	HL,CMD_AT
-	CALL	SEND_CMD
-	LD	HL,CMD_CIPMUX_0
-	CALL	SEND_CMD
+	CALL	PREPARE_TCP_OPEN
 	POP	AF
 	LD	HL,HOST_BUFF
 	LD	DE,PORT_BUFF
@@ -2581,8 +2575,6 @@ MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 	DB "UART initialized.",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 	DB "Connecting to ",0
 MSG_COLON

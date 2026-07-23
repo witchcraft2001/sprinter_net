@@ -667,7 +667,7 @@ READ_BYTE_RECV_TIMEOUT
 ; millisecond timeout in BC.
 ;
 ; The hot path is a busy-poll on LSR.DR with NO per-byte delay: at 115200 baud a
-; byte arrives every ~87 us and a TR8 FIFO burst is drained back-to-back while
+; byte arrives every ~87 us and each FIFO burst is drained back-to-back while
 ; DR stays set, so the old "DELAY_1MS on every empty poll" (which throttled the
 ; link to ~1 KB/s and kept the ESP permanently backpressured) is gone. Only when
 ; the spin budget is exhausted without a byte do we fall back to a 1 ms tick that

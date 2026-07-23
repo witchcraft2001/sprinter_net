@@ -23,7 +23,7 @@ ZM_RECV_TMO		EQU 10000		; ms to wait for the next stream byte
 ZM_HDR_RETRIES		EQU 10			; header re-scans before giving up
 ZM_SEND_RETRIES		EQU 10
 ZM_FCR_FIFO		EQU 0x01
-ZM_FCR_TR8		EQU 0x80		; normal terminal receive trigger
+ZM_FCR_TR4		EQU 0x40		; preserve 12-byte headroom during terminal receive
 
 DSS_CREATE_OVERWRITE	EQU 0x0A		; create, truncating an existing file
 
@@ -870,15 +870,16 @@ FILL
 	SCF
 	RET
 
-; Use the normal eight-byte trigger during Zmodem. The decoder is fast enough
-; to drain each burst; manual RTS is reserved for slow DSS/file operations.
+; Keep the shared four-byte trigger during Zmodem. The decoder is fast, but a
+; terminal session may still repaint or enter a slow DSS/file operation between
+; drains; TR4 preserves 12 FIFO byte-times for the ESP to observe RTS.
 SET_SAFE_RX_TRIGGER
-	LD	E,ZM_FCR_FIFO | ZM_FCR_TR8
+	LD	E,ZM_FCR_FIFO | ZM_FCR_TR4
 	LD	HL,REG_FCR
 	JP	WIFI.UART_WRITE
 
 RESTORE_RX_TRIGGER
-	LD	E,ZM_FCR_FIFO | ZM_FCR_TR8
+	LD	E,ZM_FCR_FIFO | ZM_FCR_TR4
 	LD	HL,REG_FCR
 	JP	WIFI.UART_WRITE
 

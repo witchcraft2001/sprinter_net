@@ -143,10 +143,10 @@ UNET_IF_HW		EQU 12	; hardware descriptor ("<slot>/#<base>")
 ; SETOPT option ids (A) and values (DE)
 ; ------------------------------------------------------
 UNET_OPT_CANCELKEYS	EQU 1	; DE=1 poll Esc/Ctrl+Z during blocking UART loops (default 0)
-UNET_OPT_RXTRIG		EQU 2	; DE=1/4/8/14 - RX FIFO auto-RTS trigger level (ESP; default 8).
+UNET_OPT_RXTRIG		EQU 2	; DE=1/4/8/14 - RX FIFO auto-RTS trigger level (ESP; default 4).
 				; NERR_STATE before NETINIT (UART base not known yet).
-				; The kit shipped TR8 after a TR8->TR1->TR8 experiment: TR1
-				; throttled to ~1 KB/s and lost download tails. Lower only for
-				; field diagnostics on specific hardware.
+				; TR4 is the stable compromise: TR1 throttles ESP to ~1 KB/s,
+				; while TR8 leaves too little headroom and causes overruns. Use
+				; other values only for field diagnostics on specific hardware.
 
 	ENDIF

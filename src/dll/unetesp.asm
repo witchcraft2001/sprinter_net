@@ -114,43 +114,39 @@ F_NETINIT
 	; env: NET == "WIFI"
 	LD	HL,ENVN_NET
 	CALL	ENV_GET_STAGE
-	JR	Z,.nonet
+	JP	Z,.nonet
 	LD	HL,ENV_STAGE
 	LD	DE,VAL_WIFI
 	CALL	STRMATCH
-	JR	NZ,.nonet
+	JP	NZ,.nonet
 	; env: NET_ESP_HW present and non-empty
 	LD	HL,ENVN_ESP_HW
 	CALL	ENV_GET_STAGE
-	JR	Z,.nonet
+	JP	Z,.nonet
 	LD	A,(ENV_STAGE)
 	AND	A
-	JR	Z,.nonet
+	JP	Z,.nonet
+	; A universal DLL follows the profile already selected and published by
+	; NETUP. Forced builds contain their fixed receive path and need no lookup.
+	CALL	SELECT_ENV_RX_PROFILE
+	JP	C,.nonet
 	; locate UART
 	CALL	WIFI.UART_FIND
 	JP	C,.nohw
 	; apply configured baud and init UART
 	CALL	APPLY_ENV_BAUD
 	CALL	WIFI.UART_INIT
-	; probe AT
-	LD	HL,CMD_AT
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_AT
-	JR	NC,.at_ok
-	; recover: reset ESP once, default baud, retry
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
-	LD	HL,CMD_AT
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_AT
+	; A delayed terminal response from the previous client may precede the
+	; answer to our first AT. Resynchronise without destroying NETUP's
+	; deliberately session-only Wi-Fi configuration.
+	CALL	SYNC_AT
 	JP	C,.nohw
-.at_ok
 	LD	HL,CMD_ATE0
 	LD	BC,DEFAULT_TIMEOUT
 	CALL	SEND_AT			; ignore
-	; flow control on both sides (best effort; baud may change mid-reply)
+	; flow control on both sides; SETUP_FLOW re-syncs local baud and verifies AT
 	CALL	SETUP_FLOW
+	JP	C,.nohw
 	; drop leftover sockets before CIPMUX (else ERROR)
 	LD	HL,CMD_CIPCLOSE_ALL
 	LD	BC,DEFAULT_TIMEOUT
@@ -943,6 +939,22 @@ SEND_AT
 	SCF
 	RET
 
+; Probe command mode several times. The first reply may be a delayed
+; ERROR/CLOSED from a command issued by the previous process.
+; Out: CF=0 - ESP answered OK, CF=1 - no usable response.
+SYNC_AT
+	LD	B,4
+.try
+	PUSH	BC
+	LD	HL,CMD_AT
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_AT
+	POP	BC
+	RET	NC
+	DJNZ	.try
+	SCF
+	RET
+
 ; Send one AT command, retrying while the ESP answers "busy".
 ; In: HL=cmd ASCIIZ, BC=timeout ms. Out: A=0/CF=0 ok, else CF=1/A=last code.
 SEND_AT_BUSY
@@ -994,6 +1006,42 @@ ENV_GET_STAGE
 	AND	A
 	RET
 
+; Select the shared esplib receive/RTS path from NET_ESP_FW. Out: CF=1 when
+; NETUP did not publish one of the two supported profiles.
+SELECT_ENV_RX_PROFILE
+	IFDEF	ESP_AT_FORCE_221
+	OR	A
+	RET
+	ELSE
+	IFDEF	ESP_AT_FORCE_222
+	OR	A
+	RET
+	ELSE
+	LD	HL,ENVN_ESP_FW
+	CALL	ENV_GET_STAGE
+	JR	Z,.bad
+	LD	HL,ENV_STAGE
+	LD	DE,VAL_ESP_FW_221
+	CALL	STRMATCH
+	JR	Z,.fw221
+	LD	HL,ENV_STAGE
+	LD	DE,VAL_ESP_FW_222
+	CALL	STRMATCH
+	JR	NZ,.bad
+	LD	A,2
+	JR	.short
+.fw221
+	LD	A,1
+.short
+	CALL	WIFI.UART_SET_RX_PROFILE
+	OR	A
+	RET
+.bad
+	SCF
+	RET
+	ENDIF
+	ENDIF
+
 ; Read NET_BAUD and program the local UART divisor (default 8 = 115200).
 ; Also latch the MATCHED baud literal in BAUD_TXT for SETUP_FLOW: the AT
 ; command must always quote the same speed the divisor was set to (an
@@ -1036,8 +1084,11 @@ APPLY_ENV_BAUD
 	CALL	WIFI.UART_SET_DIVISOR
 	RET
 
-; Best-effort ESP-side flow control: AT+UART_CUR=<baud>,8,1,0,3.
+; Configure ESP-side flow control: AT+UART_CUR=<baud>,8,1,0,3. The command's
+; final reply may be sent at the new baud, so ignore that first result, restore
+; the configured local divisor/MCR/FCR, then verify with a fresh AT.
 ; Uses the literal latched by APPLY_ENV_BAUD, never the raw env value.
+; Out: A=RES_* / CF=1 on failed post-switch AT verification.
 SETUP_FLOW
 	LD	HL,CMDBUILD
 	LD	DE,PFX_UART_CUR
@@ -1048,8 +1099,12 @@ SETUP_FLOW
 	CALL	APPEND_DE
 	LD	HL,CMDBUILD
 	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_AT			; ignore result
-	RET
+	CALL	SEND_AT			; reply can be lost during the baud switch
+	CALL	APPLY_ENV_BAUD
+	CALL	WIFI.UART_INIT
+	LD	HL,CMD_AT
+	LD	BC,DEFAULT_TIMEOUT
+	JP	SEND_AT
 
 ; Compare ASCIIZ (HL) and (DE). Out: ZF=1 if equal. Preserves HL,DE.
 STRMATCH
@@ -1299,8 +1354,11 @@ NEEDLE_CIPDOMAIN	DB "+CIPDOMAIN:",0
 
 ENVN_NET		DB "NET",0
 ENVN_ESP_HW		DB "NET_ESP_HW",0
+ENVN_ESP_FW		DB "NET_ESP_FW",0
 ENVN_BAUD		DB "NET_BAUD",0
 VAL_WIFI		DB "WIFI",0
+VAL_ESP_FW_221	DB "2.2.1",0
+VAL_ESP_FW_222	DB "2.2.2",0
 LIT_ESP			DB "ESP",0
 LIT_EMPTY		DB 0
 

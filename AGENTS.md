@@ -128,6 +128,39 @@ library include or be guarded by assembly-time conditionals. Simple clients such
 as WGET, PING, NTP, UDPTEST, and TFTP should not grow from unused FTP/server
 helpers.
 
+## ESP-AT Compatibility
+
+Every program in this package must support both ESP-AT v2.2.1 and ESP-AT
+v2.2.2. A normal build, with no firmware-selection flag, must use only their
+common command set and capabilities; it must not assume a command or feature
+that exists in only one profile. Assembly-time conditionals may build a variant
+that deliberately targets one command profile, but that forced profile must be
+explicit and limited to `2.2.1` or `2.2.2`. When such a forced-profile build is
+enabled, its program banner must identify the target, for example
+`ESP-AT 2.2.1` or `ESP-AT 2.2.2`, so that a user can distinguish it from the
+compatible default build.
+
+Network clients and diagnostics must not call `WIFI.ESP_RESET` as an implicit
+communication-recovery step. `NETUP` deliberately applies Wi-Fi/UART settings
+to the current ESP session, so a hidden reset invalidates the published
+`NET_*` state and breaks every following utility. Retry a plain `AT` probe via
+`WCOMMON.SYNC_ESP_COMMAND`, drain/close stale sockets, and return exit status 3
+if command mode cannot be recovered. Hardware reset belongs only to explicit
+reset/bring-up tools such as `NETRESET`, `NETUP`, and low-level terminal
+workflows that clearly announce it.
+
+For UART receive/RTS flow control, preserve the field-proven ESP-AT 2.2.1
+algorithm unchanged unless it has been revalidated on real 2.2.1 hardware.
+The ESP-AT 2.2.2 path may use separately developed FIFO/AFE experiments, but
+do not ship automatic-AFE-only receive if sustained real `+IPD` traffic shows
+overruns: retain explicit RTS pauses until it is proven reliable. A default
+application must choose the matching receive algorithm at runtime from
+`NET_ESP_FW`, published by a successful `NETUP`; it must not probe the firmware
+again. A forced 2.2.1 or 2.2.2 build must compile only the matching algorithm,
+with no runtime fallback; its banner must show the selected profile. Do not
+change the 2.2.1 path merely to share code with 2.2.2. Validate any 2.2.1
+change using sustained real-hardware `+IPD` traffic, including FTP/WGET/Telnet.
+
 ## Testing Guidelines
 
 No broad automated test suite is present. For Telnet/Zmodem changes, run

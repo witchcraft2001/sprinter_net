@@ -6,6 +6,19 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 
 source "$script_dir/artifacts.sh"
 
+# Default builds use the common ESP-AT 2.2.1/2.2.2 subset. A known-firmware
+# diagnostic build may target one dialect, e.g. ESP_AT_PROFILE=2.2.2 make build.
+asm_profile=()
+case "${ESP_AT_PROFILE:-}" in
+  "") ;;
+  2.2.1) asm_profile=(-DESP_AT_FORCE_221) ;;
+  2.2.2) asm_profile=(-DESP_AT_FORCE_222) ;;
+  *)
+    echo "Error: ESP_AT_PROFILE must be 2.2.1 or 2.2.2 (or unset)" >&2
+    exit 1
+    ;;
+esac
+
 if [ "${#BUILD_APPS[@]}" -eq 0 ]; then
   echo "No DSS applications are listed in tools/artifacts.sh yet."
   exit 0
@@ -31,6 +44,7 @@ for app in "${BUILD_APPS[@]}"; do
   fi
 
   sjasmplus --nologo --fullpath \
+    "${asm_profile[@]}" \
     -I "$repo_root/src/include" \
     -I "$repo_root/src/lib" \
     --lst="$lst" --raw="$exe" "$src"
@@ -79,8 +93,19 @@ if [ "${#BUILD_DLLS[@]}" -gt 0 ]; then
         *)       dll_name="$upper" ;;
       esac
 
+      # sprinter-mkdll owns the sjasmplus command line. Give it a custom
+      # template for forced builds so DLL consumers get the same one-profile
+      # receive algorithm as the EXE utilities.
+      dll_assembler=(--assembler sjasmplus)
+      if [ "${#asm_profile[@]}" -gt 0 ]; then
+        dll_assembler=(
+          --assembler-command
+          "sjasmplus ${asm_profile[0]} --raw={output} -I $repo_root/src/include -I $repo_root/src/lib {source}"
+        )
+      fi
+
       "${mkdll_cmd[@]}" build "$src" \
-        --format l1 --target 1.3 --assembler sjasmplus \
+        --format l1 --target 1.3 "${dll_assembler[@]}" \
         -I "$repo_root/src/include" -I "$repo_root/src/lib" \
         --name "$dll_name" --version "$dll_version" -o "$out"
       "${mkdll_cmd[@]}" verify "$out" --target 1.3

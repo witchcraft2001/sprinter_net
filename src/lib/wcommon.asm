@@ -7,9 +7,32 @@
 	IFNDEF	_WCOMMON
 	DEFINE	_WCOMMON
 
-
+; The normal package build defines neither profile and uses only the ESP-AT
+; features shared by 2.2.1 and 2.2.2. Forced builds must name one dialect.
+	IFDEF	ESP_AT_FORCE_221
+	IFDEF	ESP_AT_FORCE_222
+	ASSERT	0
+	ENDIF
+	ENDIF
 
 ENABLE_RTS_CTR	EQU 1
+ESP_SYNC_RETRIES	EQU 4
+ESP_CLEAN_DELAY		EQU 150
+
+; NETCFG is often included after this common source. Such programs define
+; WCOMMON_USE_NETCFG before including WCOMMON so the forward NETCFG references
+; below are emitted. Small tools without NET.CFG (NETRESET) keep the fixed
+; 115200 flow-control command instead.
+	IFDEF	_NETCFG
+	IFNDEF	_WCOMMON_NETCFG
+	DEFINE	_WCOMMON_NETCFG
+	ENDIF
+	ENDIF
+	IFDEF	WCOMMON_USE_NETCFG
+	IFNDEF	_WCOMMON_NETCFG
+	DEFINE	_WCOMMON_NETCFG
+	ENDIF
+	ENDIF
 
 	MODULE WCOMMON
 
@@ -212,6 +235,14 @@ INIT_VMODE
 	LD		A,DSS_VMOD_T80
 	RST		DSS
 IVM_ALRDY_80
+	; Show the selected target in every forced-profile utility banner. Auto
+	; builds intentionally stay quiet because they support both dialects.
+	IFDEF	ESP_AT_FORCE_221
+	PRINTLN	MSG_ESP_AT_BUILD_221
+	ENDIF
+	IFDEF	ESP_AT_FORCE_222
+	PRINTLN	MSG_ESP_AT_BUILD_222
+	ENDIF
 	POP		HL,DE,BC
 	RET
 	;;ENDIF
@@ -257,8 +288,9 @@ INIT_ESP
 
 	IF ENABLE_RTS_CTR
    		TRACELN MSG_SET_UART
-		IFDEF	_NETCFG
+		IFDEF	_WCOMMON_NETCFG
 		CALL	SETUP_UART_FLOW
+		CALL	CHECK_ERROR
 		ELSE
 		SEND_CMD CMD_SET_SPEED
 		ENDIF
@@ -271,42 +303,50 @@ INIT_ESP
 	;;ENDIF
 ; ------------------------------------------------------
 ; Build "AT+UART_CUR=<baud>,8,1,0,3\r\n" using current NET.CFG baud
-; into UART_FLOW_CMD_BUFF. Out: HL = pointer to ASCIIZ command.
+; into the now-unused raw NET.CFG read buffer. Out: HL = command pointer.
 ; Hardcoding the baud (e.g. 115200) breaks utilities when NET.CFG selects a
 ; non-default speed: UART_INIT has already switched the local 16550 to that
 ; speed, so a static "AT+UART_CUR=115200,..." would arrive at ESP at the
 ; wrong baud and brick the UART link.
-; Only assembled when NETCFG library is included (utilities that need
-; per-config flow control: wget, tftp, udptest, etc.).
+; Emitted when NETCFG is already included, or when the consumer defines
+; WCOMMON_USE_NETCFG before including this file. The latter supports the common
+; include order (WCOMMON before NETCFG) through forward label resolution.
 ; ------------------------------------------------------
-	IFDEF _NETCFG
+	IFDEF	_WCOMMON_NETCFG
 BUILD_UART_FLOW_CMD
 	PUSH	BC,DE
-	LD		HL,UART_FLOW_CMD_BUFF
+	LD		HL,@NETCFG.CFG_BUFF
 	LD		DE,UART_FLOW_PREFIX
-	CALL	.APPEND
+	CALL	BUILD_UART_APPEND
 	; NETCFG.GET_UART_BAUD_TEXT: out HL = ASCIIZ baud text (e.g. "38400").
 	; Move HL→DE to use as source, restore destination from saved.
 	PUSH	HL								; save dest
 	CALL	@NETCFG.GET_UART_BAUD_TEXT
 	EX		DE,HL							; DE = baud text source
 	POP		HL								; HL = dest
-	CALL	.APPEND
+	CALL	BUILD_UART_APPEND
 	LD		DE,UART_FLOW_SUFFIX
-	CALL	.APPEND
-	LD		HL,UART_FLOW_CMD_BUFF
+	CALL	BUILD_UART_APPEND
+	LD		HL,@NETCFG.CFG_BUFF
 	POP		DE,BC
 	RET
 
 ; Append ASCIIZ string at DE to buffer at HL. Out: HL = terminator pos.
-.APPEND
+BUILD_UART_APPEND
 	LD		A,(DE)
 	AND		A
-	RET		Z
+	JR		Z,.TERMINATE
 	LD		(HL),A
 	INC		HL
 	INC		DE
-	JR		.APPEND
+	JR		BUILD_UART_APPEND
+.TERMINATE
+	; BUILD_UART_FLOW_CMD reuses NETCFG.CFG_BUFF, which still contains the
+	; loaded NET.CFG text.  Always terminate the current result explicitly;
+	; otherwise UART_TX_STRING continues into that stale text after CR/LF and
+	; ESP receives a malformed AT+UART_CUR command.
+	LD		(HL),A								; A=0
+	RET
 
 UART_FLOW_PREFIX
 	DB	"AT+UART_CUR=",0
@@ -315,12 +355,10 @@ UART_FLOW_SUFFIX
 UART_FLOW_VERIFY_CMD
 	DB	"AT",13,10,0
 
-UART_FLOW_CMD_BUFF
-	DS	40,0
-
 ; ------------------------------------------------------
 ; Send AT+UART_CUR with NET.CFG baud + flow=3, then re-apply local 16550
-; baud divisor and verify the link with AT.
+; baud divisor and verify the link with AT. If the ESP flow pins are not
+; usable, negotiate the same baud with flow=0 and disable local AFE too.
 ; ESP-AT may emit the trailing OK at the *new* baud (not the old one), so
 ; the first send is best-effort: we don't trust its success status. After
 ; the send we switch local UART to the configured baud and use a fresh AT
@@ -328,22 +366,125 @@ UART_FLOW_CMD_BUFF
 ; Out: A=0 on success, A=non-zero ESP result on failure.
 ; ------------------------------------------------------
 SETUP_UART_FLOW
+	; ESP-AT 2.2.1 keeps its field-proven manual-RTS/flow=0 path unchanged.
+	; 2.2.2 alone is eligible for the AFE probe below.
+	IFDEF	ESP_AT_FORCE_221
+	JP		SETUP_UART_NO_FLOW
+	ELSE
+	IFNDEF	ESP_AT_FORCE_222
+	LD		A,(UART_ESP_PROFILE)
+	CP		UART_RX_PROFILE_221
+	JR		Z,SETUP_UART_NO_FLOW
+	ENDIF
+	ENDIF
 	PUSH	BC,DE,HL
+	; Start manually. AFE must not gate host TX until the ESP CTS path has
+	; been verified at the requested baud.
+	CALL	@WIFI.UART_FLOW_OFF
 	CALL	BUILD_UART_FLOW_CMD					; HL=cmd buffer
 	LD		DE,@WIFI.RS_BUFF
 	LD		BC,DEFAULT_TIMEOUT
 	CALL	@WIFI.UART_TX_CMD					; ignore status
 
 	CALL	@NETCFG.APPLY_UART_BAUD				; switch local divisor
-	CALL	@WIFI.UART_INIT						; re-init UART with new divisor + flow=on
+	CALL	@WIFI.UART_INIT						; re-init in manual RTS mode
+	CALL	UART_FLOW_VERIFY
+	AND		A
+	JR		NZ,.FALLBACK
 
+	; flow=3 was accepted; now prove that AFE/CTS itself is usable.
+	CALL	@WIFI.UART_FLOW_ON
+	CALL	UART_FLOW_VERIFY
+	AND		A
+	JR		Z,.DONE
+
+.FALLBACK
+	; Some ESP-AT builds accept flow=3 but do not mux RTS/CTS.  Negotiate
+	; flow=0 at the current baud and retain the manual RTS data path.
+	CALL	@WIFI.UART_FLOW_OFF
+	CALL	BUILD_UART_FLOW_CMD
+	CALL	UART_FLOW_CMD_TO_NO_FLOW
+	LD		DE,@WIFI.RS_BUFF
+	LD		BC,DEFAULT_TIMEOUT
+	CALL	@WIFI.UART_TX_CMD					; command result may straddle UART mode
+	CALL	UART_FLOW_VERIFY
+.DONE
+	POP		HL,DE,BC
+	RET
+
+; Legacy 2.2.1 (and the 2.2.2 compatibility fallback) uses software-managed
+; RTS. Do not send flow=3 first: old modules were qualified with flow=0.
+SETUP_UART_NO_FLOW
+	PUSH	BC,DE,HL
+	CALL	@WIFI.UART_FLOW_OFF
+	CALL	BUILD_UART_FLOW_CMD
+	CALL	UART_FLOW_CMD_TO_NO_FLOW
+	LD		DE,@WIFI.RS_BUFF
+	LD		BC,DEFAULT_TIMEOUT
+	CALL	@WIFI.UART_TX_CMD					; result may straddle reconfiguration
+	CALL	@NETCFG.APPLY_UART_BAUD
+	CALL	@WIFI.UART_INIT
+	CALL	UART_FLOW_VERIFY
+	POP		HL,DE,BC
+	RET
+
+UART_FLOW_VERIFY
 	LD		HL,UART_FLOW_VERIFY_CMD
 	LD		DE,@WIFI.RS_BUFF
 	LD		BC,DEFAULT_TIMEOUT
-	CALL	@WIFI.UART_TX_CMD					; verify at new baud
-	POP		HL,DE,BC
+	JP		@WIFI.UART_TX_CMD
+
+; Reuse the generated ",8,1,0,3<CR><LF>" command for the compatibility
+; fallback by changing its final flow digit. This avoids a duplicate formatter
+; in memory-tight ORG 0x4100 applications such as TELNET.
+UART_FLOW_CMD_TO_NO_FLOW
+	LD		HL,@NETCFG.CFG_BUFF
+.FIND_END
+	LD		A,(HL)
+	AND		A
+	JR		Z,.FOUND_END
+	INC		HL
+	JR		.FIND_END
+.FOUND_END
+	DEC		HL							; LF
+	DEC		HL							; CR
+	DEC		HL							; flow digit
+	LD		(HL),'0'
+	LD		HL,@NETCFG.CFG_BUFF
 	RET
 	ENDIF
+
+; ------------------------------------------------------
+; Non-destructively synchronize with the ESP command interpreter.
+;
+; A previous socket command may finish asynchronously and leave a late ERROR,
+; FAIL or CLOSED line in the UART. UART_TX_CMD correctly treats the first
+; terminal line as the result of its command, so a single AT probe can consume
+; that stale result instead of its own OK. Retry plain AT after a short drain
+; interval. Never reset ESP here: NETUP configures Wi-Fi for the current
+; session, and a hardware reset would invalidate the published NET_* state.
+;
+; Out: A=RES_OK/CF=0 on success; last RES_*/CF=1 after all retries.
+; Trashes BC,DE,HL.
+; ------------------------------------------------------
+SYNC_ESP_COMMAND
+	LD		B,ESP_SYNC_RETRIES
+.TRY
+	PUSH	BC
+	CALL	@WIFI.UART_RX_RESUME
+	LD		HL,CMD_SYNC_AT
+	LD		DE,@WIFI.RS_BUFF
+	LD		BC,DEFAULT_TIMEOUT
+	CALL	@WIFI.UART_TX_CMD
+	POP		BC
+	AND		A
+	RET		Z
+	DJNZ	.TRY
+	SCF
+	RET
+
+CMD_SYNC_AT
+	DB	"AT",13,10,0
 
 ; ------------------------------------------------------
 ; Set DHCP mode
@@ -362,13 +503,10 @@ SET_DHCP_MODE
 
 ; ------------------------------------------------------
 ; Close any TCP/UDP connection a previous (possibly aborted or crashed) run
-; left open on the ESP, and flush stale UART bytes. ESP-AT rejects AT+CIPMUX
-; with ERROR while a connection is still established, which made wget/ftp/telnet
-; fail with "communication error #1" on their first command after such a
-; leftover (ping is immune because it never touches CIPMUX). Call this once,
-; after AT/ATE0 and before AT+CIPMUX. Every step ignores its result: with no
-; connection (or the other mux mode) the close just returns ERROR, which is
-; expected and harmless. Trashes A,BC,DE,HL.
+; left open and flush stale UART bytes. ESP-AT rejects AT+CIPMUX while a
+; connection is still established. Every command result is intentionally
+; ignored because "no such connection" is an expected ERROR. Call only while
+; ESP is believed to be in command mode. Trashes A,BC,DE,HL; returns A=0/CF=0.
 ; ------------------------------------------------------
 ; Compact: send close-all, then fall through to send close-one. UART_TX_CMD
 ; already empties the RX FIFO before each send, so the next command (AT+CIPMUX)
@@ -377,6 +515,14 @@ CLEAN_ESP_LINKS
 	LD	HL,CMD_CIPCLOSE_ALL		; close all links (id 5) - multi-conn mode
 	CALL	.tx
 	LD	HL,CMD_CIPCLOSE_ONE		; close the single connection - single mode
+	CALL	.tx
+	; Link teardown and CLOSED notifications are asynchronous.  Let them reach
+	; the UART, then discard the tail before the caller changes CIPMUX/CIPMODE.
+	LD	HL,ESP_CLEAN_DELAY
+	CALL	@UTIL.DELAY
+	CALL	@WIFI.UART_EMPTY_RS
+	XOR	A
+	RET
 .tx
 	LD	DE,@WIFI.RS_BUFF
 	LD	BC,DEFAULT_TIMEOUT
@@ -415,8 +561,52 @@ REQUIRE_NET_UP
 	LD	A,(ENV_VAL_BUF)
 	OR	A
 	JR	Z,.FAIL				; NET_ESP_HW empty
+	; The universal executable selects its UART receive/RTS implementation from
+	; NET_ESP_FW published by the successful NETUP run. Do not issue a second
+	; ESP firmware probe here: it would make the active connection state part of
+	; a local UART choice. A forced image has only one algorithm compiled.
+	IFDEF	ESP_AT_FORCE_221
+	LD	A,UART_RX_PROFILE_221
+	LD	(UART_ESP_PROFILE),A
+	CALL	@WIFI.UART_SET_RX_PROFILE
 	RET
+	ELSE
+	IFDEF	ESP_AT_FORCE_222
+	LD	A,UART_RX_PROFILE_222
+	LD	(UART_ESP_PROFILE),A
+	CALL	@WIFI.UART_SET_RX_PROFILE
+	RET
+	ELSE
+	LD	HL,N_ESP_FW_KEY
+	LD	DE,ENV_VAL_BUF
+	LD	B,ENV_GET
+	LD	C,DSS_ENVIRON
+	RST	DSS
+	OR	A
+	JR	Z,.PROFILE_FAIL
+	LD	HL,ENV_VAL_BUF
+	LD	DE,V_ESP_FW_221
+	CALL	.STRMATCH
+	JR	Z,.FW221
+	LD	HL,ENV_VAL_BUF
+	LD	DE,V_ESP_FW_222
+	CALL	.STRMATCH
+	JR	NZ,.PROFILE_FAIL
+	LD	A,2
+	JR	.SET_PROFILE
+.FW221
+	LD	A,1
+.SET_PROFILE
+	LD		(UART_ESP_PROFILE),A
+	CALL	@WIFI.UART_SET_RX_PROFILE
+	RET
+	ENDIF
+	ENDIF
 .FAIL
+	PRINTLN MSG_NET_NOT_UP
+	LD	B,4
+	JP	EXIT
+.PROFILE_FAIL
 	PRINTLN MSG_NET_NOT_UP
 	LD	B,4
 	JP	EXIT
@@ -435,9 +625,13 @@ REQUIRE_NET_UP
 
 N_NET_KEY	DB "NET",0
 N_ESP_HW_KEY	DB "NET_ESP_HW",0
+N_ESP_FW_KEY	DB "NET_ESP_FW",0
 V_WIFI		DB "WIFI",0
+V_ESP_FW_221	DB "2.2.1",0
+V_ESP_FW_222	DB "2.2.2",0
 MSG_NET_NOT_UP	DB "Network is not up - run NETUP first.",0
 ENV_VAL_BUF	DS 32,0
+UART_ESP_PROFILE DB UART_RX_PROFILE_222
 
 ; ------------------------------------------------------
 ; Messages
@@ -465,6 +659,15 @@ MSG_ESP_RESET
 
 MSG_UART_INIT
 	DB "Reset UART.",0
+
+	IFDEF	ESP_AT_FORCE_221
+MSG_ESP_AT_BUILD_221
+	DB "ESP-AT build profile: 2.2.1.",0
+	ENDIF
+	IFDEF	ESP_AT_FORCE_222
+MSG_ESP_AT_BUILD_222
+	DB "ESP-AT build profile: 2.2.2.",0
+	ENDIF
 
 LINE_END
 	DB 13,10,0
@@ -513,8 +716,10 @@ MSG_SET_DHCP
 
 CMD_VERSION
 	DB "AT+GMR",13,10,0
+	IFNDEF	_WCOMMON_NETCFG
 CMD_SET_SPEED
 	DB	"AT+UART_CUR=115200,8,1,0,3",13,10,0
+	ENDIF
 CMD_ECHO_OFF
 	DB	"ATE0",13,10,0
 CMD_STATION_MODE

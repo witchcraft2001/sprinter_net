@@ -10,6 +10,10 @@ FTP_DATA_TIMEOUT	EQU 20000
 FTP_FINAL_TIMEOUT	EQU 800				; short wait for post-transfer 226 / QUIT 221 replies (the busy-poll receive inflates this, so keep it small)
 FTP_BURST_TIMEOUT	EQU 120
 FTP_ACTIVE_IPD_MAX	EQU 3000
+; WIN2 also holds the command-line/control strings. Keep a 1 KiB tail for that
+; runtime-only scratch, leaving a 15 KiB data area for streaming and the 8 KiB
+; retained FIN tail. This preserves the mandatory WIN1 stack margin.
+RECV_SIZE		EQU 15360
 ; Bytes handed to one AT+CIPSEND. The ESP does its own TCP segmentation, so this
 ; is NOT the TCP MSS - it only sets how many bytes ship per CIPSEND handshake
 ; (prompt + payload + SEND OK). Small chunks throttle upload throughput because
@@ -18,7 +22,7 @@ FTP_ACTIVE_IPD_MAX	EQU 3000
 ; large chunk cannot overrun the ESP. (Was 536, inherited from the rtl8019a TCP
 ; stack where it WAS the MSS - meaningless here, ~4x more handshakes.)
 FTP_PUT_CHUNK		EQU 2048
-FTP_PUT_READ_SIZE	EQU FTP_PUT_CHUNK * 8	; == RECV_SIZE (16384): one disk read fills the buffer
+FTP_PUT_READ_SIZE	EQU RECV_SIZE		; one disk read fills the available WIN2 data area
 CONTROL_LINK		EQU 0
 DATA_LINK		EQU 1
 HOST_SIZE		EQU 96
@@ -28,14 +32,16 @@ PASS_SIZE		EQU 64
 PATH_SIZE		EQU 128
 ARG_SIZE		EQU 128
 CMD_SIZE		EQU 128
-RECV_SIZE		EQU 16384
 ; Retain-tail margin for file downloads: once the server-announced size is
 ; within this many bytes of completion we stop pausing for DSS_WRITE and
 ; accumulate the final bytes in RECV_BUFFER, flushing only after the data link
 ; closes. This keeps RTS asserted across the close so ESP-AT never discards
 ; queued-but-unsent +IPD data on the data-connection FIN. Must be < RECV_SIZE.
 FTP_HOLD_TAIL_MARGIN	EQU 8192
-LINE_SIZE		EQU 112
+; FTP control replies used here (220/227/150/226/...) are short. Keeping this
+; at 78 preserves the mandatory WIN1 stack margin while the common library
+; stores the NET_ESP_FW-selected receive profile.
+LINE_SIZE		EQU 78
 NO_HANDLE		EQU 0xFF
 DATA_CLOSED_LEN		EQU 8
 FTP_RESUME_LIMIT	EQU 12			; max automatic REST re-fetch attempts per download
@@ -128,6 +134,14 @@ START
 ; ===== File download with automatic REST resume =====
 		CALL	OPEN_OUTPUT_FILE		; prompt R/O/C; sets DATA_TOTAL & RESUME_MODE
 		JP	C,FILE_ERROR_EXIT
+		XOR	A
+		LD	(DATA_EXPECTED_SEEN),A
+		; Ask SIZE once before the first RETR. A 213 result gives the complete
+		; remote length independently of the server-specific 150 text and stays
+		; unchanged across subsequent REST attempts. Servers that do not support
+		; SIZE still use the legacy 150 "(size)" parser as a fallback.
+		CALL	QUERY_REMOTE_SIZE
+		JP	C,NET_ERROR_EXIT
 		; Speed base = bytes already on disk (resume offset, or 0 for fresh),
 		; so the rate reflects only what is fetched this run.
 		LD	HL,(DATA_TOTAL)
@@ -135,7 +149,6 @@ START
 		LD	HL,(DATA_TOTAL+2)
 		LD	(SESSION_BASE+2),HL
 		XOR	A
-		LD	(DATA_EXPECTED_SEEN),A
 		LD	(RESUME_ATTEMPTS),A
 		CALL	TPUT.START
 		PRINT	MSG_DOWNLOADING
@@ -210,16 +223,10 @@ START
 		LD	A,(SOFT_RECOVER_OK)
 		AND	A
 		JR	NZ,.AR_LOGIN			; ESP responsive -> re-login (no reset)
-		; AT never answered even after draining: the module is truly wedged, so
-		; hard-reset as the last resort. This drops Wi-Fi, so the reconnect may
-		; then fail with #1 and the user must re-run NETUP.
-		PRINTLN	MSG_RESETTING_ESP
-		CALL	WIFI.ESP_RESET
-		CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-		CALL	WIFI.UART_INIT
-		CALL	ESP_PRELUDE
-		LD	HL,5000				; extra settle for Wi-Fi reassociation
-		CALL	UTIL.DELAY
+		; Do not hardware-reset here. NETUP uses volatile session settings, so
+		; reset would guarantee loss of Wi-Fi while NET_* still claims it is up.
+		LD	A,RES_RS_TIMEOUT
+		JP	NET_ERROR_EXIT
 .AR_LOGIN
 		CALL	LOGIN_SEQUENCE
 		JP	.DL_ATTEMPT
@@ -919,6 +926,11 @@ BUILD_RETR_COMMAND
 		LD	IX,PATH_BUFF
 		JP	BUILD_FTP_COMMAND
 
+BUILD_SIZE_COMMAND
+		LD	DE,FTP_SIZE_PREFIX
+		LD	IX,PATH_BUFF
+		JP	BUILD_FTP_COMMAND
+
 BUILD_STOR_COMMAND
 		LD	DE,FTP_STOR_PREFIX
 		LD	IX,OUT_FILE
@@ -1009,7 +1021,7 @@ DIV_HL_10
 ; Open a fresh PASV data connection: request PASV, parse the endpoint, open the
 ; data link. Exits the program on any error. Returns with DATA_OPEN=1.
 ; ESP bring-up shared by the initial connect and in-run reconnect: verify the
-; AT link (SEND_CMD_RECOVER hardware-resets a wedged module), echo off, enable
+; AT link (non-destructive retry probe), echo off, enable
 ; UART flow control, and select multi-connection mode. After the peer closes a
 ; data link mid-transfer the ESP can stop answering control traffic; running
 ; this before re-login is what lets an in-run auto-resume recover the same way
@@ -1030,6 +1042,46 @@ ESP_PRELUDE
 		CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 		LD	HL,CMD_CIPMUX_1
 		CALL	SEND_CMD
+		XOR	A
+		CALL	TCP.SET_PASSIVE_RECEIVE
+		; A prior FTP build may have exited with ESP still in passive mode. The
+		; control greeting would then be a length-only +IPD which the active
+		; pre-login parser cannot consume. Always establish a known active state
+		; before CIPSTART; passive is enabled later by ENABLE_PASSIVE_RECEIVE.
+		IFDEF	ESP_AT_FORCE_221
+		RET
+		ELSE
+		IFNDEF	ESP_AT_FORCE_222
+		LD	A,(WCOMMON.UART_ESP_PROFILE)
+		CP	UART_RX_PROFILE_222
+		RET	NZ
+		ENDIF
+		LD	HL,CMD_CIPRECVMODE_0
+		CALL	SEND_CMD
+		ENDIF
+		RET
+
+; Enter passive receive only in an explicitly forced ESP-AT 2.2.2 build.
+; Universal FTP retains active +IPD on both firmwares until passive control
+; replies have been fully hardware-qualified.
+ENABLE_PASSIVE_RECEIVE
+		IFDEF	ESP_AT_FORCE_222
+		; Do not let CIPRECVMODE/CIPDINFO change ESP NVS settings when FTP is
+		; invoked independently of NETUP. All failures are a local fallback,
+		; never a connection failure.
+		LD	HL,CMD_SYSSTORE_VOLATILE
+		CALL	SEND_CMD_IGNORE
+		LD	HL,CMD_CIPRECVMODE_1
+		CALL	SEND_CMD_IGNORE
+		AND	A
+		RET	NZ
+		LD	HL,CMD_CIPDINFO_0
+		CALL	SEND_CMD_IGNORE
+		AND	A
+		RET	NZ
+		LD	A,1
+		CALL	TCP.SET_PASSIVE_RECEIVE
+		ENDIF
 		RET
 
 ; Open the control connection and complete the FTP login (USER/PASS) plus
@@ -1090,6 +1142,47 @@ LOGIN_SEQUENCE
 		JP	C,NET_ERROR_EXIT
 		CALL	CHECK_REPLY_POSITIVE
 		JP	C,FTP_ERROR_EXIT
+		CALL	ENABLE_PASSIVE_RECEIVE
+		RET
+
+; ------------------------------------------------------
+; Query the remote file's complete size with FTP SIZE. This is intentionally
+; performed only before the first RETR: automatic REST retries must keep the
+; original expected length, not reinterpret a partial 150 reply. A 5xx SIZE
+; reply is non-fatal because some FTP servers do not implement SIZE; the 150
+; parser remains the compatibility fallback.
+; Out: CF=1 only on ESP/control-channel communication failure.
+; ------------------------------------------------------
+QUERY_REMOTE_SIZE
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		RET	NZ
+		CALL	BUILD_SIZE_COMMAND
+		CALL	SEND_CONTROL
+		RET	C
+		CALL	RECV_CONTROL_REPLY
+		RET	C
+		LD	A,(REPLY_CODE_1)
+		CP	'2'
+		JR	NZ,.UNAVAILABLE
+		LD	A,(REPLY_CODE_2)
+		CP	'1'
+		JR	NZ,.UNAVAILABLE
+		LD	A,(REPLY_CODE_3)
+		CP	'3'
+		JR	NZ,.UNAVAILABLE
+		; "213 <decimal-size>". Skip the reply code and its required space.
+		LD	HL,LINE_BUFF+4
+		CALL	PARSE_EXPECTED_SIZE_AT_HL
+		JR	NC,.DONE
+		; Malformed 213 must not poison the later 150 fallback.
+		XOR	A
+		LD	(DATA_EXPECTED_SEEN),A
+.UNAVAILABLE
+		XOR	A
+		RET
+.DONE
+		XOR	A
 		RET
 
 DO_PASV_OPEN
@@ -1302,7 +1395,14 @@ FEED_CONTROL_BYTES
 .CHECK
 		LD	A,(REPLY_DONE)
 		AND	A
-		RET	NZ
+		JR	Z,.MORE
+		; A small LIST may carry both 150 and 226 in one control +IPD.
+		; When printing is deferred, consume the rest so the terminal reply
+		; replaces the preliminary one instead of being lost or printed early.
+		LD	A,(CONTROL_PRINT_SUPPRESS)
+		AND	A
+		RET	Z
+.MORE
 		LD	A,B
 		OR	C
 		JR	NZ,.NEXT
@@ -1534,6 +1634,9 @@ PARSE_DEC_BYTE
 		RET
 
 PARSE_EXPECTED_SIZE
+		LD	A,(DATA_EXPECTED_SEEN)
+		AND	A
+		RET	NZ				; SIZE already supplied the full remote length
 		XOR	A
 		LD	(DATA_EXPECTED_SEEN),A
 		LD	A,(LIST_FLAG)
@@ -1554,11 +1657,25 @@ PARSE_EXPECTED_SIZE
 		JR	.FIND_OPEN
 .CHECK_DIGIT
 		INC	HL
+		JP	PARSE_EXPECTED_SIZE_AT_HL
+
+; Parse an unsigned decimal size at HL into DATA_EXPECTED. This is shared by
+; legacy 150 "(...bytes...)" replies and the standard "213 <size>" SIZE
+; response. CF=0 on at least one digit; CF=1 otherwise.
+PARSE_EXPECTED_SIZE_AT_HL
+		XOR	A
+		LD	(DATA_EXPECTED_SEEN),A
+		LD	(DATA_EXPECTED),A
+		LD	(DATA_EXPECTED+1),A
+		LD	(DATA_EXPECTED+2),A
+		LD	(DATA_EXPECTED+3),A
+		LD	(SIZE_DIGITS),A
+.CHECK_DIGIT
 		LD	A,(HL)
 		CP	'0'
-		RET	C
+		JR	C,.ERR
 		CP	'9'+1
-		RET	NC
+		JR	NC,.ERR
 .PARSE
 		LD	A,(HL)
 		CP	'0'
@@ -1573,10 +1690,20 @@ PARSE_EXPECTED_SIZE
 		CALL	U32_ADD_A_EXPECTED
 		POP	HL
 		INC	HL
+		LD	A,(SIZE_DIGITS)
+		INC	A
+		LD	(SIZE_DIGITS),A
 		JR	.PARSE
 .DONE
+		LD	A,(SIZE_DIGITS)
+		AND	A
+		JR	Z,.ERR
 		LD	A,1
 		LD	(DATA_EXPECTED_SEEN),A
+		OR	A
+		RET
+.ERR
+		SCF
 		RET
 
 U32_MUL10_EXPECTED
@@ -1675,6 +1802,8 @@ RECV_DATA_TRANSFER
 			LD	(HOLD_MODE),A
 			LD	(HOLD_LEN),A
 			LD	(HOLD_LEN+1),A
+			INC	A
+			LD	(TRANSFER_ACTIVE),A
 		; Note: DATA_BYTES_SEEN may already be set by an earlier
 		; RECV_CONTROL_REPLY that received data-link bytes while
 		; waiting for the 150 reply. Don't clear it here.
@@ -1747,18 +1876,27 @@ RECV_DATA_TRANSFER
 			AND	A
 			JR	NZ,.DATA_NOBURST
 			CALL	ACCUMULATE_DATA_BURST
+			JR	C,.UART_ERROR
 .DATA_NOBURST
-			; Manually de-assert RTS for the slow console/file output path so
-			; ESP holds the next burst in its own UART buffer instead of
-			; overflowing our 16-byte FIFO.
-			; RX is already paused immediately after RECEIVE_ANY_LINK.
+			; Keep the common receive guard around the slow console/file path.
+			; Both firmware paths explicitly lower RTS here: auto-only AFE on
+			; 2.2.2 still overran during real +IPD directory listings.
 			LD	HL,(RECV_DEST)
 			CALL	HANDLE_DATA_BUFFER
 			JR	NC,.DATA_HANDLED
 			CALL	WIFI.UART_RX_RESUME
 			JP	FILE_ERROR_EXIT
 .DATA_HANDLED
+			; In retain-tail mode there is no DSS_WRITE or progress rendering here.
+			; Keep RTS deasserted while we inspect the completed block and any
+			; deferred control reply. The next .READ resumes it immediately before
+			; the next UART drain; this removes the unprotected gap between tail
+			; blocks and the data-link FIN.
+			LD	A,(HOLD_MODE)
+			AND	A
+			JR	NZ,.TAIL_STILL_PAUSED
 			CALL	WIFI.UART_RX_RESUME
+.TAIL_STILL_PAUSED
 			CALL	PROCESS_PENDING_CONTROL
 			LD	A,(DATA_CLOSE_SEEN)
 		AND	A
@@ -1768,33 +1906,29 @@ RECV_DATA_TRANSFER
 		PUSH	AF
 		CALL	WIFI.UART_RX_RESUME
 		POP	AF
-		; If we already received any IPD bytes, treat any error
-		; (timeout, parser desync from UART overrun, link closed)
-		; as end-of-listing. TCP can't recover lost bytes anyway,
-		; so report what we have rather than failing the whole run.
-		PUSH	AF
-		LD	A,(DATA_BYTES_SEEN)
-		OR	A
-		JR	Z,.NO_DATA_YET
-		POP	AF
-		JR	.CLOSED
-.NO_DATA_YET
-		POP	AF
+		; Never turn a receive timeout or a parser error into a successful list.
+		; Doing so left the still-buffered UART tail to be consumed by QUIT and
+		; printed it as garbage. Only an explicit ESP link-close ends a transfer.
 		CP	RES_NOT_CONN
 		JR	Z,.CLOSED
 		SCF
 		RET
 .UART_ERROR
-		CALL	WIFI.UART_RX_RESUME
-		PRINTLN MSG_UART_OVERRUN
-		LD	A,(DATA_BYTES_SEEN)
-		OR	A
-		JR	NZ,.CLOSED
-		LD	A,RES_RS_TIMEOUT
-		SCF
-		RET
+			; OE/PE/FE means an AT header or file byte was lost. The current
+			; output can no longer be repaired by REST from DATA_TOTAL: that
+			; offset is after potentially corrupt bytes. Fail this run instead
+			; of treating it as a clean close / auto-resume opportunity.
+			CALL	WIFI.UART_RX_RESUME
+			XOR	A
+			LD	(TRANSFER_ACTIVE),A
+			PRINTLN MSG_UART_OVERRUN
+			LD	A,RES_RS_TIMEOUT
+			SCF
+			RET
 .CLOSED
 		CALL	WIFI.UART_RX_RESUME
+		XOR	A
+		LD	(TRANSFER_ACTIVE),A
 		; Persist the retained tail now that the data link has closed and all
 		; +IPD bytes have been drained into RECV_BUFFER.
 		CALL	FTP_FLUSH_HOLD
@@ -1894,13 +2028,24 @@ ACCUMULATE_DATA_BURST
 			OR	A
 			SBC	HL,DE
 			JR	C,.DONE
+			LD	A,H
+			OR	L
+			JR	Z,.DONE
+			; Limit every accumulation pass. Previously this only compared the
+			; capacity and still passed the whole RECV_CAP to RECEIVE_ANY_LINK,
+			; allowing a large directory listing to become one oversized burst.
 			LD	DE,FTP_ACTIVE_IPD_MAX
-			PUSH	HL
 			OR	A
 			SBC	HL,DE
-			POP	BC
-			JR	C,.DONE
-			LD	HL,RECV_BUFFER
+			JR	C,.CAP_SMALLER
+			LD	BC,FTP_ACTIVE_IPD_MAX
+			JR	.HAVE_CAP
+.CAP_SMALLER
+			ADD	HL,DE
+			LD	B,H
+			LD	C,L
+.HAVE_CAP
+			LD	HL,(RECV_DEST)
 			LD	DE,(DATA_ACCUM_LEN)
 			ADD	HL,DE
 			LD	(BURST_DEST),HL
@@ -1910,7 +2055,22 @@ ACCUMULATE_DATA_BURST
 			PUSH	AF,BC
 			CALL	WIFI.UART_RX_PAUSE
 			POP	BC,AF
-			JR	C,.DONE
+			; LSR_ACCUM belongs to the whole outer receive iteration. Do not
+			; discard an overrun from a follow-up burst by returning success and
+			; letting the next .READ clear it.
+			LD	A,(TCP.LSR_ACCUM)
+			AND	LSR_OE | LSR_PE | LSR_FE | LSR_BI | LSR_RCVE
+			JR	NZ,.UART_ERROR
+			JR	NC,.RECEIVED
+			; A normal data-link close may be received while draining a burst.
+			; Preserve the data already collected, but do not lose the close and
+			; wait the full FTP_DATA_TIMEOUT on the next outer receive.
+			CP	RES_NOT_CONN
+			JR	NZ,.DONE
+			LD	A,1
+			LD	(DATA_CLOSE_SEEN),A
+			JR	.DONE
+.RECEIVED
 			LD	A,B
 			OR	C
 			JR	Z,.LOOP
@@ -1933,6 +2093,10 @@ ACCUMULATE_DATA_BURST
 .DONE
 			LD	BC,(DATA_ACCUM_LEN)
 			XOR	A
+			RET
+.UART_ERROR
+			LD	A,RES_RS_TIMEOUT
+			SCF
 			RET
 
 PROCESS_PENDING_CONTROL
@@ -1971,9 +2135,23 @@ FEED_CONTROL_BYTES_MAYBE_DEFERRED
 			JP	FEED_CONTROL_BYTES
 
 SHOULD_DEFER_CONTROL_PRINT
-			LD	A,(LIST_FLAG)
-			AND	A
-			RET	NZ
+		LD	A,(LIST_FLAG)
+		AND	A
+		JR	Z,.NOT_LIST
+		; During LIST/NLST, 226 can overtake queued data-link +IPD blocks.
+		; The data link is already open while waiting for 150, therefore use
+		; DATA_OPEN as well as TRANSFER_ACTIVE. This covers an immediate
+		; 150+226 control burst before RECV_DATA_TRANSFER starts.
+		LD	A,(TRANSFER_ACTIVE)
+		AND	A
+		JR	NZ,.DEFER
+		LD	A,(DATA_OPEN)
+		AND	A
+		JR	Z,.NOT_LIST
+.DEFER
+		SCF
+			RET
+.NOT_LIST
 			LD	A,(DATA_EXPECTED_SEEN)
 			AND	A
 			RET	Z
@@ -2583,20 +2761,9 @@ SEND_CMD_IGNORE
 
 SEND_CMD_RECOVER
 		PUSH	HL
-		LD	DE,WIFI.RS_BUFF
-		LD	BC,DEFAULT_TIMEOUT
-		CALL	WIFI.UART_TX_CMD
-		AND	A
-		JR	Z,.OK
-		PRINTLN MSG_RESETTING_ESP
-		CALL	WIFI.ESP_RESET
-		CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-		CALL	WIFI.UART_INIT
+		CALL	WCOMMON.SYNC_ESP_COMMAND
 		POP	HL
 		JP	SEND_CMD
-.OK
-		POP	HL
-		RET
 
 APPEND_STR
 		LD	A,(DE)
@@ -2627,6 +2794,11 @@ CLEAR_BSS
 		LD	HL,FTP_BSS_BASE
 		LD	DE,FTP_BSS_BASE+1
 		LD	BC,FTP_BSS_END-FTP_BSS_BASE-1
+		; LDIR with BC=0 wraps and copies 65536 bytes on Z80. FTP keeps its
+		; large runtime strings in WIN2, so the remaining WIN1 BSS can be empty.
+		LD	A,B
+		OR	C
+		RET	Z
 		XOR	A
 		LD	(HL),A
 		LDIR
@@ -2706,8 +2878,6 @@ MSG_WIFI_NOT_FOUND
 		DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 		DB "UART initialized.",0
-MSG_RESETTING_ESP
-		DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 		DB "Connecting to ",0
 MSG_COLON
@@ -2795,6 +2965,16 @@ CMD_ECHO_OFF
 		DB "ATE0",13,10,0
 CMD_CIPMUX_1
 		DB "AT+CIPMUX=1",13,10,0
+		; Commands are emitted in the universal image but reached only after the
+		; selected NET_ESP_FW profile proves ESP-AT 2.2.2 support.
+CMD_SYSSTORE_VOLATILE
+		DB "AT+SYSSTORE=0",13,10,0
+CMD_CIPRECVMODE_1
+		DB "AT+CIPRECVMODE=1",13,10,0
+CMD_CIPRECVMODE_0
+		DB "AT+CIPRECVMODE=0",13,10,0
+CMD_CIPDINFO_0
+		DB "AT+CIPDINFO=0",13,10,0
 CMD_CRLF
 		DB 13,10,0
 
@@ -2822,6 +3002,8 @@ FTP_NLST_PREFIX
 		DB "NLST ",0
 FTP_RETR_PREFIX
 		DB "RETR ",0
+FTP_SIZE_PREFIX
+		DB "SIZE ",0
 FTP_STOR_PREFIX
 		DB "STOR ",0
 FTP_REST_PREFIX
@@ -2897,7 +3079,9 @@ DATA_CLOSE_SEEN
 DATA_BYTES_SEEN
 			DB 0
 FINAL_REPLY_SEEN
-		DB 0
+			DB 0
+TRANSFER_ACTIVE
+			DB 0
 OUT_FH
 		DB NO_HANDLE
 CMDLINE_PTR
@@ -2937,6 +3121,8 @@ RECV_DEST
 RECV_CAP
 		DW 0
 U32_DIGIT
+		DB 0
+SIZE_DIGITS
 		DB 0
 U32_TMP
 		DD 0
@@ -2991,7 +3177,12 @@ PASV_P2
 
 		ENDMODULE
 
+		; The universal image includes the 2.2.2 passive backend and selects it
+		; at runtime. Reserve a small amount of NET.CFG slack so all profiles
+		; retain their mandatory WIN1 stack margin.
+		DEFINE	NETCFG_COMPACT_BUFFER
 		INCLUDE "netcfg_lib.asm"
+		DEFINE WCOMMON_USE_NETCFG
 		INCLUDE "wcommon.asm"
 		INCLUDE "dss_error.asm"
 		INCLUDE "isa.asm"
@@ -3039,7 +3230,7 @@ OVL_MSG_USAGE
 ; (run NETUP)" hint - so no separate Wi-Fi probe is needed here.
 ; Cold-only and RECV_BUFFER-free, so it runs from the WIN2 overlay; CALL_OVERLAY
 ; clobbers A/flags on return, so the result is passed back in SOFT_RECOVER_OK
-; (1 = ESP responsive, caller re-logins; 0 = AT never answered, caller resets).
+; (1 = ESP responsive, caller re-logins; 0 = AT never answered, caller exits).
 OVL_ESP_SOFT_RECOVER
 		LD	B,FTP_SOFT_AT_RETRIES
 .AT_LOOP
@@ -3058,7 +3249,7 @@ OVL_ESP_SOFT_RECOVER
 		POP	BC
 		DJNZ	.AT_LOOP
 		XOR	A
-		LD	(SOFT_RECOVER_OK),A		; 0 -> never answered, hard reset
+		LD	(SOFT_RECOVER_OK),A		; 0 -> never answered, report failure
 		RET
 .ALIVE
 		; Command interface is back. Restore the expected mode and clear any
@@ -3066,6 +3257,12 @@ OVL_ESP_SOFT_RECOVER
 		; may already be gone).
 		LD	HL,CMD_CIPMUX_1
 		CALL	SEND_CMD_IGNORE
+		IFDEF	ESP_AT_FORCE_222
+		LD	HL,CMD_CIPRECVMODE_1
+		CALL	SEND_CMD_IGNORE
+		LD	HL,CMD_CIPDINFO_0
+		CALL	SEND_CMD_IGNORE
+		ENDIF
 		LD	A,DATA_LINK
 		CALL	TCP.CLOSE_LINK
 		LD	A,CONTROL_LINK
@@ -3102,7 +3299,11 @@ OVERLAY_SIZE	EQU OVL_END - OVL_BASE
 		ASSERT	$ < STACK_TOP - 0x0100
 
 FTP_BSS_BASE	EQU NETCFG.NETCFG_BSS_END
-HOST_BUFF	EQU FTP_BSS_BASE
+; All long-lived FTP strings live in the unused tail of the DSS-allocated WIN2
+; page, not in WIN1 below the stack. They are populated before use, so unlike
+; state variables they require no startup clear.
+FTP_WIN2_SCRATCH	EQU RECV_BUFFER + RECV_SIZE
+HOST_BUFF	EQU FTP_WIN2_SCRATCH
 PORT_BUFF	EQU HOST_BUFF + HOST_SIZE
 USER_BUFF	EQU PORT_BUFF + PORT_SIZE
 PASS_BUFF	EQU USER_BUFF + USER_SIZE
@@ -3113,15 +3314,19 @@ ARG_BUFF	EQU OUT_FILE + OUT_SIZE
 ; same memory becomes the FTP control command buffer.
 CMD_BUFF	EQU ARG_BUFF
 LINE_BUFF	EQU CMD_BUFF + CMD_SIZE
+; These values are needed while no data receive is active. Keep them after the
+; command-line/control strings in the WIN2 tail: starting them at FTP_WIN2_SCRATCH
+; would overlap HOST_BUFF and corrupt the target while opening the control link.
 DEFERRED_CONTROL_LINE	EQU LINE_BUFF + LINE_SIZE
 PASV_HOST_BUFF	EQU DEFERRED_CONTROL_LINE + LINE_SIZE
 PASV_PORT_BUFF	EQU PASV_HOST_BUFF + 16
-FTP_BSS_END	EQU PASV_PORT_BUFF + 8
+; Keep CLEAR_BSS valid while all actual large buffers are in WIN2.
+FTP_BSS_END	EQU FTP_BSS_BASE + 1
 RECV_BUFFER	EQU WIN2_BASE
 	; FTP RECV_BUFFER feeds PRINT_BUFFER/DSS_WRITE and uses allocated WIN2.
 	; Stack stays at #8000 and grows downward in WIN1.
 	ASSERT	FTP_BSS_END < STACK_TOP - 0x0100
-	ASSERT	RECV_BUFFER + RECV_SIZE <= 0xC000
+		ASSERT	PASV_PORT_BUFF + 8 <= 0xC000
 
 		ENDMODULE
 

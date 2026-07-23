@@ -51,15 +51,11 @@ FCR_TR1         EQU	0x00								; Trigger on 1 byte in fifo
 FCR_TR4         EQU	0x40								; Trigger on 4 bytes in fifo
 FCR_TR8         EQU	0x80								; Trigger on 8 bytes in fifo
 FCR_TR14        EQU	0xC0								; Trigger on 14 bytes in fifo
-; RX FIFO trigger for RTS/CTS auto-flow. TR1 (deassert RTS at the first byte)
-; throttles the ESP to one byte per RTS round-trip; combined with the per-poll
-; delay in the byte-read loop that capped throughput at ~1 KB/s and kept the ESP
-; permanently backpressured (which also lost the tail of downloads on close).
-; TR8 lets the ESP deliver 8-byte bursts that the Z80 drains without a delay,
-; while still leaving 8 FIFO byte-times of margin for the ESP to honour RTS
-; (auto-flow prevents overrun; OE is monitored by the download utilities).
-;FCR_RX_TRIGGER	EQU	FCR_TR1								; legacy: 1 byte/RTS cycle, ~1 KB/s
-FCR_RX_TRIGGER	EQU	FCR_TR8								; deassert RTS at 8 bytes; ~8x faster bursts
+; Trigger 4 leaves 12 FIFO byte-times for CTS reaction. The receive/RTS
+; algorithm itself remains profile-specific below.
+UART_RX_PROFILE_221	EQU	1
+UART_RX_PROFILE_222	EQU	2
+FCR_RX_TRIGGER	EQU	FCR_TR4
 LSR_DR          EQU	0x01								; Data Ready
 LSR_OE          EQU	0x02								; Overrun Error
 LSR_PE          EQU	0x04								; Parity Error
@@ -165,7 +161,23 @@ UART_INIT
 
 	CALL 	ISA.ISA_OPEN
 	LD		IX, PORT_UART_A
-	LD		(IX+_FCR),FCR_RX_TRIGGER | FCR_FIFO			; Enable FIFO, low RX trigger for RTS/CTS flow control
+	; Restore the complete field-proven 2.2.1 FIFO setup (trigger 8, no
+	; init-time reset). 2.2.2 uses the clean trigger-4 AFE setup.
+	IFDEF	ESP_AT_FORCE_221
+	LD		A,FCR_TR8 | FCR_FIFO
+	ELSE
+	IFDEF	ESP_AT_FORCE_222
+	LD		A,FCR_TR4 | FCR_RESET_RX | FCR_RESET_TX | FCR_FIFO
+	ELSE
+	LD		A,(UART_RX_PROFILE)
+	CP		UART_RX_PROFILE_221
+	LD		A,FCR_TR4 | FCR_RESET_RX | FCR_RESET_TX | FCR_FIFO
+	JR		NZ,.FCR_READY
+	LD		A,FCR_TR8 | FCR_FIFO
+.FCR_READY
+	ENDIF
+	ENDIF
+	LD		(IX+_FCR),A
 	XOR 	A
 	LD 		(IX+_IER), A								; Disable interrupts
 
@@ -176,7 +188,15 @@ UART_INIT
 	XOR 	A
 	LD		(IX+_DLM), A
 	LD 		(IX+_LCR), LCR_WL8							; 8bit word, disable latch
-	LD		(IX+_MCR), MCR_AFE | MCR_RTS				; Enable RTS/CTS auto flow, keep ESP out of reset
+	; Begin in manual RTS mode. AFE is enabled only after the caller verifies
+	; that the ESP runtime RTS/CTS pins actually work.
+	LD		A,(UART_FLOW_MODE)
+	AND	A
+	LD		A,MCR_RTS
+	JR		Z,.MCR_READY
+	LD		A,MCR_AFE | MCR_RTS
+.MCR_READY
+	LD		(IX+_MCR),A
 	CALL 	ISA.ISA_CLOSE
 
 	POP 	IX,AF
@@ -196,23 +216,70 @@ UART_SET_DEFAULT_DIVISOR
 	JR		UART_SET_DIVISOR
 
 ; ------------------------------------------------------
-; Manual RX flow-control helpers.
-; Deassert RTS while the program is busy outside UART receive loops, then
-; reassert RTS before reading again. Hardware auto-flow remains enabled so the
-; ESP (flow=3) pauses its TX when RTS drops — essential at higher bauds where
-; the Z80 cannot otherwise keep up and the RX FIFO overruns.
+; Select the UART receive profile. In a normal build this is called once by
+; WCOMMON.REQUIRE_NET_UP after it reads NET_ESP_FW. Forced builds compile the
+; matching receive algorithm and do not depend on this runtime value.
+; Inp: A = UART_RX_PROFILE_221 or UART_RX_PROFILE_222.
+; ------------------------------------------------------
+UART_SET_RX_PROFILE
+	LD		(UART_RX_PROFILE),A
+	RET
+
+; ------------------------------------------------------
+; Select host-side flow-control mode.
+; The safe default is manual RTS.  AFE is enabled only after a caller has
+; changed the ESP UART to flow=3 *and* proved that an AT round trip still
+; works with CTS gating enabled.  Some ESP-AT builds accept flow=3 while the
+; corresponding pins are not actually muxed, in which case AFE deadlocks TX.
+; ------------------------------------------------------
+UART_FLOW_OFF
+	XOR	A
+	JR		UART_SET_FLOW_MODE
+
+UART_FLOW_ON
+	LD		A,1
+
+UART_SET_FLOW_MODE
+	LD		(UART_FLOW_MODE),A
+	PUSH	DE,HL
+	AND		A
+	LD		E,MCR_RTS
+	JR		Z,.WRITE
+	LD		E,MCR_AFE | MCR_RTS
+.WRITE
+	LD		HL,REG_MCR
+	CALL	UART_WRITE
+	POP		HL,DE
+	RET
+
+; ------------------------------------------------------
+; RX flow-control helpers. ESP-AT 2.2.1 retains its established manual RTS
+; operation. ESP-AT 2.2.2 initially used automatic trigger-4 RTS alone, but
+; real `+IPD` FTP traffic still overflowed the FIFO. Therefore both profiles
+; explicitly deassert RTS around slow consumer paths; their FIFO setup remains
+; profile-specific in UART_INIT/UART_EMPTY_RS above.
 ; ------------------------------------------------------
 UART_RX_PAUSE
 	PUSH	DE,HL
-	LD	E,MCR_AFE
-	LD	HL,REG_MCR
+	LD		A,(UART_FLOW_MODE)
+	LD		E,0
+	AND		A
+	JR		Z,.WRITE
+	LD		E,MCR_AFE
+.WRITE
+	LD		HL,REG_MCR
 	CALL	UART_WRITE
-	POP	HL,DE
+	POP		HL,DE
 	RET
 
 UART_RX_RESUME
 	PUSH	DE,HL
-	LD	E,MCR_AFE | MCR_RTS
+	LD		A,(UART_FLOW_MODE)
+	LD		E,MCR_RTS
+	AND		A
+	JR		Z,.WRITE
+	LD		E,MCR_AFE | MCR_RTS
+.WRITE
 	LD	HL,REG_MCR
 	CALL	UART_WRITE
 	POP	HL,DE
@@ -378,7 +445,20 @@ UTXS_TXNR
 	;IFUSED	UART_EMPTY_RS
 UART_EMPTY_RS
 	PUSH 	DE, HL
-	LD 		E, FCR_RX_TRIGGER | FCR_RESET_RX | FCR_FIFO
+	IFDEF	ESP_AT_FORCE_221
+	LD		E,FCR_TR8 | FCR_RESET_RX | FCR_FIFO
+	ELSE
+	IFDEF	ESP_AT_FORCE_222
+	LD		E,FCR_TR4 | FCR_RESET_RX | FCR_FIFO
+	ELSE
+	LD		A,(UART_RX_PROFILE)
+	CP		UART_RX_PROFILE_221
+	LD		E,FCR_TR4 | FCR_RESET_RX | FCR_FIFO
+	JR		NZ,.FCR_READY
+	LD		E,FCR_TR8 | FCR_RESET_RX | FCR_FIFO
+.FCR_READY
+	ENDIF
+	ENDIF
 	LD		HL, REG_FCR
 	CALL	UART_WRITE
 	POP 	HL, DE
@@ -467,6 +547,7 @@ UVR_CANCEL_INT
 	;IFUSED	ESP_RESET
 ESP_RESET
 	PUSH	AF,HL
+	CALL	UART_FLOW_OFF
 
 	CALL	ISA.ISA_OPEN
 
@@ -474,7 +555,7 @@ ESP_RESET
 	LD		A, MCR_RST ;| MCR_RTS						; -OUT1=0 -> RESET ESP
 	LD		(REG_MCR), A
 	CALL	UTIL.DELAY_1MS
-	LD		A, MCR_AFE | MCR_RTS						; 0x22 -OUT1=1 RTS=1 AutoFlow enabled
+	LD		A, MCR_RTS							; release reset in manual RTS mode
 	LD		(HL), A
 	CALL	ISA.ISA_CLOSE
 	
@@ -614,6 +695,12 @@ TX_BURST_LEFT	DB 0
 CANCEL_TICK	DW 0
 
 UART_DIVISOR	DB DEFAULT_DIVISOR
+
+; Default is the new 2.2.2-safe start-up path. Network applications replace
+; it from NET_ESP_FW before their own UART_INIT; NETUP replaces it immediately
+; after its one-time firmware probe.
+UART_RX_PROFILE	DB UART_RX_PROFILE_222
+UART_FLOW_MODE	DB 0
 
 ; Received message for OK result
 MSG_OK		DB "OK", 0

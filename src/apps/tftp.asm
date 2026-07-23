@@ -1105,9 +1105,9 @@ RECEIVE_PACKET_RETRY
 	RET
 
 ; ------------------------------------------------------
-; Recover from a UART overrun: deassert RTS, give ESP up to ~50 ms to
-; drain any bytes still queued in its UART TX buffer, reset the 16550 RX
-; FIFO and clear the sticky LSR_ACCUM. RX is resumed on exit so the
+; Recover from a UART overrun: hold RTS low, give ESP up to ~50 ms to drain any
+; bytes still queued in its UART TX buffer, reset the 16550 RX FIFO and clear
+; the sticky LSR_ACCUM. RX is resumed on exit so the
 ; subsequent retry path (PRINTLN "UART overrun, retrying" + next
 ; RECEIVE) and any intermediate SEND_PACKET work normally.
 ; ------------------------------------------------------
@@ -1356,21 +1356,9 @@ SEND_CMD
 
 SEND_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-
-	PRINTLN MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_CMD
-.OK
-	POP	HL
-	RET
 
 VERIFY_UDP_OPEN
 	LD	HL,CMD_CIPSTATUS
@@ -1513,8 +1501,6 @@ MSG_INPUT
 	DB "Input file: ",0
 MSG_UART_READY
 	DB "UART initialized.",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 	DB "Opening UDP endpoint to ",0
 MSG_COLON
@@ -1661,6 +1647,7 @@ LAST_DATA_LEN	DW 0
 ESP_TCP_BSS_BASE	EQU 0xB000
 
 	INCLUDE "netcfg_lib.asm"
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"

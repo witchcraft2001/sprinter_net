@@ -3,6 +3,15 @@
 This package provides small Sprinter DSS utilities for the SprinterESP /
 Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 
+Normal builds automatically use the ESP-AT 2.2.1/2.2.2 command subset. After
+`NETUP`, transfer utilities select their profile-specific UART FIFO setup from
+published `NET_ESP_FW`; both profiles use explicit RTS pauses during slow
+consumer paths, because automatic AFE alone overran real 2.2.2 `+IPD` bursts.
+For a diagnostic build for known firmware, use `ESP_AT_PROFILE=2.2.1 make
+build` or `ESP_AT_PROFILE=2.2.2 make build`. A forced executable prints its
+profile in the banner. The default transfer path remains active `+IPD`, because
+2.2.1 does not provide passive `CIPRECVMODE`/`CIPRECVDATA` receive.
+
 ## Utilities
 
 - `NETCFG.EXE` shows current `NET.CFG` values.
@@ -172,6 +181,12 @@ and repeat `NETPROBE.EXE` for a clean firmware diagnostic.
 
 `WTERM.EXE` is useful for manual ESP-AT checks. After using the terminal, run
 `NETRESET.EXE` before automated tools if the ESP stream looks confused.
+
+`PING.EXE` does not reset an ESP that was already brought up by `NETUP.EXE`.
+When its initial `AT` check fails, it retries and then uses the ESP-AT `+++`
+transparent-mode escape before checking `AT` again. This preserves the current
+Wi-Fi association; a remaining failure prints the actual ESP response and
+returns status `3`.
 
 `NETRESET.EXE` and `WTERM.EXE` are recovery/manual tools and use the default
 115200 startup speed after ESP reset. Automated clients use `BAUD` from

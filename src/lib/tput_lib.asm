@@ -333,9 +333,10 @@ DIV32_BY_DE
 PROGRESS
 	; Rendering (two 32-bit divides + ~15 chars) is far slower than the old single
 	; dot and, run every chunk, would stall the UART read long enough to overrun
-	; the 16-byte RX FIFO. So pause ESP TX (drop RTS) around the render: the ESP
-	; holds off while we are not reading, and resumes after. UART_RX_PAUSE/RESUME
-	; preserve HL/DE. MUST return CF=0 — callers propagate CF as success/fail.
+	; the 16-byte RX FIFO. Keep the common receive guard around it: both current
+	; firmware profiles explicitly lower RTS here, since auto-only AFE proved
+	; insufficient for real 2.2.2 +IPD bursts. UART_RX_PAUSE/RESUME preserve
+	; HL/DE. MUST return CF=0 — callers propagate CF as success/fail.
 	CALL	@WIFI.UART_RX_PAUSE
 	CALL	.RENDER
 	CALL	@WIFI.UART_RX_RESUME

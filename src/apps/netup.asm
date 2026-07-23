@@ -10,9 +10,15 @@ UART_SWITCH_SETTLE	EQU 300
 UART_VERIFY_RETRIES	EQU 6		; AT attempts after a baud switch before giving up
 EXE_DIR_SIZE		EQU 272		; APPINFO path (up to 256) + "NET.CFG",0
 
-; NETUP normally determines the profile with AT+SYSSTORE?. These optional
-; assembler defines make a firmware-specific build possible for diagnostics;
-; define at most one of NETUP_FORCE_AT221 / NETUP_FORCE_AT222.
+; NETUP normally determines the profile with AT+SYSSTORE?. The package-wide
+; ESP_AT_FORCE_221 / ESP_AT_FORCE_222 defines make a profile-specific build.
+; Retain the older NETUP_FORCE_AT* aliases for existing diagnostic commands.
+	IFDEF	NETUP_FORCE_AT221
+	DEFINE	ESP_AT_FORCE_221
+	ENDIF
+	IFDEF	NETUP_FORCE_AT222
+	DEFINE	ESP_AT_FORCE_222
+	ENDIF
 ESP_FW_221		EQU 1
 ESP_FW_222		EQU 2
 
@@ -46,6 +52,10 @@ START
 	CALL	ISA.ISA_RESET
 	CALL	WCOMMON.INIT_VMODE
 	PRINTLN MSG_START
+	; Do not let a failed NETUP leave the success marker or stale addresses from
+	; an earlier run visible to consumers.  The complete NET_* set is published
+	; again only after the new association has been verified below.
+	CALL	CLEAR_NET_ENV
 
 	CALL	LOAD_CONFIG_FROM_EXE_DIR
 	JR	NC,.CFG_LOADED
@@ -110,7 +120,7 @@ START
 	CALL	APPLY_DNS_OPTIONAL
 
 	PRINTLN MSG_IP_INFO
-	CALL	PRINT_IP_INFO_OPTIONAL
+	CALL	QUERY_STATION_INFO
 
 	PRINTLN MSG_PUBLISH_ENV
 	CALL	PUBLISH_NET_ENV
@@ -196,13 +206,13 @@ PRINT_CONFIG_DSS_ERROR
 ; Select an ESP-AT command profile once for this NETUP run.
 ; AT+SYSSTORE? is the generation probe: a normal ERROR identifies the
 ; 2.2.1-compatible profile, while a transport failure remains a hard error.
-; NETUP_FORCE_AT221 / NETUP_FORCE_AT222 are diagnostic build overrides.
+; ESP_AT_FORCE_221 / ESP_AT_FORCE_222 are diagnostic build overrides.
 ; ------------------------------------------------------
 DETECT_ESP_FIRMWARE
-	IFDEF	NETUP_FORCE_AT221
+	IFDEF	ESP_AT_FORCE_221
 	JR	.FW221
 	ELSE
-	IFDEF	NETUP_FORCE_AT222
+	IFDEF	ESP_AT_FORCE_222
 	JR	.FW222
 	ELSE
 	LD	HL,CMD_SYSSTORE_QUERY
@@ -218,11 +228,13 @@ DETECT_ESP_FIRMWARE
 .FW221
 	LD	A,ESP_FW_221
 	LD	(ESP_FW_PROFILE),A
+	CALL	WIFI.UART_SET_RX_PROFILE
 	PRINTLN MSG_ESP_FW_221
 	RET
 .FW222
 	LD	A,ESP_FW_222
 	LD	(ESP_FW_PROFILE),A
+	CALL	WIFI.UART_SET_RX_PROFILE
 	PRINTLN MSG_ESP_FW_222
 	RET
 
@@ -304,17 +316,20 @@ APPLY_DNS_OPTIONAL
 ; Send command in HL with default timeout.
 ; ------------------------------------------------------
 INIT_UART_CONFIGURED
+	CALL	WIFI.UART_FLOW_OFF
 	CALL	NETCFG.APPLY_UART_BAUD
 	JP	WIFI.UART_INIT
 
+; Flow=0 fallback: the ESP UART is still at the configured baud, but RTS/CTS
+; pins are not negotiated. Do not leave the TL16C550 in AFE mode because an
+; inactive/floating CTS can block every following AT command.
 INIT_UART_CONFIGURED_NO_FLOW
+	CALL	WIFI.UART_FLOW_OFF
 	CALL	NETCFG.APPLY_UART_BAUD
-	CALL	WIFI.UART_INIT
-	LD	E,MCR_RTS
-	LD	HL,REG_MCR
-	JP	WIFI.UART_WRITE
+	JP	WIFI.UART_INIT
 
 INIT_UART_DEFAULT
+	CALL	WIFI.UART_FLOW_OFF
 	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
 	JP	WIFI.UART_INIT
 
@@ -333,28 +348,37 @@ SEND_AT_STARTUP
 	JP	SEND_CMD
 
 APPLY_UART_SETTING
-	; netup only changes ESP UART params when NET.CFG selects a non-default
-	; baud. For default 115200 we leave ESP at factory defaults — utilities
-	; (wget/tftp/udptest via WCOMMON.SETUP_UART_FLOW) enable RTS/CTS flow
-	; control themselves at run time. Earlier "always send AT+UART_CUR"
-	; broke netup whenever NET.CFG had no/empty BAUD line: GET_UART_DIVISOR
-	; falls back to 8, but the strict IS_DEFAULT_BAUD strcmp returns "not
-	; default", and the failure handler reported "ESP communication error".
+	; Every network executable reinitializes its own 16550, so NETUP also makes
+	; the ESP-side UART contract explicit even at the default 115200 baud:
+	; AT+UART_CUR=<baud>,8,1,0,3 paired with local AFE+RTS. GET_UART_DIVISOR
+	; treats an empty/unknown BAUD as the safe 115200 divisor (8).
 	CALL	NETCFG.GET_UART_DIVISOR
 	CP	8
 	JR	NZ,.CUSTOM_BAUD
 	PRINTLN	MSG_UART_DEFAULT
-	RET
 
 .CUSTOM_BAUD
+	; Keep the established 2.2.1 UART contract untouched: that firmware was
+	; qualified for two months with manual RTS and ESP flow=0.  The 2.2.2 AFE
+	; experiment is selected only for its profile (or a forced 2.2.2 build).
+	IFDEF	ESP_AT_FORCE_221
+	JR		.LEGACY_NO_FLOW
+	ELSE
+	IFNDEF	ESP_AT_FORCE_222
+	LD		A,(ESP_FW_PROFILE)
+	CP		ESP_FW_221
+	JR		Z,.LEGACY_NO_FLOW
+	ENDIF
+	ENDIF
 	; Enable FULL hardware flow control (flow=3) when switching baud. This is
 	; what gives the host's 16550 auto-flow a working CTS (so AT commands go
 	; out) AND lets the ESP pause its TX under load — essential at higher bauds
 	; (e.g. 230400) where the Z80 otherwise can't drain the RX FIFO and overruns.
 	; The earlier flow=3 failures were the BUILD_UART_CMD bug (malformed command)
 	; + a single too-soon verify, both fixed; the post-switch verify now retries.
-	; Speed-only (flow=0) remains a fallback for a card that genuinely can't do
-	; RTS/CTS, but that mode risks overruns at high baud.
+	; Some ESP-AT 2.2.2 builds accept flow=3 without applying the RTS/CTS pin
+	; mux at runtime. Keep high/low configured baud usable on those modules by
+	; falling back to flow=0 and disabling local AFE as one matched contract.
 	CALL	TRY_UART_WITH_FLOW
 	AND	A
 	JR	Z,.FLOW_OK
@@ -383,6 +407,17 @@ APPLY_UART_SETTING
 .FLOW_OK
 	PRINTLN	MSG_UART_FLOW_OK
 	RET
+.LEGACY_NO_FLOW
+	CALL	TRY_UART_NO_FLOW
+	AND	A
+	JR		Z,.SPEED_ONLY_OK
+	LD	(UART_VERIFY_RESULT),A
+	CALL	RECOVER_UART_DEFAULT
+	LD	A,(UART_SET_RESULT)
+	AND	A
+	JR		NZ,.HAVE_ERROR
+	LD	A,(UART_VERIFY_RESULT)
+	JR		.HAVE_ERROR
 .SPEED_ONLY_OK
 	PRINTLN	MSG_UART_SPEED_ONLY
 	RET
@@ -390,12 +425,14 @@ APPLY_UART_SETTING
 TRY_UART_WITH_FLOW
 	XOR	A
 	LD	(UART_NO_FLOW_VERIFY),A
+	CALL	WIFI.UART_FLOW_OFF
 	CALL	BUILD_UART_CMD
 	JR	TRY_UART_COMMAND
 
 TRY_UART_NO_FLOW
 	LD	A,1
 	LD	(UART_NO_FLOW_VERIFY),A
+	CALL	WIFI.UART_FLOW_OFF
 	CALL	BUILD_UART_CMD_NO_FLOW
 
 TRY_UART_COMMAND
@@ -403,8 +440,7 @@ TRY_UART_COMMAND
 	LD	BC,DEFAULT_TIMEOUT
 	CALL	SEND_CMD_STATUS_TIMEOUT
 	LD	(UART_SET_RESULT),A
-	; ERROR/FAIL means ESP did not accept the command and did not switch baud.
-	; Do not switch the local 16550 in that case; try the next command form.
+	; ERROR/FAIL means ESP did not accept this command and did not switch baud.
 	CP	RES_ERROR
 	JR	Z,.NO_SWITCH
 	CP	RES_FAIL
@@ -435,7 +471,23 @@ TRY_UART_COMMAND
 	LD	BC,DEFAULT_TIMEOUT
 	CALL	SEND_CMD_STATUS_TIMEOUT
 	AND	A
+	JR	NZ,.VERIFY_FAILED
+
+	; A successful manual-RTS verification only proves that both UARTs changed
+	; baud. For flow=3 builds, enable AFE and prove CTS can release host TX.
+	LD	A,(UART_NO_FLOW_VERIFY)
+	AND	A
+	RET	NZ
+	CALL	WIFI.UART_FLOW_ON
+	LD	HL,UART_SWITCH_SETTLE
+	CALL	UTIL.DELAY
+	LD	HL,CMD_AT
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
 	RET	Z
+	CALL	WIFI.UART_FLOW_OFF
+.VERIFY_FAILED
 	LD	(UART_VERIFY_RESULT),A
 	LD	A,(UART_VERIFY_LEFT)
 	DEC	A
@@ -536,25 +588,48 @@ SEND_CMD_PRINT
 	JP	PRINT_ESP_RESPONSE
 
 ; ------------------------------------------------------
-; Print station IP information. This is diagnostic only: prefer AT+CIFSR and,
-; if it fails, try the profile-selected AT+CIPSTA query before warning.
+; Verify the just-created Wi-Fi connection and collect the values that will be
+; published by PUBLISH_NET_ENV.  AT+CWJAP ending in OK alone is not enough: a
+; firmware can still have no station address.  AT+CIFSR and the selected
+; AT+CIPSTA query are therefore mandatory here.  Any ESP error exits with B=3
+; through SEND_CMD, before NET_* is published.
 ; ------------------------------------------------------
-PRINT_IP_INFO_OPTIONAL
+QUERY_STATION_INFO
 	LD	HL,CMD_CIFSR
-	CALL	SEND_CMD_PRINT_STATUS
-	AND	A
-	RET	Z
+	CALL	SEND_CMD
+	LD	HL,PAT_STAIP
+	LD	DE,NET_IP_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	JR	C,NETWORK_NOT_READY_EXIT
+	LD	HL,LIT_ZERO_IP
+	LD	DE,NET_IP_BUF
+	CALL	UTIL.STRCMP
+	JR	NC,NETWORK_NOT_READY_EXIT
+	LD	HL,PAT_STAMAC
+	LD	DE,NET_MAC_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	LD	HL,WIFI.RS_BUFF
+	CALL	PRINT_ESP_RESPONSE
+
 	CALL	GET_CIPSTA_QUERY_CMD
-	CALL	SEND_CMD_PRINT_STATUS
-	AND	A
-	RET	Z
-	PUSH	AF
-	CALL	PRINT_ESP_FAILURE
-	POP	AF
-	ADD	A,'0'
-	LD	(MSG_WARN_NO),A
-	PRINTLN MSG_OPTIONAL_WARN
+	CALL	SEND_CMD
+	LD	HL,PAT_GATEWAY
+	LD	DE,NET_GW_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	LD	HL,PAT_NETMASK
+	LD	DE,NET_MASK_BUF
+	CALL	EXTRACT_QUOTED_FIELD
+	LD	HL,WIFI.RS_BUFF
+	CALL	PRINT_ESP_RESPONSE
 	RET
+
+; AT+CIFSR replied OK but did not expose a usable station address.  This is a
+; failed association, not an optional diagnostic failure.
+NETWORK_NOT_READY_EXIT
+	PRINTLN MSG_NO_STATION_IP
+	CALL	PRINT_ESP_FAILURE
+	LD	B,3
+	JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
 ; Send command in HL and print response on success.
@@ -699,9 +774,11 @@ BUILD_CIPDNS_CMD
 	JP	APPEND_STR
 
 ; ======================================================
-; Publish connection parameters to DSS environment variables (NET_*), like the
-; rtl8019as NETCFG -i feature, so other programs can read them via DSS ENVIRON
-; (#46) after NETUP. Best-effort: any failure is ignored. An empty value writes
+; Publish verified connection parameters to DSS environment variables (NET_*),
+; like the rtl8019as NETCFG -i feature, so other programs can read them via DSS
+; ENVIRON (#46) after NETUP.  QUERY_STATION_INFO has already completed all ESP
+; queries and verified NET_IP_BUF, so this routine cannot turn a failed ESP
+; response into a false successful NET=WIFI publication.  An empty value writes
 ; "NAME=" which DELETES the variable.
 ;   NET      = WIFI            network-type marker
 ;   NET_ESP_FW = 2.2.1/2.2.2   selected ESP-AT firmware profile
@@ -739,29 +816,7 @@ PUBLISH_NET_ENV
 	LD	HL,N_NET_ESP_FW
 	CALL	SETENV_NAME_VAL
 
-	; IP + MAC from AT+CIFSR (response in WIFI.RS_BUFF).
-	LD	HL,CMD_CIFSR
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	LD	HL,PAT_STAIP
-	LD	DE,NET_IP_BUF
-	CALL	EXTRACT_QUOTED_FIELD
-	LD	HL,PAT_STAMAC
-	LD	DE,NET_MAC_BUF
-	CALL	EXTRACT_QUOTED_FIELD
-
-	; Gateway + netmask from the selected AT+CIPSTA query form.
-	CALL	GET_CIPSTA_QUERY_CMD
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	LD	HL,PAT_GATEWAY
-	LD	DE,NET_GW_BUF
-	CALL	EXTRACT_QUOTED_FIELD
-	LD	HL,PAT_NETMASK
-	LD	DE,NET_MASK_BUF
-	CALL	EXTRACT_QUOTED_FIELD
-
-	; Runtime values (empty buffer -> variable deleted).
+	; Runtime values, collected after the mandatory association check.
 	LD	HL,N_NET_IP
 	LD	IX,NET_IP_BUF
 	CALL	SETENV_NAME_VAL
@@ -807,6 +862,49 @@ PUBLISH_NET_ENV
 	LD	IX,NETCFG.CFG_TZ
 	CALL	SETENV_NAME_VAL
 	RET
+
+; ------------------------------------------------------
+; Remove all variables owned by NETUP.  In particular, clear NET before any
+; ESP setup begins: callers then cannot mistake a previous successful NETUP
+; run for a current connection when this invocation exits with an error.
+; Environment errors are deliberately ignored, as SETENV_NAME_VAL has always
+; been best-effort and the original connection error must remain the exit code.
+; ------------------------------------------------------
+CLEAR_NET_ENV
+	LD	HL,N_NET
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_ESP_HW
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_ESP_FW
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_IP_SRC
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_IP
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_MASK
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_GW
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_MAC
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_DNS1
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_DNS2
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_NTP
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_TZ
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_BAUD
+	CALL	CLEAR_ENV_NAME
+	LD	HL,N_NET_SSID
+	CALL	CLEAR_ENV_NAME
+	RET
+
+; In: HL = NET_* variable name.  Empty value removes it from DSS ENVIRON.
+CLEAR_ENV_NAME
+	LD	IX,LIT_EMPTY
+	JP	SETENV_NAME_VAL
 
 ; ------------------------------------------------------
 ; SETENV_NAME_VAL: set env var NAME (HL ASCIIZ) = value (IX ASCIIZ).
@@ -941,6 +1039,8 @@ N_NET_TZ	DB "NET_TZ",0
 N_NET_BAUD	DB "NET_BAUD",0
 N_NET_SSID	DB "NET_SSID",0
 LIT_WIFI	DB "WIFI",0
+LIT_EMPTY	DB 0
+LIT_ZERO_IP	DB "0.0.0.0",0
 V_ESP_FW_221	DB "2.2.1",0
 V_ESP_FW_222	DB "2.2.2",0
 V_STATIC	DB "STATIC",0
@@ -1039,7 +1139,7 @@ MSG_UART_RETRY_NOFLOW
 MSG_UART_FLOW_OK
 	DB "UART speed set with RTS/CTS flow control.",0
 MSG_UART_SPEED_ONLY
-	DB "UART speed set WITHOUT flow control (overruns possible at high baud).",0
+	DB "UART speed set WITHOUT flow control.",0
 MSG_STATION
 	DB "Setting station mode.",0
 MSG_NO_SLEEP
@@ -1054,6 +1154,8 @@ MSG_JOINING
 	DB "Connecting to SSID: ",0
 MSG_IP_INFO
 	DB "IP information:",0
+MSG_NO_STATION_IP
+	DB "ESP has no station IP; Wi-Fi connection is not ready.",0
 MSG_PUBLISH_ENV
 	DB "Publishing NET_* environment variables.",0
 MSG_DONE

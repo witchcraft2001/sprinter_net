@@ -24,7 +24,10 @@ CMDLINE_ADDR		EQU LOAD_ADDR - 0x80
 STACK_TOP		EQU 0x8000
 WIN2_BASE		EQU 0x8000
 SCROLL_STACK_TOP	EQU 0xBFF0		; temp stack: DSS Scroll repages WIN1
-RECV_BUFFER_SIZE	EQU 512
+; The UART is flow-controlled while terminal rendering runs, so a 352-byte
+; staging block is sufficient and retains the mandatory 256-byte WIN1 stack
+; margin after the shared dual-firmware UART negotiation code.
+RECV_BUFFER_SIZE	EQU 352
 RX_DRAIN_SPIN		EQU 200			; RX_DRAIN inter-byte wait (bridges ~87us gaps)
 HOST_SIZE		EQU 96
 PORT_SIZE		EQU 8
@@ -150,10 +153,19 @@ START
 	CALL	SEND_CMD_RECOVER
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
+	; Transparent mode can receive continuously, so explicitly pair the local
+	; 16550 AFE+RTS setup with ESP-AT flow=3 on every program launch.
+	CALL	WCOMMON.SETUP_UART_FLOW
+	AND	A
+	JR	Z,.UART_FLOW_OK
+	ADD	A,'0'
+	LD	(MSG_ERROR_NO),A
+	PRINTLN	MSG_COMM_ERROR
+	LD	B,3
+	JP	WCOMMON.EXIT
+.UART_FLOW_OK
 	CALL	WCOMMON.CLEAN_ESP_LINKS		; drop any link a prior run left open
 	LD	HL,CMD_CIPMUX_0
-	CALL	SEND_CMD
-	LD	HL,CMD_CIPMODE_1		; transparent (raw passthrough) mode
 	CALL	SEND_CMD
 
 	PRINT	MSG_CONNECTING
@@ -161,11 +173,17 @@ START
 	PRINTLN	WCOMMON.LINE_END
 	CALL	CONNECT_TCP
 	JP	C,CONNECT_FAILED
+	; Select transparent mode only after CIPSTART succeeds.  Setting it before
+	; a failed connect left ESP in CIPMODE=1 for the next utility.
+	LD	HL,CMD_CIPMODE_1
+	CALL	SEND_CMD_IGNORE
+	AND	A
+	JP	NZ,CONNECT_FAILED
 	; Enter the raw byte pipe: AT+CIPSEND -> ">" prompt. From here the socket is
 	; a full-duplex UART stream (no +IPD framing, no per-keystroke CIPSEND), so
 	; nothing is lost to the half-duplex send/discard window.
 	CALL	ENTER_TRANSPARENT
-	JP	C,CONNECT_FAILED
+	JP	C,CONNECT_FAILED_TRANSPARENT
 	PRINTLN	MSG_CONNECTED
 
 	; Reset session state machines.
@@ -203,7 +221,7 @@ MAIN_LOOP
 	LD	HL,RECV_BUFFER
 	LD	BC,RECV_BUFFER_SIZE
 	CALL	RX_DRAIN
-	CALL	WIFI.UART_RX_PAUSE		; RTS down: hold ESP for render + key/status
+	CALL	WIFI.UART_RX_PAUSE		; preserve automatic RTS/CTS during render + key/status
 	LD	A,B
 	OR	C
 	JR	NZ,.GOT_DATA
@@ -247,6 +265,15 @@ QUIT
 	JP	WCOMMON.EXIT
 
 CONNECT_FAILED
+	; We are expected to still be in command mode. Close any half-open socket
+	; and always restore the neutral CIPMODE=0 state before returning to DSS.
+	CALL	EXIT_CMDMODE
+	JR	CONNECT_FAILED_REPORT
+CONNECT_FAILED_TRANSPARENT
+	; The prompt may have been lost after ESP already entered raw mode. Use the
+	; guarded escape path so this failure cannot strand subsequent utilities.
+	CALL	EXIT_TRANSPARENT
+CONNECT_FAILED_REPORT
 	; CIPSTART came back ERROR/timeout: name did not resolve, host is down, or
 	; the port refused the connection. Report it in plain language (exit 3 =
 	; unreachable host per the kit's exit-status guidelines).
@@ -1711,24 +1738,13 @@ SEND_CMD
 	JP	WCOMMON.EXIT
 
 ; ------------------------------------------------------
-; Send command in HL, reset the ESP once if it does not answer.
+; Synchronize non-destructively, then send the command.
 ; ------------------------------------------------------
 SEND_CMD_RECOVER
 	PUSH	HL
-	LD	DE,WIFI.RS_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	WIFI.UART_TX_CMD
-	AND	A
-	JR	Z,.OK
-	PRINTLN	MSG_RESETTING_ESP
-	CALL	WIFI.ESP_RESET
-	CALL	WIFI.UART_SET_DEFAULT_DIVISOR
-	CALL	WIFI.UART_INIT
+	CALL	WCOMMON.SYNC_ESP_COMMAND
 	POP	HL
 	JP	SEND_CMD
-.OK
-	POP	HL
-	RET
 
 ; ------------------------------------------------------
 ; Reserve one 16 KB page for Zmodem RX/data/encoded-TX buffers and map it in
@@ -2127,8 +2143,6 @@ MSG_COLON
 	DB ":",0
 MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
-MSG_RESETTING_ESP
-	DB "ESP did not answer, resetting module.",0
 MSG_CONNECTING
 	DB "Connecting to ",0
 MSG_CONNECTED
@@ -2241,6 +2255,7 @@ NETCFG_BSS_BASE	EQU WIN2_BASE
 	DEFINE ESP_TCP_BSS_BASE_OVERRIDE
 ESP_TCP_BSS_BASE	EQU WIN2_BASE
 
+	DEFINE WCOMMON_USE_NETCFG
 	INCLUDE "wcommon.asm"
 	INCLUDE "dss_error.asm"
 	INCLUDE "isa.asm"
