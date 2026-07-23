@@ -10,6 +10,12 @@ UART_SWITCH_SETTLE	EQU 300
 UART_VERIFY_RETRIES	EQU 6		; AT attempts after a baud switch before giving up
 EXE_DIR_SIZE		EQU 272		; APPINFO path (up to 256) + "NET.CFG",0
 
+; NETUP normally determines the profile with AT+SYSSTORE?. These optional
+; assembler defines make a firmware-specific build possible for diagnostics;
+; define at most one of NETUP_FORCE_AT221 / NETUP_FORCE_AT222.
+ESP_FW_221		EQU 1
+ESP_FW_222		EQU 2
+
 	DEVICE NOSLOT64K
 
 	INCLUDE "macro.inc"
@@ -77,14 +83,15 @@ START
 	LD	HL,CMD_ECHO_OFF
 	CALL	SEND_CMD
 
+	CALL	DETECT_ESP_FIRMWARE
+	CALL	PREPARE_ESP_SESSION
+
 	PRINTLN MSG_SETUP_UART
 	CALL	APPLY_UART_SETTING
 	CALL	PRINT_UART_CONFIG_OPTIONAL
 
 	PRINTLN MSG_STATION
-	LD	HL,CMD_CWMODE_CUR
-	LD	DE,CMD_CWMODE_LEGACY
-	CALL	SEND_CMD_WITH_FALLBACK
+	CALL	SET_STATION_MODE
 
 	PRINTLN MSG_NO_SLEEP
 	LD	HL,CMD_SLEEP_OFF
@@ -95,18 +102,10 @@ START
 	PRINT MSG_JOINING
 	PRINT NETCFG.CFG_SSID
 	PRINT WCOMMON.LINE_END
-	CALL	BUILD_CWJAP_CMD_CUR
-	LD	HL,CMD_BUFF
-	LD	BC,JOIN_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	JR	Z,.JOINED
-	PRINTLN MSG_FALLBACK
-	CALL	BUILD_CWJAP_CMD_LEGACY
+	CALL	BUILD_CWJAP_CMD
 	LD	HL,CMD_BUFF
 	LD	BC,JOIN_TIMEOUT
 	CALL	SEND_CMD_TIMEOUT
-.JOINED
 
 	CALL	APPLY_DNS_OPTIONAL
 
@@ -194,7 +193,78 @@ PRINT_CONFIG_DSS_ERROR
 	RET
 
 ; ------------------------------------------------------
-; Apply DHCP or static station IP mode.
+; Select an ESP-AT command profile once for this NETUP run.
+; AT+SYSSTORE? is the generation probe: a normal ERROR identifies the
+; 2.2.1-compatible profile, while a transport failure remains a hard error.
+; NETUP_FORCE_AT221 / NETUP_FORCE_AT222 are diagnostic build overrides.
+; ------------------------------------------------------
+DETECT_ESP_FIRMWARE
+	IFDEF	NETUP_FORCE_AT221
+	JR	.FW221
+	ELSE
+	IFDEF	NETUP_FORCE_AT222
+	JR	.FW222
+	ELSE
+	LD	HL,CMD_SYSSTORE_QUERY
+	LD	BC,DEFAULT_TIMEOUT
+	CALL	SEND_CMD_STATUS_TIMEOUT
+	AND	A
+	JR	Z,.FW222
+	CP	RES_ERROR
+	JR	Z,.FW221
+	JP	COMMAND_ERROR_EXIT
+	ENDIF
+	ENDIF
+.FW221
+	LD	A,ESP_FW_221
+	LD	(ESP_FW_PROFILE),A
+	PRINTLN MSG_ESP_FW_221
+	RET
+.FW222
+	LD	A,ESP_FW_222
+	LD	(ESP_FW_PROFILE),A
+	PRINTLN MSG_ESP_FW_222
+	RET
+
+; ------------------------------------------------------
+; Keep all 2.2.2 configuration changes in the current session. SYSLOG is
+; deliberately best-effort: it improves firmware diagnostics but must not
+; prevent a connection if a vendor build does not implement it.
+; ------------------------------------------------------
+PREPARE_ESP_SESSION
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	RET	NZ
+	LD	HL,CMD_SYSSTORE_VOLATILE
+	CALL	SEND_CMD
+	LD	HL,CMD_SYSLOG_ON
+	JP	SEND_CMD_OPTIONAL
+
+; ------------------------------------------------------
+; Apply station mode using the profile selected at startup.
+; ------------------------------------------------------
+SET_STATION_MODE
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	HL,CMD_CWMODE_221
+	JR	NZ,.SEND
+	LD	HL,CMD_CWMODE_222
+.SEND
+	JP	SEND_CMD
+
+; ------------------------------------------------------
+; Return HL = the station-information query for the selected profile.
+; ------------------------------------------------------
+GET_CIPSTA_QUERY_CMD
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	HL,CMD_CIPSTA_221_QUERY
+	RET	NZ
+	LD	HL,CMD_CIPSTA_222_QUERY
+	RET
+
+; ------------------------------------------------------
+; Apply DHCP or static station IP mode using the selected profile.
 ; ------------------------------------------------------
 APPLY_IP_MODE
 	LD	A,(NETCFG.CFG_DHCP)
@@ -202,40 +272,30 @@ APPLY_IP_MODE
 	JR	Z,.STATIC
 
 	PRINTLN MSG_DHCP
-	LD	HL,CMD_DHCP_ON
-	LD	DE,CMD_DHCP_ON_LEGACY
-	JP	SEND_CMD_WITH_FALLBACK
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	HL,CMD_DHCP_221
+	JR	NZ,.SEND
+	LD	HL,CMD_DHCP_222
+.SEND
+	JP	SEND_CMD
 
 .STATIC
 	PRINTLN MSG_STATIC
-	CALL	BUILD_CIPSTA_CMD_CUR
-	LD	HL,CMD_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	RET	Z
-	PRINTLN MSG_FALLBACK
-	CALL	BUILD_CIPSTA_CMD_LEGACY
+	CALL	BUILD_CIPSTA_CMD
 	LD	HL,CMD_BUFF
 	JP	SEND_CMD
 
 ; ------------------------------------------------------
-; Apply DNS if DNS1 is configured. DNS setup is not mandatory because ESP-AT
-; command variants differ between firmware builds.
+; Apply DNS if DNS1 is configured. The selected profile already fixes the
+; command form, so there is no per-command fallback.
 ; ------------------------------------------------------
 APPLY_DNS_OPTIONAL
 	LD	A,(NETCFG.CFG_DNS1)
 	AND	A
 	RET	Z
 	PRINTLN MSG_DNS
-	CALL	BUILD_CIPDNS_CMD_CUR
-	LD	HL,CMD_BUFF
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	RET	Z
-	PRINTLN MSG_FALLBACK
-	CALL	BUILD_CIPDNS_CMD_LEGACY
+	CALL	BUILD_CIPDNS_CMD
 	LD	HL,CMD_BUFF
 	CALL	SEND_CMD_OPTIONAL
 	RET
@@ -312,6 +372,9 @@ APPLY_UART_SETTING
 	JR	NZ,.HAVE_ERROR
 	LD	A,(UART_VERIFY_RESULT)
 .HAVE_ERROR
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
@@ -406,6 +469,9 @@ PRINT_UART_CONFIG_OPTIONAL
 	CALL	SEND_CMD_PRINT_STATUS
 	AND	A
 	RET	Z
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_WARN_NO),A
 	PRINTLN MSG_OPTIONAL_WARN
@@ -419,6 +485,16 @@ SEND_CMD_TIMEOUT
 	CALL	SEND_CMD_STATUS_TIMEOUT
 	AND	A
 	RET	Z
+	JP	COMMAND_ERROR_EXIT
+
+; ------------------------------------------------------
+; Print the actual ESP response before exiting with a command error.
+; In: A = RES_* result, WIFI.RS_BUFF = complete/partial response.
+; ------------------------------------------------------
+COMMAND_ERROR_EXIT
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_ERROR_NO),A
 	PRINTLN MSG_COMM_ERROR
@@ -435,22 +511,6 @@ SEND_CMD_STATUS_TIMEOUT
 	RET
 
 ; ------------------------------------------------------
-; Send primary command in HL. If it fails, send fallback command in DE.
-; ------------------------------------------------------
-SEND_CMD_WITH_FALLBACK
-	PUSH	DE
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	JR	Z,.OK
-	POP	HL
-	PRINTLN MSG_FALLBACK
-	JP	SEND_CMD
-.OK
-	POP	DE
-	RET
-
-; ------------------------------------------------------
 ; Send non-critical command. Print a warning and continue on failure.
 ; ------------------------------------------------------
 SEND_CMD_OPTIONAL
@@ -459,6 +519,9 @@ SEND_CMD_OPTIONAL
 	CALL	WIFI.UART_TX_CMD
 	AND	A
 	RET	Z
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_WARN_NO),A
 	PRINTLN MSG_OPTIONAL_WARN
@@ -473,22 +536,21 @@ SEND_CMD_PRINT
 	JP	PRINT_ESP_RESPONSE
 
 ; ------------------------------------------------------
-; Print station IP information. This is diagnostic only, so try several ESP-AT
-; variants and warn only if every query fails.
+; Print station IP information. This is diagnostic only: prefer AT+CIFSR and,
+; if it fails, try the profile-selected AT+CIPSTA query before warning.
 ; ------------------------------------------------------
 PRINT_IP_INFO_OPTIONAL
 	LD	HL,CMD_CIFSR
 	CALL	SEND_CMD_PRINT_STATUS
 	AND	A
 	RET	Z
-	LD	HL,CMD_CIPSTA_CUR_QUERY
+	CALL	GET_CIPSTA_QUERY_CMD
 	CALL	SEND_CMD_PRINT_STATUS
 	AND	A
 	RET	Z
-	LD	HL,CMD_CIPSTA_QUERY
-	CALL	SEND_CMD_PRINT_STATUS
-	AND	A
-	RET	Z
+	PUSH	AF
+	CALL	PRINT_ESP_FAILURE
+	POP	AF
 	ADD	A,'0'
 	LD	(MSG_WARN_NO),A
 	PRINTLN MSG_OPTIONAL_WARN
@@ -532,7 +594,7 @@ SEND_CMD_RECOVER
 	RET
 
 ; ------------------------------------------------------
-; Build AT+CWJAP_CUR command from config.
+; Build AT+UART_CUR command from config.
 ; ------------------------------------------------------
 BUILD_UART_CMD
 	LD	HL,CMD_BUFF
@@ -564,17 +626,17 @@ BUILD_UART_CMD_NO_FLOW
 	LD	DE,CMD_UART_SUFFIX_NO_FLOW
 	JP	APPEND_STR
 
-BUILD_CWJAP_CMD_CUR
-	LD	DE,CMD_CWJAP_CUR_PREFIX
-	JR	BUILD_CWJAP_CMD
-
 ; ------------------------------------------------------
-; Build legacy AT+CWJAP command from config.
+; Build the profile-selected AT+CWJAP command from config.
+; 2.2.1 uses _CUR; 2.2.2 uses the plain form after SYSSTORE=0.
 ; ------------------------------------------------------
-BUILD_CWJAP_CMD_LEGACY
-	LD	DE,CMD_CWJAP_LEGACY_PREFIX
-
 BUILD_CWJAP_CMD
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	DE,CMD_CWJAP_221_PREFIX
+	JR	NZ,.PREFIX_READY
+	LD	DE,CMD_CWJAP_222_PREFIX
+.PREFIX_READY
 	LD	HL,CMD_BUFF
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_SSID
@@ -587,19 +649,15 @@ BUILD_CWJAP_CMD
 	JP	APPEND_STR
 
 ; ------------------------------------------------------
-; Build AT+CIPSTA_CUR command from config.
+; Build the profile-selected AT+CIPSTA command from config.
 ; ------------------------------------------------------
-BUILD_CIPSTA_CMD_CUR
-	LD	DE,CMD_CIPSTA_CUR_PREFIX
-	JR	BUILD_CIPSTA_CMD
-
-; ------------------------------------------------------
-; Build legacy AT+CIPSTA command from config.
-; ------------------------------------------------------
-BUILD_CIPSTA_CMD_LEGACY
-	LD	DE,CMD_CIPSTA_LEGACY_PREFIX
-
 BUILD_CIPSTA_CMD
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	DE,CMD_CIPSTA_221_PREFIX
+	JR	NZ,.PREFIX_READY
+	LD	DE,CMD_CIPSTA_222_PREFIX
+.PREFIX_READY
 	LD	HL,CMD_BUFF
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_IP
@@ -616,19 +674,15 @@ BUILD_CIPSTA_CMD
 	JP	APPEND_STR
 
 ; ------------------------------------------------------
-; Build AT+CIPDNS_CUR command from config.
+; Build the profile-selected AT+CIPDNS command from config.
 ; ------------------------------------------------------
-BUILD_CIPDNS_CMD_CUR
-	LD	DE,CMD_CIPDNS_CUR_PREFIX
-	JR	BUILD_CIPDNS_CMD
-
-; ------------------------------------------------------
-; Build legacy AT+CIPDNS command from config.
-; ------------------------------------------------------
-BUILD_CIPDNS_CMD_LEGACY
-	LD	DE,CMD_CIPDNS_LEGACY_PREFIX
-
 BUILD_CIPDNS_CMD
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	DE,CMD_CIPDNS_221_PREFIX
+	JR	NZ,.PREFIX_READY
+	LD	DE,CMD_CIPDNS_222_PREFIX
+.PREFIX_READY
 	LD	HL,CMD_BUFF
 	CALL	APPEND_STR
 	LD	IX,NETCFG.CFG_DNS1
@@ -650,6 +704,7 @@ BUILD_CIPDNS_CMD
 ; (#46) after NETUP. Best-effort: any failure is ignored. An empty value writes
 ; "NAME=" which DELETES the variable.
 ;   NET      = WIFI            network-type marker
+;   NET_ESP_FW = 2.2.1/2.2.2   selected ESP-AT firmware profile
 ;   NET_IP   = station IP      (AT+CIFSR STAIP)
 ;   NET_MAC  = station MAC      (AT+CIFSR STAMAC)
 ;   NET_GW   = gateway          (AT+CIPSTA gateway)
@@ -673,6 +728,17 @@ PUBLISH_NET_ENV
 	LD	IX,ESP_HW_BUF
 	CALL	SETENV_NAME_VAL
 
+	; NET_ESP_FW tells consumers whether this run selected the 2.2.1 or
+	; 2.2.2 AT profile (and therefore whether 2.2.2-only commands may be used).
+	LD	A,(ESP_FW_PROFILE)
+	CP	ESP_FW_222
+	LD	IX,V_ESP_FW_221
+	JR	NZ,.FW_SET
+	LD	IX,V_ESP_FW_222
+.FW_SET
+	LD	HL,N_NET_ESP_FW
+	CALL	SETENV_NAME_VAL
+
 	; IP + MAC from AT+CIFSR (response in WIFI.RS_BUFF).
 	LD	HL,CMD_CIFSR
 	LD	BC,DEFAULT_TIMEOUT
@@ -684,16 +750,10 @@ PUBLISH_NET_ENV
 	LD	DE,NET_MAC_BUF
 	CALL	EXTRACT_QUOTED_FIELD
 
-	; Gateway + netmask from AT+CIPSTA_CUR? (legacy AT+CIPSTA? fallback).
-	LD	HL,CMD_CIPSTA_CUR_QUERY
+	; Gateway + netmask from the selected AT+CIPSTA query form.
+	CALL	GET_CIPSTA_QUERY_CMD
 	LD	BC,DEFAULT_TIMEOUT
 	CALL	SEND_CMD_STATUS_TIMEOUT
-	AND	A
-	JR	Z,.HAVE_STA
-	LD	HL,CMD_CIPSTA_QUERY
-	LD	BC,DEFAULT_TIMEOUT
-	CALL	SEND_CMD_STATUS_TIMEOUT
-.HAVE_STA
 	LD	HL,PAT_GATEWAY
 	LD	DE,NET_GW_BUF
 	CALL	EXTRACT_QUOTED_FIELD
@@ -861,12 +921,14 @@ ESP_HW_BASE	DB "/#3E8",0
 
 ; Variable names match the rtl8019as package (NET_IP_SRC/IP/MASK/GW/MAC/DNS1/
 ; DNS2/NTP/TZ) so programs read the same vars on either card. NET=WIFI is this
-; package's network-type marker, and NET_ESP_HW is the slot/I/O-base in the
-; same "S/#HHH" form as rtl8019as NET_RTL_HW. NET_BAUD and NET_SSID are
-; Wi-Fi-specific additions with no rtl8019as analogue.
+; package's network-type marker, NET_ESP_HW is the slot/I/O-base in the same
+; "S/#HHH" form as rtl8019as NET_RTL_HW, and NET_ESP_FW is the selected
+; 2.2.1/2.2.2 AT profile. NET_BAUD and NET_SSID are Wi-Fi-specific additions
+; with no rtl8019as analogue.
 NET_ENV_NAMES
 N_NET		DB "NET",0
 N_NET_ESP_HW	DB "NET_ESP_HW",0
+N_NET_ESP_FW	DB "NET_ESP_FW",0
 N_NET_IP_SRC	DB "NET_IP_SRC",0
 N_NET_IP	DB "NET_IP",0
 N_NET_MASK	DB "NET_MASK",0
@@ -879,6 +941,8 @@ N_NET_TZ	DB "NET_TZ",0
 N_NET_BAUD	DB "NET_BAUD",0
 N_NET_SSID	DB "NET_SSID",0
 LIT_WIFI	DB "WIFI",0
+V_ESP_FW_221	DB "2.2.1",0
+V_ESP_FW_222	DB "2.2.2",0
 V_STATIC	DB "STATIC",0
 V_DHCP		DB "DHCP",0
 PAT_STAIP	DB "STAIP",0
@@ -913,6 +977,11 @@ APPEND_IX_STR
 ; ------------------------------------------------------
 ; Print ESP response buffer with LF -> CRLF conversion.
 ; ------------------------------------------------------
+PRINT_ESP_FAILURE
+	PRINTLN MSG_ESP_RESPONSE
+	LD	HL,WIFI.RS_BUFF
+	JP	PRINT_ESP_RESPONSE
+
 PRINT_ESP_RESPONSE
 	LD	A,(HL)
 	AND	A
@@ -953,6 +1022,10 @@ MSG_WIFI_NOT_FOUND
 	DB "Sprinter-WiFi not found!",0
 MSG_UART_READY
 	DB "UART initialized.",0
+MSG_ESP_FW_221
+	DB "ESP firmware profile: 2.2.1.",0
+MSG_ESP_FW_222
+	DB "ESP firmware profile: 2.2.2.",0
 MSG_RESETTING_ESP
 	DB "ESP did not answer, resetting module.",0
 MSG_SETUP_UART
@@ -977,8 +1050,6 @@ MSG_STATIC
 	DB "Applying static IP settings.",0
 MSG_DNS
 	DB "Applying DNS settings (optional).",0
-MSG_FALLBACK
-	DB "Primary ESP command failed, trying fallback.",0
 MSG_JOINING
 	DB "Connecting to SSID: ",0
 MSG_IP_INFO
@@ -991,6 +1062,8 @@ MSG_COMM_ERROR
 	DB "ESP communication error #"
 MSG_ERROR_NO
 	DB "n!",0
+MSG_ESP_RESPONSE
+	DB "ESP response:",0
 MSG_OPTIONAL_WARN
 	DB "Optional ESP command failed #"
 MSG_WARN_NO
@@ -1009,6 +1082,12 @@ CMD_AT
 	DB "AT",13,10,0
 CMD_ECHO_OFF
 	DB "ATE0",13,10,0
+CMD_SYSSTORE_QUERY
+	DB "AT+SYSSTORE?",13,10,0
+CMD_SYSSTORE_VOLATILE
+	DB "AT+SYSSTORE=0",13,10,0
+CMD_SYSLOG_ON
+	DB "AT+SYSLOG=1",13,10,0
 CMD_UART_PREFIX
 	DB "AT+UART_CUR=",0
 CMD_UART_SUFFIX
@@ -1017,36 +1096,36 @@ CMD_UART_SUFFIX_NO_FLOW
 	DB ",8,1,0,0",13,10,0
 CMD_UART_QUERY
 	DB "AT+UART_CUR?",13,10,0
-CMD_CWMODE_CUR
+CMD_CWMODE_221
 	DB "AT+CWMODE_CUR=1",13,10,0
-CMD_CWMODE_LEGACY
-	DB "AT+CWMODE=1",13,10,0
+CMD_CWMODE_222
+	DB "AT+CWMODE=1,0",13,10,0
 CMD_SLEEP_OFF
 	DB "AT+SLEEP=0",13,10,0
-CMD_DHCP_ON
+CMD_DHCP_221
 	DB "AT+CWDHCP_CUR=1,1",13,10,0
-CMD_DHCP_ON_LEGACY
+CMD_DHCP_222
 	DB "AT+CWDHCP=1,1",13,10,0
 CMD_CIFSR
 	DB "AT+CIFSR",13,10,0
-CMD_CIPSTA_CUR_QUERY
+CMD_CIPSTA_221_QUERY
 	DB "AT+CIPSTA_CUR?",13,10,0
-CMD_CIPSTA_QUERY
+CMD_CIPSTA_222_QUERY
 	DB "AT+CIPSTA?",13,10,0
 
-CMD_CWJAP_CUR_PREFIX
+CMD_CWJAP_221_PREFIX
 	DB "AT+CWJAP_CUR=",34,0
-CMD_CWJAP_LEGACY_PREFIX
+CMD_CWJAP_222_PREFIX
 	DB "AT+CWJAP=",34,0
 CMD_CWJAP_MIDDLE
 	DB 34,",",34,0
-CMD_CIPSTA_CUR_PREFIX
+CMD_CIPSTA_221_PREFIX
 	DB "AT+CIPSTA_CUR=",34,0
-CMD_CIPSTA_LEGACY_PREFIX
+CMD_CIPSTA_222_PREFIX
 	DB "AT+CIPSTA=",34,0
-CMD_CIPDNS_CUR_PREFIX
+CMD_CIPDNS_221_PREFIX
 	DB "AT+CIPDNS_CUR=1,",34,0
-CMD_CIPDNS_LEGACY_PREFIX
+CMD_CIPDNS_222_PREFIX
 	DB "AT+CIPDNS=1,",34,0
 CMD_QUOTE_COMMA_QUOTE
 	DB 34,",",34,0
@@ -1075,7 +1154,8 @@ NET_MASK_BUF	EQU NET_GW_BUF + 24		; parsed netmask
 EXT_PAT		EQU NET_MASK_BUF + 24		; EXTRACT_QUOTED_FIELD: keyword ptr
 EXT_DEST	EQU EXT_PAT + 2			; EXTRACT_QUOTED_FIELD: dest ptr
 ESP_HW_BUF	EQU EXT_DEST + 2		; "<slot>/#<base>" (NET_ESP_HW)
-NETUP_CFG_PATH	EQU ESP_HW_BUF + 16	; DSS APPINFO executable directory + NET.CFG
+ESP_FW_PROFILE	EQU ESP_HW_BUF + 16	; ESP_FW_221 / ESP_FW_222 selected at startup
+NETUP_CFG_PATH	EQU ESP_FW_PROFILE + 1	; DSS APPINFO executable directory + NET.CFG
 NETUP_BSS_END	EQU NETUP_CFG_PATH + EXE_DIR_SIZE
 	ASSERT	NETUP_BSS_END < 0xC000
 

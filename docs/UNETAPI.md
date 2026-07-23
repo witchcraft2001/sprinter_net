@@ -236,8 +236,9 @@ Before a consumer uses the network, it must be brought up by the standard
 tools, exactly as for the stand-alone utilities:
 
 - **ESP:** run `NETUP` (it joins Wi-Fi and publishes `NET=WIFI`, `NET_ESP_HW`,
-  `NET_IP`, `NET_BAUD`, ...). `NETINIT` checks `NET=="WIFI"` and `NET_ESP_HW`
-  non-empty.
+  `NET_ESP_FW`, `NET_IP`, `NET_BAUD`, ...). `NETINIT` checks `NET=="WIFI"`
+  and `NET_ESP_HW` non-empty. `NET_ESP_FW` is `2.2.1` or `2.2.2`; consumers
+  that add an ESP-AT passive-receive path must gate it on `2.2.2`.
 - **RTL:** run `NETCFG -i` (static) and/or `IFUP` (DHCP) so `NET_IP` and
   `NET_MAC` are published.
 

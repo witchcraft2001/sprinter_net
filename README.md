@@ -94,17 +94,21 @@ UDPECHO.BAT      UDPTEST 192.168.1.36 7777 hello
 ```
 
 `NETCFG.EXE /W` stores the Wi-Fi password as clear text.
-`NETUP.EXE` uses ESP-AT `_CUR` commands first, so normal setup does not write
-settings to ESP flash; legacy commands are used only as fallback.
+`NETUP.EXE` supports ESP-AT 2.2.1 and 2.2.2 without per-command fallbacks. It
+probes `AT+SYSSTORE?` once: `ERROR` selects the 2.2.1 `_CUR` profile, while
+`OK` selects 2.2.2 and first sends `AT+SYSSTORE=0`. Therefore Wi-Fi settings
+remain session-only on both profiles. It prints and publishes the result as
+`NET_ESP_FW=2.2.1` or `NET_ESP_FW=2.2.2`; software that needs
+`AT+CIPRECVMODE=1` must require the 2.2.2 profile.
 `BAUD` in `NET.CFG` may be set to `115200`, `57600`, `38400`, `19200` or
 `9600`; automated tools use it after `NETUP.EXE` configures the ESP with
 `AT+UART_CUR`.
 
 ## ESP-AT Firmware Baseline
 
-The current baseline firmware checked for this project is the ESP8266
-ESP-AT firmware version `V2.2.1`. The AT firmware contain
-command tokens for the project-critical command families below:
+The supported transition profiles are ESP8266 ESP-AT `V2.2.1` and `V2.2.2`.
+The 2.2.1 firmware contains command tokens for the project-critical command
+families below:
 
 - Basic: `AT`, `ATE0`, `AT+GMR`, `AT+RST`, `AT+RESTORE`, `AT+SLEEP`,
   `AT+GSLP`, `AT+SYSMSG`.

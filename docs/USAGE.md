@@ -9,6 +9,8 @@ Sprinter-WiFi card with ESP8266 ESP-AT firmware.
 - `NETCFG.EXE /W` edits and saves `NET.CFG`.
 - `NETUP.EXE` initializes the ESP module and connects to Wi-Fi using `NET.CFG`
   stored beside `NETUP.EXE`, so it also works when invoked through `PATH`.
+  It detects the 2.2.1/2.2.2 ESP-AT profile once per run, keeps Wi-Fi settings
+  session-only, and publishes the selected profile as `NET_ESP_FW`.
 - `TFTP.EXE host[:port] GET remote-file [-o local-name] [-y|-f]` downloads one
   file over TFTP. Existing output files require confirmation unless `-y` (or
   its alias `-f`) is used. TFTP has no resume.

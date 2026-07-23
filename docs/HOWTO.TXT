@@ -35,8 +35,9 @@ What you need
 3. Bring the connection up
       NETUP
 
-  On success it prints the assigned IP (for example 192.168.1.138) and
-  "NETUP done". The package utilities can then use the active connection.
+  On success it prints the selected ESP firmware profile, the assigned IP
+  (for example 192.168.1.138) and "NETUP done". The package utilities can
+  then use the active connection. NET_ESP_FW is published as 2.2.1 or 2.2.2.
 
 4. Check that it works
       PING 8.8.8.8

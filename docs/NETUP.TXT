@@ -29,6 +29,28 @@ Behavior
   After a successful connection, the package utilities can use the current
   network settings until DSS is restarted.
 
+Firmware profiles and session settings
+  NETUP probes AT+SYSSTORE? once after the initial AT handshake:
+
+  - OK selects the 2.2.2 ESP-AT profile. NETUP sends AT+SYSSTORE=0 before
+    applying network settings, so AT+CWMODE=1,0, AT+CWDHCP=1,1,
+    AT+CWJAP=..., and static IP/DNS commands affect only this ESP session.
+    AT+SYSLOG=1 is also requested for firmware diagnostics; it is optional.
+  - ERROR selects the 2.2.1-compatible profile. NETUP uses the corresponding
+    _CUR station, DHCP, join, static-IP and DNS commands, which are also
+    session-only.
+
+  The selected profile is printed as "ESP firmware profile: 2.2.1" or
+  "ESP firmware profile: 2.2.2" and is published as NET_ESP_FW. Programs
+  must not use AT+CIPRECVMODE=1 when NET_ESP_FW=2.2.1; 2.2.2 is the profile
+  intended for software that needs that command.
+
+  NETUP does not try a second command dialect for every setting. If a required
+  command fails, it prints the response collected from the ESP before the
+  local communication-error number (including a partial response on timeout).
+  This distinguishes a literal ERROR from a UART timeout or other transport
+  error.
+
 Exit status
   0  Network bring-up completed.
   2  Sprinter-WiFi hardware was not found.
